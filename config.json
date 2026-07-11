@@ -1,0 +1,22 @@
+{
+  "template": "C:/Users/erick/Downloads/TEMPLATE 2.png",
+  "texture": "C:/Users/erick/Downloads/Texture.png",
+  "texture_opacity": 22,
+  "blend_mode": "Multiplicar",
+  "texture_scale": 45,
+  "presets": [
+    {
+      "name": "Preset 1",
+      "template": "C:/Users/erick/Downloads/TEMPLATE 2.png",
+      "texture": null,
+      "blend": "Multiplicar",
+      "opacity": 42,
+      "texture_scale": 45,
+      "speed": "1x",
+      "scale_pct": 100,
+      "trim_start": null,
+      "trim_end": null
+    }
+  ],
+  "appearance": "dark"
+}
