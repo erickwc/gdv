@@ -38,6 +38,18 @@ VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".gif"}
 AUDIO_EXTS = {".mp3", ".wav", ".flac", ".aac", ".m4a", ".ogg", ".wma", ".opus"}
 
 CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+IS_MAC = sys.platform == "darwin"
+
+# En Mac, el Python de python.org no trae certificados SSL configurados y
+# toda conexion HTTPS falla (CERTIFICATE_VERIFY_FAILED) -- sin esto la
+# descarga por link con yt-dlp no funciona. Usamos los certificados de
+# certifi si esta instalado.
+if IS_MAC:
+    try:
+        import certifi
+        os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+    except ImportError:
+        pass
 
 # Empaquetada (PyInstaller): los recursos de solo lectura (fuentes) viven
 # dentro del paquete; las carpetas del usuario (plantillas, texturas, config)
@@ -1613,6 +1625,25 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         # Pegar imagen con Ctrl+V (por ejemplo copiada de Pinterest)
         self.bind_all("<Control-v>", self._paste_from_clipboard)
         self.bind_all("<Control-V>", self._paste_from_clipboard)
+        if IS_MAC:  # en Mac el atajo es Cmd+V
+            self.bind_all("<Command-v>", self._paste_from_clipboard)
+            self.bind_all("<Command-V>", self._paste_from_clipboard)
+
+        if IS_MAC:
+            # En Tk 9 (el que trae Python 3.14) el scroll de Mac cambio:
+            # la rueda del mouse manda <MouseWheel> con deltas estilo
+            # Windows (multiplos de 120) y el gesto de dos dedos del
+            # trackpad manda un evento NUEVO, <TouchpadScroll>, que ni
+            # customtkinter ni el handler viejo escuchan. Se reemplazan
+            # por handlers propios (el canvas queda con unidades de 1px).
+            self.unbind_all("<MouseWheel>")
+            self.bind_all("<MouseWheel>", self._on_mac_mousewheel, add=True)
+            try:
+                self.bind_all("<TouchpadScroll>", self._on_mac_touchpad, add=True)
+            except tk.TclError:
+                pass  # Tk < 9 no conoce el evento; la rueda basta
+            self.card._parent_canvas.configure(yscrollincrement=1)
+            self._touchpad_active_until = 0
 
     def _make_pct_entry(self, parent):
         """Casilla chica para escribir un numero a mano junto a un slider."""
@@ -1650,11 +1681,73 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
 
     def _toggle_appearance(self):
         mode = "dark" if self.dark_switch.get() else "light"
-        ctk.set_appearance_mode(mode)
+        # customtkinter repinta la ventana completa despues de recolorear
+        # CADA widget (update_idletasks dentro de _set_appearance_mode); ese
+        # repintado intermedio hace que el cambio se vea "por partes" cuando
+        # el render es caro (macOS). Se suprime durante el cambio y se hace
+        # un solo repintado al final.
+        original_update = tk.Misc.update_idletasks
+        tk.Misc.update_idletasks = lambda _self: None
+        try:
+            ctk.set_appearance_mode(mode)
+        finally:
+            tk.Misc.update_idletasks = original_update
         self.config_data["appearance"] = mode
         save_config(self.config_data)
         self.loop_slider.refresh_colors()
         self.focus_picker.refresh_colors()
+        self.update_idletasks()
+
+    # ------------------------------------------------------- scroll (macOS)
+
+    def _scrollable_canvas_for(self, event):
+        """El canvas del card si el evento cae dentro de el y hay contenido
+        oculto que scrollear; si no, None."""
+        try:
+            if not self.card._check_if_valid_scroll(event.widget):
+                return None
+        except Exception:
+            return None
+        canvas = self.card._parent_canvas
+        if canvas.yview() == (0.0, 1.0):
+            return None  # todo el contenido ya esta visible
+        return canvas
+
+    def _on_mac_mousewheel(self, event):
+        if event.time < getattr(self, "_touchpad_active_until", 0):
+            return  # gesto de trackpad en curso; evitar scroll doble
+        canvas = self._scrollable_canvas_for(event)
+        if canvas is None:
+            return
+        try:
+            delta = float(event.delta)
+        except (TypeError, ValueError):
+            return
+        if delta == 0:
+            return
+        if abs(delta) >= 60:
+            notches = delta / 120.0  # muescas estilo Tk 9 / Windows
+        else:
+            notches = delta  # formato viejo de Tk 8.6 en Mac
+        # ~40px por muesca, con tope por evento para que sea suave
+        pixels = max(8, min(160, int(round(abs(notches) * 40))))
+        canvas.yview("scroll", -pixels if delta > 0 else pixels, "units")
+
+    def _on_mac_touchpad(self, event):
+        # <TouchpadScroll> (Tk 9): %D trae dx y dy empaquetados como dos
+        # enteros de 16 bits con signo; dy viene en pixeles.
+        try:
+            packed = int(event.delta)
+        except (TypeError, ValueError):
+            return
+        dy = ((packed & 0xFFFF) ^ 0x8000) - 0x8000
+        if dy == 0:
+            return
+        self._touchpad_active_until = event.time + 500
+        canvas = self._scrollable_canvas_for(event)
+        if canvas is None:
+            return
+        canvas.yview("scroll", -dy, "units")
 
     # ----------------------------------------------------------- plantilla
     def _refresh_template_menu(self):
@@ -2166,7 +2259,42 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
 
     # -------------------------------------------------- pegar del portapapeles
 
+    @staticmethod
+    def _mac_clipboard_files():
+        """Rutas de archivos copiados en el Finder (Cmd+C). Pillow solo
+        devuelve listas de archivos en Windows; en Mac se leen del
+        portapapeles nativo (NSPasteboard) via osascript."""
+        script = (
+            "ObjC.import('AppKit');"
+            "const pb = $.NSPasteboard.generalPasteboard;"
+            "const opts = $.NSDictionary.dictionaryWithObjectForKey("
+            "true, 'NSPasteboardURLReadingFileURLsOnlyKey');"
+            "const urls = pb.readObjectsForClassesOptions("
+            "$.NSArray.arrayWithObject($.NSURL), opts);"
+            "const out = [];"
+            "if (urls) { for (let i = 0; i < urls.count; i++)"
+            " out.push(ObjC.unwrap(urls.objectAtIndex(i).path)); }"
+            "out.join('\\n');"
+        )
+        try:
+            proc = subprocess.run(
+                ["osascript", "-l", "JavaScript", "-e", script],
+                capture_output=True, text=True, timeout=5,
+            )
+            return [p for p in proc.stdout.splitlines() if p.strip()]
+        except Exception:
+            return []
+
     def _paste_from_clipboard(self, _event=None):
+        # En Mac, revisar PRIMERO si hay archivos copiados (Finder): al
+        # copiar un audio, macOS tambien expone su caratula como imagen y
+        # ImageGrab la devolveria antes -- pegando la imagen en lugar del
+        # audio. _ingest_files ya reparte por extension (audio vs imagen).
+        if IS_MAC:
+            files = self._mac_clipboard_files()
+            if files:
+                self._ingest_files(files)
+                return
         try:
             from PIL import ImageGrab
             data = ImageGrab.grabclipboard()
@@ -2806,10 +2934,13 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
 
             textures = self._current_textures(*layout["canvas"])
 
+            # aac_mf solo existe en Windows (MediaFoundation); en otros
+            # sistemas intentarlo es un fallo garantizado de ffmpeg.
+            encoders = ["aac_mf", "aac"] if os.name == "nt" else ["aac"]
             if info["audio_codec"] == "aac":
-                strategies = ["copy", "aac_mf", "aac"]
+                strategies = ["copy"] + encoders
             else:
-                strategies = ["aac_mf", "aac"]
+                strategies = encoders
 
             if self.media_is_video:
                 # FASE 1: componer una sola vuelta del loop (corta y rapida)
