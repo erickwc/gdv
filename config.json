@@ -1,22 +1,56 @@
 {
-  "template": "C:/Users/erick/Downloads/TEMPLATE 2.png",
+  "template": null,
   "texture": "C:/Users/erick/Downloads/Texture.png",
-  "texture_opacity": 22,
+  "texture_opacity": 29,
   "blend_mode": "Multiplicar",
   "texture_scale": 45,
   "presets": [
     {
-      "name": "Preset 1",
+      "name": "Vegocia",
       "template": "C:/Users/erick/Downloads/TEMPLATE 2.png",
-      "texture": null,
-      "blend": "Multiplicar",
-      "opacity": 42,
+      "texture": "C:/Users/erick/Downloads/Texture.png",
+      "blend_mode": "Multiplicar",
+      "texture_opacity": 22,
       "texture_scale": 45,
-      "speed": "1x",
       "scale_pct": 100,
-      "trim_start": null,
-      "trim_end": null
+      "speed": "1x"
+    },
+    {
+      "name": "Normal",
+      "template": null,
+      "texture": null,
+      "blend_mode": "Multiplicar",
+      "texture_opacity": 22,
+      "texture_scale": 45,
+      "scale_pct": 100,
+      "speed": "1x"
+    },
+    {
+      "name": "Kassy",
+      "template": "C:/Users/erick/Downloads/TEMPLATE 2.png",
+      "textures": [
+        {
+          "path": "C:/Users/erick/Downloads/Texture.png",
+          "blend": "Multiplicar",
+          "opacity": 16,
+          "scale": 45
+        }
+      ],
+      "scale_pct": 100,
+      "speed": "1.25x",
+      "grain": 30,
+      "sharpen": 25
     }
   ],
-  "appearance": "dark"
+  "appearance": "dark",
+  "textures": [
+    {
+      "path": "C:/Users/erick/Downloads/Texture.png",
+      "blend": "Multiplicar",
+      "opacity": 9,
+      "scale": 45
+    }
+  ],
+  "grain": 28,
+  "sharpen": 25
 }

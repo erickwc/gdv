@@ -12,6 +12,7 @@ fusion (estilo Photoshop) encima del medio.
 """
 
 import ctypes
+import hashlib
 import json
 import math
 import os
@@ -23,13 +24,12 @@ import threading
 
 import customtkinter as ctk
 import imageio_ffmpeg
-from PIL import Image
+import tkinter as tk
+from PIL import Image, ImageTk
 from tkinterdnd2 import DND_FILES, TkinterDnD
 from tkinter import filedialog, messagebox
 from tkinter import font as tkfont
 
-HD_WIDTH = 1280
-HD_HEIGHT = 720
 MAX_WIDTH = 1920
 MAX_HEIGHT = 1080
 
@@ -56,8 +56,8 @@ CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 FR_PRIVATE = 0x10
 
 NO_TEMPLATE = "Sin plantilla"
-NO_TEXTURE = "Sin textura"
 BROWSE_TEMPLATE = "Buscar archivo..."
+NO_PRESET = "(sin presets guardados)"
 
 # Modos de fusion (nombres de Photoshop -> modo del filtro blend de ffmpeg)
 BLEND_MODES = {
@@ -129,20 +129,6 @@ def save_config(cfg):
             json.dump(cfg, fh, indent=2)
     except OSError:
         pass
-
-
-def compute_target_resolution(width, height, min_w=HD_WIDTH, min_h=HD_HEIGHT, max_w=MAX_WIDTH, max_h=MAX_HEIGHT):
-    scale = max(1.0, min_w / width, min_h / height)
-    cap = min(max_w / width, max_h / height)
-    if cap < scale:
-        scale = cap
-    new_w = round(width * scale)
-    new_h = round(height * scale)
-    if new_w % 2:
-        new_w += 1
-    if new_h % 2:
-        new_h += 1
-    return new_w, new_h
 
 
 def detect_template_window(template_path):
@@ -294,23 +280,52 @@ def build_layout(media_size, is_video, scale_pct, template_box):
     if template_box:
         x, y, w, h = template_box
         layout = {"mode": "template", "inner": (w, h), "canvas": (MAX_WIDTH, MAX_HEIGHT), "pos": (x, y)}
-    elif not is_video and scale_pct >= 100:
-        w, h = compute_target_resolution(*media_size)
-        layout = {"mode": "plain", "inner": (w, h), "canvas": (w, h), "pos": (0, 0)}
     else:
-        inner_w = int(MAX_WIDTH * scale_pct / 100) // 2 * 2
-        inner_h = int(MAX_HEIGHT * scale_pct / 100) // 2 * 2
-        layout = {"mode": "bordered", "inner": (inner_w, inner_h),
+        # Sin plantilla el lienzo siempre es 1920x1080 negro y la base
+        # (scale_pct=100) es SIEMPRE un cuadrado fijo de 1080x1080, sin
+        # importar el tamano ni la proporcion original del archivo -- asi
+        # el mismo % recorta exactamente igual sin importar que imagen se
+        # cargue (Ajustar imagen ya decide que parte de la foto entra en
+        # ese cuadrado). La altura se queda fija siempre en 1080 -- el
+        # control de escala solo mueve el ANCHO (a partir del centro): por
+        # debajo de 100% encoge y deja bordes SOLO a los lados; por encima
+        # de 100% amplia, recortando lo que sobre (sin deformar) conforme
+        # se acerca a llenar el lienzo.
+        natural_w = natural_h = MAX_HEIGHT
+        scale_factor = max(0.01, scale_pct / 100)
+        inner_w = max(2, min(MAX_WIDTH, int(natural_w * scale_factor) // 2 * 2))
+        layout = {"mode": "bordered", "inner": (inner_w, natural_h),
                   "canvas": (MAX_WIDTH, MAX_HEIGHT), "pos": None}
     return layout, layout["canvas"][0], layout["canvas"][1]
 
 
+def build_focus_crop(focus):
+    """Recorte manual (zoom + punto de interes) aplicado ANTES de todo lo
+    demas: recorta el origen a iw/zoom x ih/zoom (misma proporcion, solo
+    mas cerca) centrado en (focus_x, focus_y). zoom=1.0 y foco centrado
+    -> no-op, asi que no cambia nada para quien no toque el ajuste."""
+    zoom, focus_x, focus_y = focus
+    zoom = max(1.0, zoom)
+    if zoom == 1.0 and focus_x == 0.5 and focus_y == 0.5:
+        return ""
+    crop_w = f"iw/{zoom:.4f}"
+    crop_h = f"ih/{zoom:.4f}"
+    crop_x = f"(iw-({crop_w}))*{focus_x:.4f}"
+    crop_y = f"(ih-({crop_h}))*{focus_y:.4f}"
+    return f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y},"
+
+
 def build_filtergraph(layout, is_video=False, speed=1.0, deinterlace=False,
-                      tpl_idx=None, tex_idx=None, tex_mode="lighten", tex_opacity=0.5):
+                      tpl_idx=None, textures=None, focus=None, sharpen=0, grain=0):
     """Arma el filter_complex completo: medio (des-entrelazado + velocidad +
-    escala/recorte/bordes) -> textura mezclada encima -> plantilla encima.
-    Los clips de video salen a 30 fps constantes para que el loop por
-    copia directa sea perfectamente uniforme (sin glitches)."""
+    ajuste manual de encuadre + escala/recorte/bordes + enfoque) -> texturas
+    mezcladas encima (una sobre otra, en el orden de la lista) -> grano ->
+    plantilla encima. Los clips de video salen a 30 fps constantes para que
+    el loop por copia directa sea perfectamente uniforme (sin glitches).
+
+    textures: lista de (indice_de_entrada, modo_ffmpeg, opacidad_0_a_1).
+    sharpen/grain: 0-100, ambos nativos (sin archivo de textura) y limitados
+    a la foto -- nunca tocan el borde negro, igual que las texturas."""
     inner_w, inner_h = layout["inner"]
     canvas_w, canvas_h = layout["canvas"]
 
@@ -322,35 +337,57 @@ def build_filtergraph(layout, is_video=False, speed=1.0, deinterlace=False,
             chain += f"setpts=(PTS-STARTPTS)/{speed:g},"
         else:
             chain += "setpts=PTS-STARTPTS,"
-    if layout["mode"] == "plain":
-        chain += f"scale={inner_w}:{inner_h}"
-    elif layout["mode"] == "bordered":
-        chain += (
-            f"scale={inner_w}:{inner_h}:force_original_aspect_ratio=decrease,"
-            f"pad={canvas_w}:{canvas_h}:(ow-iw)/2:(oh-ih)/2:color=black"
-        )
+    if focus is not None:
+        chain += build_focus_crop(focus)
+    # Escala/recorta al tamano REAL de la foto (inner_w x inner_h) sin
+    # rellenar todavia -- el pad (bordes negros) se agrega DESPUES de
+    # mezclar la textura, para que la textura solo caiga sobre la foto y
+    # nunca sobre el borde negro.
+    chain += f"scale={inner_w}:{inner_h}:force_original_aspect_ratio=increase:force_divisible_by=2,crop={inner_w}:{inner_h}"
+    if sharpen > 0:
+        # unsharp: mientras mas alto el "amount", mas nitido -- 0 es no-op
+        amount = min(2.0, sharpen / 100 * 2.0)
+        chain += f",unsharp=5:5:{amount:.3f}:5:5:0.0"
+    if layout["mode"] == "bordered":
+        # inner_h es siempre el alto natural de la foto (nunca cambia), asi
+        # que "cubrir" inner_w x inner_h solo recorta ANCHO cuando el control
+        # de bordes achica inner_w -- el alto nunca se toca. Los bordes
+        # verticales que pueda haber (por la proporcion de la foto) se
+        # agregan aparte con el pad, y no varian con el control.
+        pad_expr = f"pad={canvas_w}:{canvas_h}:(ow-iw)/2:(oh-ih)/2:color=black"
     else:  # template: cubrir la ventana por completo, sin dejar bordes
         x, y = layout["pos"]
-        chain += (
-            f"scale={inner_w}:{inner_h}:force_original_aspect_ratio=increase:force_divisible_by=2,"
-            f"crop={inner_w}:{inner_h},pad={canvas_w}:{canvas_h}:{x}:{y}:color=black"
-        )
+        pad_expr = f"pad={canvas_w}:{canvas_h}:{x}:{y}:color=black"
     if is_video:
         chain += ",fps=30"
     parts = [chain + "[base]"]
     last = "base"
 
-    if tex_idx is not None:
-        # La mezcla se hace en RGB plano (gbrp), igual que Photoshop
+    # Cada textura se mezcla en RGB plano (gbrp), igual que Photoshop,
+    # escalada al mismo tamano de la foto (no del lienzo completo), encima
+    # del resultado de la capa anterior -- asi se pueden apilar varias.
+    for i, (tex_idx, tex_mode, tex_opacity) in enumerate(textures or []):
+        texs_label = f"texs{i}"
+        basef_label = f"basef{i}"
+        out_label = f"textured{i}"
         parts.append(
-            f"[{tex_idx}:v]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=increase,"
-            f"crop={canvas_w}:{canvas_h},format=gbrp[texs]"
+            f"[{tex_idx}:v]scale={inner_w}:{inner_h}:force_original_aspect_ratio=increase,"
+            f"crop={inner_w}:{inner_h},format=gbrp[{texs_label}]"
         )
-        parts.append(f"[{last}]format=gbrp[basef]")
+        parts.append(f"[{last}]format=gbrp[{basef_label}]")
         parts.append(
-            f"[basef][texs]blend=all_mode={tex_mode}:all_opacity={tex_opacity:.3f}[textured]"
+            f"[{basef_label}][{texs_label}]blend=all_mode={tex_mode}:all_opacity={tex_opacity:.3f}[{out_label}]"
         )
-        last = "textured"
+        last = out_label
+
+    if grain > 0:
+        # grano nativo (sin archivo), va al final -- despues de las
+        # texturas y antes del borde, para que tampoco toque el negro
+        parts.append(f"[{last}]noise=alls={grain}:allf=t+u[grained]")
+        last = "grained"
+
+    parts.append(f"[{last}]{pad_expr}[padded]")
+    last = "padded"
 
     if tpl_idx is not None:
         parts.append(f"[{last}][{tpl_idx}:v]overlay=0:0[tpld]")
@@ -361,23 +398,23 @@ def build_filtergraph(layout, is_video=False, speed=1.0, deinterlace=False,
 
 
 def build_command(ffmpeg_exe, media_path, audio_path, output_path, duration, audio_args,
-                  layout, template_path=None, texture=None):
+                  layout, template_path=None, textures=None, focus=None, sharpen=0, grain=0):
     """Pasada unica para imagenes fijas (el video es barato a 10 fps)."""
     cmd = [ffmpeg_exe, "-y", "-loop", "1", "-framerate", "1", "-i", media_path, "-i", audio_path]
     idx = 2
-    tpl_idx = tex_idx = None
+    tpl_idx = None
     if template_path:
         cmd += ["-i", template_path]
         tpl_idx = idx
         idx += 1
-    if texture:
-        cmd += ["-i", texture[0]]
-        tex_idx = idx
+    tex_layers = []
+    for path, mode, opacity in (textures or []):
+        cmd += ["-i", path]
+        tex_layers.append((idx, mode, opacity))
         idx += 1
     fc = build_filtergraph(
-        layout, is_video=False, tpl_idx=tpl_idx, tex_idx=tex_idx,
-        tex_mode=texture[1] if texture else "lighten",
-        tex_opacity=texture[2] if texture else 0.5,
+        layout, is_video=False, tpl_idx=tpl_idx, textures=tex_layers, focus=focus,
+        sharpen=sharpen, grain=grain,
     )
     cmd += [
         "-filter_complex", fc, "-map", "[vout]", "-map", "1:a:0",
@@ -394,9 +431,10 @@ def build_command(ffmpeg_exe, media_path, audio_path, output_path, duration, aud
 
 
 def build_compose_command(ffmpeg_exe, media_path, temp_path, layout, trim=None, speed=1.0,
-                          deinterlace=False, template_path=None, texture=None):
+                          deinterlace=False, template_path=None, textures=None,
+                          sharpen=0, grain=0):
     """FASE 1 (solo clips de video): compone UNA sola vuelta del loop —
-    recorte + velocidad + textura + escala/bordes o plantilla — en un mp4
+    recorte + velocidad + texturas + escala/bordes o plantilla — en un mp4
     corto sin audio, a 30 fps constantes y con GOP cerrado para que la
     fase 2 pueda repetirlo con copia directa sin glitches."""
     cmd = [ffmpeg_exe, "-y"]
@@ -404,20 +442,19 @@ def build_compose_command(ffmpeg_exe, media_path, temp_path, layout, trim=None, 
         cmd += ["-ss", f"{trim[0]:.3f}", "-to", f"{trim[1]:.3f}"]
     cmd += ["-i", media_path]
     idx = 1
-    tpl_idx = tex_idx = None
+    tpl_idx = None
     if template_path:
         cmd += ["-i", template_path]
         tpl_idx = idx
         idx += 1
-    if texture:
-        cmd += ["-i", texture[0]]
-        tex_idx = idx
+    tex_layers = []
+    for path, mode, opacity in (textures or []):
+        cmd += ["-i", path]
+        tex_layers.append((idx, mode, opacity))
         idx += 1
     fc = build_filtergraph(
         layout, is_video=True, speed=speed, deinterlace=deinterlace,
-        tpl_idx=tpl_idx, tex_idx=tex_idx,
-        tex_mode=texture[1] if texture else "lighten",
-        tex_opacity=texture[2] if texture else 0.5,
+        tpl_idx=tpl_idx, textures=tex_layers, sharpen=sharpen, grain=grain,
     )
     cmd += [
         "-filter_complex", fc, "-map", "[vout]",
@@ -484,7 +521,18 @@ def truncate_path(path, max_chars=52):
     return path[:head] + "..." + path[-tail:]
 
 
-def register_drop_recursive(widget, on_drop, on_enter=None, on_leave=None):
+def register_drop_recursive(widget, on_drop, on_enter=None, on_leave=None, skip=None):
+    """Registra drop de archivos en todo el arbol de widgets. 'skip' es un
+    set de widgets cuyo subarbol se deja intacto (para que zonas mas
+    especificas -- plantilla, texturas -- puedan tener su propio drop sin
+    que este registro generico se lo pise). El popup interno de un
+    CTkOptionMenu es un tkinter.Menu (no una ventana normal); registrar un
+    drop target ahi no sirve de nada y en Windows puede interferir con cual
+    ventana recibe el drop real, dejando la parte visible sin reaccionar."""
+    if skip and widget in skip:
+        return
+    if isinstance(widget, tk.Menu):
+        return
     widget.drop_target_register(DND_FILES)
     widget.dnd_bind("<<Drop>>", on_drop)
     if on_enter is not None:
@@ -492,7 +540,7 @@ def register_drop_recursive(widget, on_drop, on_enter=None, on_leave=None):
     if on_leave is not None:
         widget.dnd_bind("<<DropLeave>>", on_leave)
     for child in widget.winfo_children():
-        register_drop_recursive(child, on_drop, on_enter, on_leave)
+        register_drop_recursive(child, on_drop, on_enter, on_leave, skip=skip)
 
 
 class FileChip(ctk.CTkFrame):
@@ -555,6 +603,419 @@ class FileChip(ctk.CTkFrame):
         self.on_remove()
 
 
+def resolve_color(color):
+    """Las constantes de paleta son tuplas (claro, oscuro); un tk.Canvas
+    (a diferencia de los widgets ctk) no se autoajusta al modo, asi que
+    hay que resolver el color correcto a mano segun el modo actual."""
+    if isinstance(color, (tuple, list)):
+        return color[0] if ctk.get_appearance_mode() == "Light" else color[1]
+    return color
+
+
+class RangeSlider(tk.Canvas):
+    """Slider de doble asa para el recorte del loop: mismo estilo que los
+    CTkSlider de la app (riel gris, tramo activo y manijas en GREEN), pero
+    con dos manijas independientes en vez de una."""
+
+    PAD = 8
+    MIN_GAP = 0.5  # segundos
+
+    def __init__(self, master, command=None, height=20):
+        super().__init__(master, height=height, bg=resolve_color(CARD_BG),
+                         highlightthickness=0, bd=0, cursor="hand2")
+        self.command = command
+        self.duration = 1.0
+        self.start = 0.0
+        self.end = 1.0
+        self._grab = None
+        self.bind("<Configure>", lambda _e: self._redraw())
+        self.bind("<Button-1>", self._on_press)
+        self.bind("<B1-Motion>", self._on_move)
+        self.bind("<ButtonRelease-1>", lambda _e: setattr(self, "_grab", None))
+
+    def refresh_colors(self):
+        self.configure(bg=resolve_color(CARD_BG))
+        self._redraw()
+
+    def set_duration(self, duration):
+        self.duration = max(self.MIN_GAP, float(duration or 1.0))
+        self.start = 0.0
+        self.end = self.duration
+        self._redraw()
+
+    def set_values(self, start, end):
+        self.start = max(0.0, min(float(start), self.duration - self.MIN_GAP))
+        self.end = max(self.start + self.MIN_GAP, min(float(end), self.duration))
+        self._redraw()
+
+    def get_values(self):
+        return self.start, self.end
+
+    def _sec_to_x(self, sec):
+        usable = max(1, self.winfo_width() - 2 * self.PAD)
+        return self.PAD + (sec / self.duration) * usable
+
+    def _x_to_sec(self, x):
+        usable = max(1, self.winfo_width() - 2 * self.PAD)
+        frac = (x - self.PAD) / usable
+        return max(0.0, min(1.0, frac)) * self.duration
+
+    def _on_press(self, event):
+        sec = self._x_to_sec(event.x)
+        self._grab = "start" if abs(sec - self.start) <= abs(sec - self.end) else "end"
+        self._apply(sec)
+
+    def _on_move(self, event):
+        if self._grab:
+            self._apply(self._x_to_sec(event.x))
+
+    def _apply(self, sec):
+        if self._grab == "start":
+            self.start = max(0.0, min(sec, self.end - self.MIN_GAP))
+        else:
+            self.end = min(self.duration, max(sec, self.start + self.MIN_GAP))
+        self._redraw()
+        if self.command:
+            self.command(self.start, self.end)
+
+    def _redraw(self):
+        self.delete("all")
+        width = self.winfo_width()
+        if width <= 1:
+            return
+        cy = int(self.winfo_height() / 2)
+        x0, x1 = self.PAD, width - self.PAD
+        xs, xe = self._sec_to_x(self.start), self._sec_to_x(self.end)
+        self.create_line(x0, cy, x1, cy, width=4, fill=resolve_color(BORDER), capstyle="round")
+        self.create_line(xs, cy, xe, cy, width=4, fill=GREEN, capstyle="round")
+        for x in (xs, xe):
+            self.create_oval(x - 7, cy - 7, x + 7, cy + 7, fill=GREEN, outline="")
+
+
+class ImageFocusPicker(tk.Canvas):
+    """Miniatura interactiva para elegir que parte de una imagen resaltar:
+    arrastra el recuadro para mover el encuadre; el zoom (controlado desde
+    afuera via set_zoom) lo acerca. El recuadro verde muestra el resultado
+    FINAL real -- incluye tambien el efecto del control de Escala
+    (set_scale_pct): por debajo de 100% dejar bordes a los lados, por
+    encima de 100% recorta un poco arriba/abajo para ampliar -- igual que
+    build_layout, para que no haya sorpresas entre esta miniatura y el
+    video exportado. zoom=100%, centrado y escala=100% = imagen completa,
+    sin recortar nada."""
+
+    DISPLAY_W = 352
+    DISPLAY_H = 200
+
+    def __init__(self, master, command=None):
+        super().__init__(master, width=self.DISPLAY_W, height=self.DISPLAY_H,
+                         bg=resolve_color(CHIP_BG), highlightthickness=0, bd=0)
+        self.command = command
+        self._photo = None
+        self.disp_w = self.DISPLAY_W
+        self.disp_h = self.DISPLAY_H
+        self.zoom = 100
+        self.focus_x = 0.5
+        self.focus_y = 0.5
+        self.scale_pct = 100  # ver set_scale_pct
+        self._drag_origin = None
+        self._drag_focus_origin = None
+        self.bind("<Button-1>", self._on_press)
+        self.bind("<B1-Motion>", self._on_move)
+
+    def refresh_colors(self):
+        self.configure(bg=resolve_color(CHIP_BG))
+        self._redraw()
+
+    def set_image(self, pil_image):
+        w, h = pil_image.size
+        disp_w, disp_h = self.DISPLAY_W, round(self.DISPLAY_W * h / w)
+        if disp_h > self.DISPLAY_H:
+            disp_h = self.DISPLAY_H
+            disp_w = round(self.DISPLAY_H * w / h)
+        self.disp_w, self.disp_h = disp_w, disp_h
+        thumb = pil_image.convert("RGB").resize((disp_w, disp_h), Image.LANCZOS)
+        self._photo = ImageTk.PhotoImage(thumb)
+        self.zoom = 100
+        self.focus_x = 0.5
+        self.focus_y = 0.5
+        self._redraw()
+
+    def set_state(self, zoom, focus_x, focus_y):
+        self.zoom = max(100, min(300, zoom))
+        self.focus_x = max(0.0, min(1.0, focus_x))
+        self.focus_y = max(0.0, min(1.0, focus_y))
+        self._redraw()
+
+    def set_zoom(self, zoom):
+        self.zoom = max(100, min(300, zoom))
+        self._redraw()
+        self._notify()
+
+    def set_scale_pct(self, scale_pct):
+        """Misma cuenta que build_layout: por debajo de 100% el ancho se
+        encoge (bordes a los lados); por encima de 100% el alto es lo que
+        cede para poder ampliar el ancho, igual que el filtro real."""
+        self.scale_pct = max(1, scale_pct)
+        self._redraw()
+
+    def get_state(self):
+        return self.zoom / 100.0, self.focus_x, self.focus_y
+
+    def _focus_rect(self):
+        frac = 100.0 / self.zoom
+        cw, ch = self.disp_w * frac, self.disp_h * frac
+        ox, oy = (self.DISPLAY_W - self.disp_w) / 2, (self.DISPLAY_H - self.disp_h) / 2
+        cx = ox + (self.disp_w - cw) * self.focus_x
+        cy = oy + (self.disp_h - ch) * self.focus_y
+        return cx, cy, cx + cw, cy + ch
+
+    def _scale_crop_fracs(self):
+        """Fracciones de ancho/alto que sobreviven tras aplicar la escala,
+        replicando la logica de cubrir+recortar de build_filtergraph."""
+        s = self.scale_pct / 100.0
+        cover = max(s, 1.0)
+        return s / cover, 1.0 / cover
+
+    def _final_rect(self):
+        """Recuadro del focus (zoom+pan), recortado a un cuadrado centrado
+        (la base fija de build_layout, sin importar la proporcion de la
+        foto) y despues con el efecto de la Escala encima."""
+        fx0, fy0, fx1, fy1 = self._focus_rect()
+        fw, fh = fx1 - fx0, fy1 - fy0
+        side = min(fw, fh)
+        sx0 = fx0 + (fw - side) / 2
+        sy0 = fy0 + (fh - side) / 2
+        sx1, sy1 = sx0 + side, sy0 + side
+        w_frac, h_frac = self._scale_crop_fracs()
+        shrink_x = side * (1 - w_frac) / 2
+        shrink_y = side * (1 - h_frac) / 2
+        return sx0 + shrink_x, sy0 + shrink_y, sx1 - shrink_x, sy1 - shrink_y
+
+    def _on_press(self, event):
+        if self._photo is None:
+            return
+        self._drag_origin = (event.x, event.y)
+        self._drag_focus_origin = (self.focus_x, self.focus_y)
+
+    def _on_move(self, event):
+        if self._photo is None or self._drag_origin is None:
+            return
+        frac = 100.0 / self.zoom
+        range_x = max(1.0, self.disp_w * (1 - frac))
+        range_y = max(1.0, self.disp_h * (1 - frac))
+        dx = event.x - self._drag_origin[0]
+        dy = event.y - self._drag_origin[1]
+        fx0, fy0 = self._drag_focus_origin
+        self.focus_x = max(0.0, min(1.0, fx0 + dx / range_x))
+        self.focus_y = max(0.0, min(1.0, fy0 + dy / range_y))
+        self._redraw()
+        self._notify()
+
+    def _notify(self):
+        if self.command:
+            self.command(*self.get_state())
+
+    def _redraw(self):
+        self.delete("all")
+        if self._photo is None:
+            self.create_text(
+                self.DISPLAY_W / 2, self.DISPLAY_H / 2, text="Carga una imagen",
+                fill=resolve_color(TEXT_GRAY), font=(FONT_LIGHT, 11),
+            )
+            return
+        ox, oy = (self.DISPLAY_W - self.disp_w) / 2, (self.DISPLAY_H - self.disp_h) / 2
+        self.create_image(ox, oy, image=self._photo, anchor="nw")
+        cx0, cy0, cx1, cy1 = self._final_rect()
+        if cx0 > ox + 0.5 or cy0 > oy + 0.5 or cx1 < ox + self.disp_w - 0.5 or cy1 < oy + self.disp_h - 0.5:
+            # atenuar lo que queda fuera del recuadro final (cuadrado base + zoom + escala)
+            self.create_rectangle(ox, oy, ox + self.disp_w, cy0, fill="#000000", stipple="gray50", outline="")
+            self.create_rectangle(ox, cy1, ox + self.disp_w, oy + self.disp_h, fill="#000000", stipple="gray50", outline="")
+            self.create_rectangle(ox, cy0, cx0, cy1, fill="#000000", stipple="gray50", outline="")
+            self.create_rectangle(cx1, cy0, ox + self.disp_w, cy1, fill="#000000", stipple="gray50", outline="")
+        self.create_rectangle(cx0, cy0, cx1, cy1, outline=GREEN, width=2)
+
+
+class TextureLayerRow(ctk.CTkFrame):
+    """Una capa de textura apilable: elegir archivo, modo de fusion,
+    opacidad y escala, mas un boton para quitar la capa completa (varias
+    de estas, una encima de otra, permiten mezclar mas de una textura)."""
+
+    def __init__(self, master, available_paths_fn, on_change, on_remove, on_browse,
+                 make_pct_entry, bind_pct_entry, set_pct_entry,
+                 register_path_fn=None, on_delete_file=None):
+        super().__init__(master, fg_color=CHIP_BG, corner_radius=10)
+        self.available_paths_fn = available_paths_fn
+        self.on_change = on_change
+        self.on_remove = on_remove
+        self.on_browse = on_browse
+        self.register_path_fn = register_path_fn
+        self.on_delete_file = on_delete_file
+        self.path = None
+        self.grid_columnconfigure(0, weight=1)
+
+        file_row = ctk.CTkFrame(self, fg_color="transparent")
+        file_row.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 0))
+        file_row.grid_columnconfigure(0, weight=1)
+
+        self.file_menu = ctk.CTkOptionMenu(
+            file_row, values=[BROWSE_TEMPLATE], height=30, corner_radius=8,
+            fg_color=CARD_BG, button_color=CARD_BG, button_hover_color=HOVER_BG,
+            text_color=TEXT_DARK, dropdown_fg_color=CARD_BG,
+            dropdown_text_color=TEXT_DARK, dropdown_hover_color=HOVER_BG,
+            font=ctk.CTkFont(FONT_REGULAR, 12),
+            dropdown_font=ctk.CTkFont(FONT_REGULAR, 12),
+            command=self._on_file_selected,
+        )
+        self.file_menu.grid(row=0, column=0, sticky="ew")
+
+        self.delete_file_btn = ctk.CTkButton(
+            file_row, text="🗑", width=30, height=30, corner_radius=8,
+            fg_color=CARD_BG, hover_color=HOVER_BG, text_color=TEXT_GRAY,
+            font=ctk.CTkFont(FONT_REGULAR, 13), command=self._delete_file,
+        )
+        self.delete_file_btn.grid(row=0, column=1, padx=(8, 0))
+
+        self.remove_btn = ctk.CTkButton(
+            file_row, text="✕", width=30, height=30, corner_radius=8,
+            fg_color=CARD_BG, hover_color=HOVER_BG, text_color=TEXT_GRAY,
+            font=ctk.CTkFont(FONT_REGULAR, 12), command=self._remove,
+        )
+        self.remove_btn.grid(row=0, column=2, padx=(8, 0))
+
+        opts_row = ctk.CTkFrame(self, fg_color="transparent")
+        opts_row.grid(row=1, column=0, sticky="ew", padx=10, pady=(8, 10))
+        opts_row.grid_columnconfigure(1, weight=1)
+
+        self.blend_menu = ctk.CTkOptionMenu(
+            opts_row, values=list(BLEND_MODES.keys()),
+            width=118, height=28, corner_radius=8,
+            fg_color=CARD_BG, button_color=CARD_BG, button_hover_color=HOVER_BG,
+            text_color=TEXT_DARK, dropdown_fg_color=CARD_BG,
+            dropdown_text_color=TEXT_DARK, dropdown_hover_color=HOVER_BG,
+            font=ctk.CTkFont(FONT_REGULAR, 12),
+            dropdown_font=ctk.CTkFont(FONT_REGULAR, 12),
+            command=lambda _c: self.on_change(),
+        )
+        self.blend_menu.set("Aclarar")
+        self.blend_menu.grid(row=0, column=0)
+
+        self.opacity_slider = ctk.CTkSlider(
+            opts_row, from_=0, to=100, number_of_steps=100,
+            progress_color=GREEN, button_color=GREEN, button_hover_color=GREEN_HOVER,
+            command=lambda v: self._on_opacity_change(v),
+        )
+        self.opacity_slider.set(47)
+        self.opacity_slider.grid(row=0, column=1, sticky="ew", padx=(10, 8))
+
+        self.opacity_entry = make_pct_entry(opts_row)
+        self.opacity_entry.insert(0, "47")
+        self.opacity_entry.grid(row=0, column=2)
+        bind_pct_entry(self.opacity_entry, self.opacity_slider, 0, 100,
+                       lambda v: self._on_opacity_change(v))
+        self._set_pct_entry = set_pct_entry
+
+        scale_label = ctk.CTkLabel(
+            opts_row, text="Escala", text_color=TEXT_GRAY,
+            font=ctk.CTkFont(FONT_LIGHT, 12), width=118, anchor="w",
+        )
+        scale_label.grid(row=1, column=0, sticky="w", pady=(8, 0))
+
+        self.scale_slider = ctk.CTkSlider(
+            opts_row, from_=10, to=200, number_of_steps=38,
+            progress_color=GREEN, button_color=GREEN, button_hover_color=GREEN_HOVER,
+            command=lambda v: self._on_scale_change(v),
+        )
+        self.scale_slider.set(100)
+        self.scale_slider.grid(row=1, column=1, sticky="ew", padx=(10, 8), pady=(8, 0))
+
+        self.scale_entry = make_pct_entry(opts_row)
+        self.scale_entry.insert(0, "100")
+        self.scale_entry.grid(row=1, column=2, pady=(8, 0))
+        bind_pct_entry(self.scale_entry, self.scale_slider, 10, 200,
+                       lambda v: self._on_scale_change(v))
+
+        self.refresh_files()
+
+        # Soltar una imagen sobre esta capa reemplaza SU archivo -- se
+        # registra al final, sobre todo el subarbol de la fila, para que
+        # gane sobre cualquier drop mas generico de la seccion completa.
+        register_drop_recursive(self, self._on_file_dropped)
+
+    def _on_file_dropped(self, event):
+        for path in self.tk.splitlist(event.data):
+            if os.path.splitext(path)[1].lower() in IMAGE_EXTS:
+                self.set_path(path)
+                return
+
+    def refresh_files(self):
+        values = list(self.available_paths_fn().keys()) + [BROWSE_TEMPLATE]
+        self.file_menu.configure(values=values)
+        if self.path:
+            display = os.path.splitext(os.path.basename(self.path))[0]
+            if display not in values:
+                self.file_menu.configure(values=[display] + values)
+            self.file_menu.set(display)
+
+    def _on_file_selected(self, choice):
+        if choice == BROWSE_TEMPLATE:
+            path = self.on_browse()
+            if not path:
+                if self.path:
+                    self.file_menu.set(os.path.splitext(os.path.basename(self.path))[0])
+                return
+            self.set_path(path)
+            return
+        path = self.available_paths_fn().get(choice)
+        if path:
+            self.set_path(path)
+
+    def set_path(self, path):
+        self.path = path
+        if self.register_path_fn:
+            self.register_path_fn(path)
+        self.refresh_files()
+        self.on_change()
+
+    def _delete_file(self):
+        if self.on_delete_file:
+            self.on_delete_file(self.path)
+
+    def _on_opacity_change(self, value):
+        pct = int(round(float(value)))
+        self._set_pct_entry(self.opacity_entry, pct)
+        self.on_change()
+
+    def _on_scale_change(self, value):
+        pct = int(round(float(value)))
+        self._set_pct_entry(self.scale_entry, pct)
+        self.on_change()
+
+    def get_state(self):
+        if not self.path:
+            return None
+        return {
+            "path": self.path,
+            "blend": self.blend_menu.get(),
+            "opacity": int(round(self.opacity_slider.get())),
+            "scale": int(round(self.scale_slider.get())),
+        }
+
+    def set_state(self, state):
+        if state.get("path"):
+            self.path = state["path"]
+            self.refresh_files()
+        self.blend_menu.set(state.get("blend", "Aclarar"))
+        opacity = state.get("opacity", 47)
+        self.opacity_slider.set(opacity)
+        self._set_pct_entry(self.opacity_entry, opacity)
+        scale = state.get("scale", 100)
+        self.scale_slider.set(scale)
+        self._set_pct_entry(self.scale_entry, scale)
+
+    def _remove(self):
+        self.on_remove(self)
+
+
 class App(ctk.CTk, TkinterDnD.DnDWrapper):
     def __init__(self):
         super().__init__(fg_color=WINDOW_BG)
@@ -584,13 +1045,13 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self.template_path = None
         self.template_box = None
         self._template_paths = {}
-        self.texture_path = None
         self._texture_paths = {}
-        self._texture_cache = None
+        self._texture_cache = {}
         self._texture_lock = threading.Lock()
         self.process = None
         self.cancel_requested = False
         self._thumb_ref = None
+        self.presets = [p for p in self.config_data.get("presets", []) if isinstance(p, dict) and p.get("name")]
         self.preview_win = None
         self.preview_label = None
         self._preview_ref = None
@@ -601,15 +1062,28 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self._build_widgets()
         self._restore_template_from_config()
         self._restore_texture_from_config()
+        grain = self.config_data.get("grain", 0)
+        self.grain_slider.set(grain)
+        self._set_pct_entry(self.grain_entry, grain)
+        sharpen = self.config_data.get("sharpen", 0)
+        self.sharpen_slider.set(sharpen)
+        self._set_pct_entry(self.sharpen_entry, sharpen)
 
-        # Se puede soltar archivos en cualquier parte de la ventana,
-        # y la zona se ilumina mientras arrastras algo encima.
-        register_drop_recursive(self, self._handle_drop, self._on_drag_enter, self._on_drag_leave)
+        # Se puede soltar archivos en cualquier parte de la ventana (como
+        # imagen/video/audio principal), excepto en Plantilla y Texturas,
+        # que ya tienen su propio drop mas especifico registrado aparte.
+        register_drop_recursive(
+            self, self._handle_drop, self._on_drag_enter, self._on_drag_leave,
+            skip={self.template_row, self.texture_row},
+        )
 
     # ------------------------------------------------------------------ UI
 
     def _build_widgets(self):
-        card = ctk.CTkFrame(self, fg_color=CARD_BG, corner_radius=16)
+        card = ctk.CTkScrollableFrame(
+            self, fg_color=CARD_BG, corner_radius=16,
+            scrollbar_button_color=BORDER, scrollbar_button_hover_color=HOVER_BG,
+        )
         card.pack(fill="both", expand=True, padx=20, pady=20)
         card.grid_columnconfigure(0, weight=1)
         self.card = card
@@ -705,20 +1179,68 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self.audio_chip.grid_remove()
         row += 1
 
+        # Ajustar imagen: arrastra el recuadro para elegir que parte
+        # resaltar y usa el zoom para acercarlo (solo para imagenes)
+        self.focus_row = ctk.CTkFrame(card, fg_color="transparent")
+        self.focus_row.grid(row=row, column=0, sticky="ew", padx=24, pady=(14, 0))
+        self.focus_row.grid_columnconfigure(0, weight=1)
+        self.focus_row.grid_remove()
+        row += 1
+
+        focus_title = ctk.CTkLabel(
+            self.focus_row, text="Ajustar imagen", text_color=TEXT_DARK,
+            font=ctk.CTkFont(FONT_MEDIUM, 14), anchor="w",
+        )
+        focus_title.grid(row=0, column=0, sticky="w")
+
+        self.focus_reset_btn = ctk.CTkButton(
+            self.focus_row, text="↺ Centrar", width=76, height=24, corner_radius=8,
+            fg_color=CHIP_BG, hover_color=HOVER_BG, text_color=TEXT_GRAY,
+            font=ctk.CTkFont(FONT_REGULAR, 11), command=self._reset_focus,
+        )
+        self.focus_reset_btn.grid(row=0, column=1, sticky="e")
+
+        self.focus_picker = ImageFocusPicker(self.focus_row, command=self._on_focus_change)
+        self.focus_picker.grid(row=1, column=0, columnspan=2, pady=(8, 0))
+
+        focus_zoom_row = ctk.CTkFrame(self.focus_row, fg_color="transparent")
+        focus_zoom_row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        focus_zoom_row.grid_columnconfigure(0, weight=1)
+
+        self.focus_zoom_slider = ctk.CTkSlider(
+            focus_zoom_row, from_=100, to=300, number_of_steps=40,
+            progress_color=GREEN, button_color=GREEN, button_hover_color=GREEN_HOVER,
+            command=self._on_focus_zoom_change,
+        )
+        self.focus_zoom_slider.set(100)
+        self.focus_zoom_slider.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+
+        self.focus_zoom_entry = self._make_pct_entry(focus_zoom_row)
+        self.focus_zoom_entry.insert(0, "100")
+        self.focus_zoom_entry.grid(row=0, column=1, padx=(0, 6))
+        self._bind_pct_entry(self.focus_zoom_entry, self.focus_zoom_slider, 100, 300,
+                             lambda v: self._on_focus_zoom_change(v))
+
+        self.focus_zoom_label = ctk.CTkLabel(
+            focus_zoom_row, text="Zoom 100%", text_color=TEXT_GRAY,
+            font=ctk.CTkFont(FONT_LIGHT, 12), width=52, anchor="e",
+        )
+        self.focus_zoom_label.grid(row=0, column=2)
+
         # Plantilla
-        template_row = ctk.CTkFrame(card, fg_color="transparent")
-        template_row.grid(row=row, column=0, sticky="ew", padx=24, pady=(14, 0))
-        template_row.grid_columnconfigure(0, weight=1)
+        self.template_row = ctk.CTkFrame(card, fg_color="transparent")
+        self.template_row.grid(row=row, column=0, sticky="ew", padx=24, pady=(14, 0))
+        self.template_row.grid_columnconfigure(0, weight=1)
         row += 1
 
         template_title = ctk.CTkLabel(
-            template_row, text="Plantilla", text_color=TEXT_DARK,
+            self.template_row, text="Plantilla", text_color=TEXT_DARK,
             font=ctk.CTkFont(FONT_MEDIUM, 14), anchor="w",
         )
         template_title.grid(row=0, column=0, columnspan=2, sticky="w")
 
         self.template_menu = ctk.CTkOptionMenu(
-            template_row, values=[NO_TEMPLATE], height=34, corner_radius=8,
+            self.template_row, values=[NO_TEMPLATE], height=34, corner_radius=8,
             fg_color=CHIP_BG, button_color=CHIP_BG, button_hover_color=HOVER_BG,
             text_color=TEXT_DARK, dropdown_fg_color=CARD_BG,
             dropdown_text_color=TEXT_DARK, dropdown_hover_color=HOVER_BG,
@@ -729,7 +1251,7 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self.template_menu.grid(row=1, column=0, sticky="ew", pady=(6, 0))
 
         self.template_delete_btn = ctk.CTkButton(
-            template_row, text="🗑", width=34, height=34, corner_radius=8,
+            self.template_row, text="🗑", width=34, height=34, corner_radius=8,
             fg_color=CHIP_BG, hover_color=HOVER_BG, text_color=TEXT_GRAY,
             font=ctk.CTkFont(FONT_REGULAR, 13), command=self._delete_template,
             state="disabled",
@@ -737,99 +1259,117 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self.template_delete_btn.grid(row=1, column=1, padx=(8, 0), pady=(6, 0))
 
         self.template_info = ctk.CTkLabel(
-            template_row, text="", text_color=TEXT_GRAY,
-            font=ctk.CTkFont(FONT_LIGHT, 12), anchor="w",
+            self.template_row, text="arrastra un .png aquí para usarlo de plantilla",
+            text_color=TEXT_GRAY, font=ctk.CTkFont(FONT_LIGHT, 12), anchor="w",
         )
         self.template_info.grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
-        # Textura (ruido/grano encima del medio, estilo Photoshop)
-        texture_row = ctk.CTkFrame(card, fg_color="transparent")
-        texture_row.grid(row=row, column=0, sticky="ew", padx=24, pady=(14, 0))
-        texture_row.grid_columnconfigure(0, weight=1)
+        # Arrastrar un PNG aqui lo usa directo como plantilla (registrado
+        # aparte del drop global de arriba, que solo entiende imagen/video/audio)
+        register_drop_recursive(self.template_row, self._handle_template_drop)
+
+        # Texturas (ruido/grano encima del medio, estilo Photoshop) --
+        # varias capas apilables, cada una con su propio archivo, modo de
+        # fusion, opacidad y escala
+        self.texture_row = ctk.CTkFrame(card, fg_color="transparent")
+        self.texture_row.grid(row=row, column=0, sticky="ew", padx=24, pady=(14, 0))
+        self.texture_row.grid_columnconfigure(0, weight=1)
         row += 1
 
+        texture_head = ctk.CTkFrame(self.texture_row, fg_color="transparent")
+        texture_head.grid(row=0, column=0, sticky="ew")
+        texture_head.grid_columnconfigure(0, weight=1)
+
         texture_title = ctk.CTkLabel(
-            texture_row, text="Textura", text_color=TEXT_DARK,
+            texture_head, text="Texturas", text_color=TEXT_DARK,
             font=ctk.CTkFont(FONT_MEDIUM, 14), anchor="w",
         )
-        texture_title.grid(row=0, column=0, columnspan=2, sticky="w")
+        texture_title.grid(row=0, column=0, sticky="w")
 
-        self.texture_menu = ctk.CTkOptionMenu(
-            texture_row, values=[NO_TEXTURE], height=34, corner_radius=8,
-            fg_color=CHIP_BG, button_color=CHIP_BG, button_hover_color=HOVER_BG,
-            text_color=TEXT_DARK, dropdown_fg_color=CARD_BG,
-            dropdown_text_color=TEXT_DARK, dropdown_hover_color=HOVER_BG,
-            font=ctk.CTkFont(FONT_REGULAR, 12),
-            dropdown_font=ctk.CTkFont(FONT_REGULAR, 12),
-            command=self._on_texture_selected,
+        self.texture_add_btn = ctk.CTkButton(
+            texture_head, text="+ Agregar textura", height=28, corner_radius=8,
+            fg_color=CHIP_BG, hover_color=HOVER_BG, text_color=TEXT_DARK,
+            font=ctk.CTkFont(FONT_MEDIUM, 12), command=self._add_texture_layer,
         )
-        self.texture_menu.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self.texture_add_btn.grid(row=0, column=1, sticky="e")
 
-        self.texture_delete_btn = ctk.CTkButton(
-            texture_row, text="🗑", width=34, height=34, corner_radius=8,
-            fg_color=CHIP_BG, hover_color=HOVER_BG, text_color=TEXT_GRAY,
-            font=ctk.CTkFont(FONT_REGULAR, 13), command=self._delete_texture,
-            state="disabled",
+        self.texture_layers_container = ctk.CTkFrame(self.texture_row, fg_color="transparent")
+        self.texture_layers_container.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self.texture_layers_container.grid_columnconfigure(0, weight=1)
+
+        self.texture_empty_hint = ctk.CTkLabel(
+            self.texture_row,
+            text="Sin texturas — usa \"+ Agregar textura\" o arrastra una o varias imágenes aquí",
+            text_color=TEXT_GRAY, font=ctk.CTkFont(FONT_LIGHT, 12), anchor="w", wraplength=360,
         )
-        self.texture_delete_btn.grid(row=1, column=1, padx=(8, 0), pady=(6, 0))
+        self.texture_empty_hint.grid(row=2, column=0, sticky="ew", pady=(6, 0))
 
-        # Opciones de la textura: modo de fusion + opacidad
-        self.texture_opts_row = ctk.CTkFrame(texture_row, fg_color="transparent")
-        self.texture_opts_row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        self.texture_opts_row.grid_columnconfigure(1, weight=1)
-        self.texture_opts_row.grid_remove()
+        # Soltar imagenes en cualquier parte de esta seccion (titulo, boton,
+        # espacio vacio) crea una capa nueva por archivo. Cada capa,
+        # individualmente, registra su propio drop para reemplazar SU
+        # archivo (ver TextureLayerRow) -- como todavia no hay ninguna capa
+        # creada en este punto, este registro no se les pisa.
+        register_drop_recursive(self.texture_row, self._handle_texture_new_drop)
 
-        self.blend_menu = ctk.CTkOptionMenu(
-            self.texture_opts_row, values=list(BLEND_MODES.keys()),
-            width=130, height=30, corner_radius=8,
-            fg_color=CHIP_BG, button_color=CHIP_BG, button_hover_color=HOVER_BG,
-            text_color=TEXT_DARK, dropdown_fg_color=CARD_BG,
-            dropdown_text_color=TEXT_DARK, dropdown_hover_color=HOVER_BG,
-            font=ctk.CTkFont(FONT_REGULAR, 12),
-            dropdown_font=ctk.CTkFont(FONT_REGULAR, 12),
-            command=self._on_blend_change,
+        self.texture_layers = []
+
+        # Grano y enfoque: efectos nativos (sin archivo), igual que la
+        # textura solo caen sobre la foto, nunca sobre el borde negro
+        effects_row = ctk.CTkFrame(card, fg_color="transparent")
+        effects_row.grid(row=row, column=0, sticky="ew", padx=24, pady=(14, 0))
+        effects_row.grid_columnconfigure(1, weight=1)
+        row += 1
+
+        effects_title = ctk.CTkLabel(
+            effects_row, text="Grano y enfoque", text_color=TEXT_DARK,
+            font=ctk.CTkFont(FONT_MEDIUM, 14), anchor="w",
         )
-        self.blend_menu.set("Aclarar")
-        self.blend_menu.grid(row=0, column=0)
+        effects_title.grid(row=0, column=0, columnspan=3, sticky="w")
 
-        self.opacity_slider = ctk.CTkSlider(
-            self.texture_opts_row, from_=0, to=100, number_of_steps=100,
+        grain_label = ctk.CTkLabel(
+            effects_row, text="Grano", text_color=TEXT_GRAY,
+            font=ctk.CTkFont(FONT_LIGHT, 12), width=70, anchor="w",
+        )
+        grain_label.grid(row=1, column=0, sticky="w", pady=(8, 0))
+
+        self.grain_slider = ctk.CTkSlider(
+            effects_row, from_=0, to=100, number_of_steps=100,
             progress_color=GREEN, button_color=GREEN, button_hover_color=GREEN_HOVER,
-            command=self._on_opacity_change,
+            command=self._on_grain_change,
         )
-        self.opacity_slider.set(47)
-        self.opacity_slider.grid(row=0, column=1, sticky="ew", padx=(12, 8))
+        self.grain_slider.set(0)
+        self.grain_slider.grid(row=1, column=1, sticky="ew", padx=(10, 8), pady=(8, 0))
 
-        self.opacity_label = ctk.CTkLabel(
-            self.texture_opts_row, text="Opacidad 47%", text_color=TEXT_GRAY,
-            font=ctk.CTkFont(FONT_LIGHT, 12), width=96, anchor="e",
+        self.grain_entry = self._make_pct_entry(effects_row)
+        self.grain_entry.insert(0, "0")
+        self.grain_entry.grid(row=1, column=2, pady=(8, 0))
+        self._bind_pct_entry(self.grain_entry, self.grain_slider, 0, 100,
+                             lambda v: self._on_grain_change(v))
+
+        sharpen_label = ctk.CTkLabel(
+            effects_row, text="Enfoque", text_color=TEXT_GRAY,
+            font=ctk.CTkFont(FONT_LIGHT, 12), width=70, anchor="w",
         )
-        self.opacity_label.grid(row=0, column=2)
+        sharpen_label.grid(row=2, column=0, sticky="w", pady=(8, 0))
 
-        scale_tex_label = ctk.CTkLabel(
-            self.texture_opts_row, text="Escala", text_color=TEXT_GRAY,
-            font=ctk.CTkFont(FONT_LIGHT, 12), width=130, anchor="w",
-        )
-        scale_tex_label.grid(row=1, column=0, sticky="w", pady=(8, 0))
-
-        self.texture_scale_slider = ctk.CTkSlider(
-            self.texture_opts_row, from_=10, to=200, number_of_steps=38,
+        self.sharpen_slider = ctk.CTkSlider(
+            effects_row, from_=0, to=100, number_of_steps=100,
             progress_color=GREEN, button_color=GREEN, button_hover_color=GREEN_HOVER,
-            command=self._on_texture_scale_change,
+            command=self._on_sharpen_change,
         )
-        self.texture_scale_slider.set(100)
-        self.texture_scale_slider.grid(row=1, column=1, sticky="ew", padx=(12, 8), pady=(8, 0))
+        self.sharpen_slider.set(0)
+        self.sharpen_slider.grid(row=2, column=1, sticky="ew", padx=(10, 8), pady=(8, 0))
 
-        self.texture_scale_label = ctk.CTkLabel(
-            self.texture_opts_row, text="Tamaño 100%", text_color=TEXT_GRAY,
-            font=ctk.CTkFont(FONT_LIGHT, 12), width=96, anchor="e",
-        )
-        self.texture_scale_label.grid(row=1, column=2, pady=(8, 0))
+        self.sharpen_entry = self._make_pct_entry(effects_row)
+        self.sharpen_entry.insert(0, "0")
+        self.sharpen_entry.grid(row=2, column=2, pady=(8, 0))
+        self._bind_pct_entry(self.sharpen_entry, self.sharpen_slider, 0, 100,
+                             lambda v: self._on_sharpen_change(v))
 
         # Recorte del loop (solo para clips de video)
         self.trim_row = ctk.CTkFrame(card, fg_color="transparent")
         self.trim_row.grid(row=row, column=0, sticky="ew", padx=24, pady=(14, 0))
-        self.trim_row.grid_columnconfigure(4, weight=1)
+        self.trim_row.grid_columnconfigure(0, weight=1)
         self.trim_row.grid_remove()
         row += 1
 
@@ -837,42 +1377,32 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
             self.trim_row, text="Recorte del loop", text_color=TEXT_DARK,
             font=ctk.CTkFont(FONT_MEDIUM, 14), anchor="w",
         )
-        trim_title.grid(row=0, column=0, columnspan=5, sticky="w")
+        trim_title.grid(row=0, column=0, sticky="w")
 
-        trim_from_label = ctk.CTkLabel(
-            self.trim_row, text="Desde", text_color=TEXT_GRAY,
-            font=ctk.CTkFont(FONT_LIGHT, 12),
+        self.trim_readout = ctk.CTkLabel(
+            self.trim_row, text="0:00 – 0:00 · 0:00 de loop", text_color=TEXT_GRAY,
+            font=ctk.CTkFont(FONT_LIGHT, 12), anchor="e",
         )
-        trim_from_label.grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.trim_readout.grid(row=0, column=1, sticky="e")
 
-        self.trim_start_entry = ctk.CTkEntry(
-            self.trim_row, width=76, height=30, corner_radius=8,
-            fg_color=CARD_BG, border_color=BORDER, border_width=1,
-            text_color=TEXT_DARK, font=ctk.CTkFont(FONT_REGULAR, 12),
-            justify="center",
-        )
-        self.trim_start_entry.grid(row=1, column=1, padx=(8, 16), pady=(6, 0))
-        self.trim_start_entry.bind("<KeyRelease>", lambda _e: self._schedule_preview(600))
+        self.loop_slider = RangeSlider(self.trim_row, command=self._on_loop_change)
+        self.loop_slider.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
 
-        trim_to_label = ctk.CTkLabel(
-            self.trim_row, text="Hasta", text_color=TEXT_GRAY,
-            font=ctk.CTkFont(FONT_LIGHT, 12),
-        )
-        trim_to_label.grid(row=1, column=2, sticky="w", pady=(6, 0))
+        trim_ticks = ctk.CTkFrame(self.trim_row, fg_color="transparent")
+        trim_ticks.grid(row=2, column=0, columnspan=2, sticky="ew")
+        trim_ticks.grid_columnconfigure(0, weight=1)
 
-        self.trim_end_entry = ctk.CTkEntry(
-            self.trim_row, width=76, height=30, corner_radius=8,
-            fg_color=CARD_BG, border_color=BORDER, border_width=1,
-            text_color=TEXT_DARK, font=ctk.CTkFont(FONT_REGULAR, 12),
-            justify="center",
+        tick_start = ctk.CTkLabel(
+            trim_ticks, text="0:00", text_color=TEXT_GRAY,
+            font=ctk.CTkFont(FONT_LIGHT, 11), anchor="w",
         )
-        self.trim_end_entry.grid(row=1, column=3, padx=(8, 0), pady=(6, 0))
+        tick_start.grid(row=0, column=0, sticky="w")
 
-        trim_hint = ctk.CTkLabel(
-            self.trim_row, text="ej. 1:10 o 1.10 — solo ese pedazo se repite en loop",
-            text_color=TEXT_GRAY, font=ctk.CTkFont(FONT_LIGHT, 12), anchor="e",
+        self.trim_total_label = ctk.CTkLabel(
+            trim_ticks, text="0:00", text_color=TEXT_GRAY,
+            font=ctk.CTkFont(FONT_LIGHT, 11), anchor="e",
         )
-        trim_hint.grid(row=1, column=4, sticky="e", pady=(6, 0))
+        self.trim_total_label.grid(row=0, column=1, sticky="e")
 
         # Velocidad del loop (solo para clips de video)
         self.speed_row = ctk.CTkFrame(card, fg_color="transparent")
@@ -897,7 +1427,7 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self.speed_control.set("1x")
         self.speed_control.grid(row=0, column=1, sticky="e")
 
-        # Tamano en pantalla
+        # Bordes en las orillas
         self.scale_row = ctk.CTkFrame(card, fg_color="transparent")
         self.scale_row.grid(row=row, column=0, sticky="ew", padx=24, pady=(14, 0))
         self.scale_row.grid_columnconfigure(1, weight=1)
@@ -905,24 +1435,84 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         row += 1
 
         scale_title = ctk.CTkLabel(
-            self.scale_row, text="Tamaño en pantalla", text_color=TEXT_DARK,
+            self.scale_row, text="Escala", text_color=TEXT_DARK,
             font=ctk.CTkFont(FONT_MEDIUM, 14), anchor="w",
         )
         scale_title.grid(row=0, column=0, sticky="w")
 
+        self.scale_entry = self._make_pct_entry(self.scale_row)
+        self.scale_entry.insert(0, "100")
+        self.scale_entry.grid(row=0, column=2, padx=(0, 6))
+
         self.scale_value_label = ctk.CTkLabel(
-            self.scale_row, text="100% · pantalla completa", text_color=TEXT_GRAY,
+            self.scale_row, text="100% · tamaño natural", text_color=TEXT_GRAY,
             font=ctk.CTkFont(FONT_LIGHT, 12), anchor="e",
         )
-        self.scale_value_label.grid(row=0, column=1, sticky="e")
+        self.scale_value_label.grid(row=0, column=3, sticky="e")
 
         self.scale_slider = ctk.CTkSlider(
-            self.scale_row, from_=40, to=100, number_of_steps=12,
+            self.scale_row, from_=20, to=200, number_of_steps=180,
             progress_color=GREEN, button_color=GREEN, button_hover_color=GREEN_HOVER,
             command=self._on_scale_change,
         )
         self.scale_slider.set(100)
-        self.scale_slider.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        self.scale_slider.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(6, 0))
+        self._bind_pct_entry(self.scale_entry, self.scale_slider, 20, 200,
+                             lambda v: self._on_scale_change(v))
+
+        # Presets: guarda toda la configuracion de estilo actual (plantilla,
+        # textura y sus ajustes, tamano en pantalla, velocidad) para
+        # reusarla despues con otro video/imagen
+        preset_row = ctk.CTkFrame(card, fg_color="transparent")
+        preset_row.grid(row=row, column=0, sticky="ew", padx=24, pady=(14, 0))
+        preset_row.grid_columnconfigure(0, weight=1)
+        row += 1
+
+        preset_title = ctk.CTkLabel(
+            preset_row, text="Presets", text_color=TEXT_DARK,
+            font=ctk.CTkFont(FONT_MEDIUM, 14), anchor="w",
+        )
+        preset_title.grid(row=0, column=0, columnspan=4, sticky="w")
+
+        self.preset_menu = ctk.CTkOptionMenu(
+            preset_row, values=[NO_PRESET], height=34, corner_radius=8,
+            fg_color=CHIP_BG, button_color=CHIP_BG, button_hover_color=HOVER_BG,
+            text_color=TEXT_DARK, dropdown_fg_color=CARD_BG,
+            dropdown_text_color=TEXT_DARK, dropdown_hover_color=HOVER_BG,
+            font=ctk.CTkFont(FONT_REGULAR, 12),
+            dropdown_font=ctk.CTkFont(FONT_REGULAR, 12),
+            command=self._on_preset_selected,
+        )
+        self.preset_menu.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+
+        self.preset_save_btn = ctk.CTkButton(
+            preset_row, text="💾", width=34, height=34, corner_radius=8,
+            fg_color=CHIP_BG, hover_color=HOVER_BG, text_color=TEXT_GRAY,
+            font=ctk.CTkFont(FONT_REGULAR, 13), command=self._save_preset,
+        )
+        self.preset_save_btn.grid(row=1, column=1, padx=(8, 0), pady=(6, 0))
+
+        self.preset_rename_btn = ctk.CTkButton(
+            preset_row, text="✏", width=34, height=34, corner_radius=8,
+            fg_color=CHIP_BG, hover_color=HOVER_BG, text_color=TEXT_GRAY,
+            font=ctk.CTkFont(FONT_REGULAR, 13), command=self._rename_preset,
+            state="disabled",
+        )
+        self.preset_rename_btn.grid(row=1, column=2, padx=(8, 0), pady=(6, 0))
+
+        self.preset_delete_btn = ctk.CTkButton(
+            preset_row, text="🗑", width=34, height=34, corner_radius=8,
+            fg_color=CHIP_BG, hover_color=HOVER_BG, text_color=TEXT_GRAY,
+            font=ctk.CTkFont(FONT_REGULAR, 13), command=self._delete_preset,
+            state="disabled",
+        )
+        self.preset_delete_btn.grid(row=1, column=3, padx=(8, 0), pady=(6, 0))
+
+        preset_hint = ctk.CTkLabel(
+            preset_row, text="Guarda plantilla, textura, tamaño y velocidad actuales para reusarlos después",
+            text_color=TEXT_GRAY, font=ctk.CTkFont(FONT_LIGHT, 12), anchor="w",
+        )
+        preset_hint.grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
         # Guardar como
         save_row = ctk.CTkFrame(card, fg_color="transparent")
@@ -949,6 +1539,17 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
             font=ctk.CTkFont(FONT_MEDIUM, 12), command=self._choose_output,
         )
         self.browse_btn.grid(row=0, column=1, rowspan=2, padx=(12, 0))
+
+        # Descargar portada: la misma imagen compuesta (plantilla + texturas
+        # + ajustes) en un PNG de 1920x1080, sin necesidad de generar el video
+        self.cover_btn = ctk.CTkButton(
+            card, text="Descargar portada (1920x1080)", height=34, corner_radius=8,
+            fg_color=CARD_BG, hover_color=HOVER_BG, text_color=TEXT_DARK,
+            border_width=1, border_color=BORDER,
+            font=ctk.CTkFont(FONT_MEDIUM, 12), command=self._download_cover,
+        )
+        self.cover_btn.grid(row=row, column=0, sticky="ew", padx=24, pady=(10, 0))
+        row += 1
 
         # Boton principal
         self.generate_btn = ctk.CTkButton(
@@ -1006,11 +1607,44 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self.open_folder_btn.grid_remove()
 
         self._refresh_template_menu()
-        self._refresh_texture_menu()
+        self._refresh_texture_layers_visibility()
+        self._refresh_preset_menu()
 
         # Pegar imagen con Ctrl+V (por ejemplo copiada de Pinterest)
         self.bind_all("<Control-v>", self._paste_from_clipboard)
         self.bind_all("<Control-V>", self._paste_from_clipboard)
+
+    def _make_pct_entry(self, parent):
+        """Casilla chica para escribir un numero a mano junto a un slider."""
+        entry = ctk.CTkEntry(
+            parent, width=44, height=26, corner_radius=6,
+            fg_color=CARD_BG, border_color=BORDER, border_width=1,
+            text_color=TEXT_DARK, font=ctk.CTkFont(FONT_REGULAR, 12),
+            justify="center",
+        )
+        return entry
+
+    def _bind_pct_entry(self, entry, slider, min_v, max_v, apply_fn):
+        """Conecta la casilla con el slider: escribir un numero y darle
+        Enter (o salir del campo) aplica ese valor, clampeado al rango del
+        control -- alternativa a arrastrar la perilla."""
+        def commit(_event=None):
+            text = entry.get().strip().rstrip("%")
+            try:
+                value = float(text)
+            except ValueError:
+                value = slider.get()
+            value = max(min_v, min(max_v, value))
+            slider.set(value)
+            apply_fn(value)
+        entry.bind("<Return>", commit)
+        entry.bind("<FocusOut>", commit)
+
+    def _set_pct_entry(self, entry, value):
+        if entry.focus_get() is entry:
+            return  # no pisar lo que el usuario esta escribiendo
+        entry.delete(0, "end")
+        entry.insert(0, str(int(round(value))))
 
     # ---------------------------------------------------------- apariencia
 
@@ -1019,17 +1653,24 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         ctk.set_appearance_mode(mode)
         self.config_data["appearance"] = mode
         save_config(self.config_data)
+        self.loop_slider.refresh_colors()
+        self.focus_picker.refresh_colors()
 
     # ----------------------------------------------------------- plantilla
     def _refresh_template_menu(self):
-        self._template_paths = {}
-        values = [NO_TEMPLATE]
+        # Conservar las plantillas externas (agregadas con "Buscar
+        # archivo...", fuera de la carpeta plantillas) -- solo se vuelve a
+        # escanear la carpeta administrada, no se pierden las de otro lado.
+        self._template_paths = {
+            display: path for display, path in self._template_paths.items()
+            if os.path.dirname(path) != TEMPLATES_DIR and os.path.exists(path)
+        }
         if os.path.isdir(TEMPLATES_DIR):
             for name in sorted(os.listdir(TEMPLATES_DIR)):
                 if name.lower().endswith(".png"):
                     display = os.path.splitext(name)[0]
                     self._template_paths[display] = os.path.join(TEMPLATES_DIR, name)
-                    values.append(display)
+        values = [NO_TEMPLATE] + sorted(self._template_paths.keys())
         values.append(BROWSE_TEMPLATE)
         self.template_menu.configure(values=values)
 
@@ -1059,18 +1700,26 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
                 self.template_menu.set(NO_TEMPLATE if not self.template_path
                                        else os.path.splitext(os.path.basename(self.template_path))[0])
                 return
-            display = os.path.splitext(os.path.basename(path))[0]
-            self._template_paths[display] = path
-            values = list(self.template_menu.cget("values"))
-            if display not in values:
-                values.insert(-1, display)
-                self.template_menu.configure(values=values)
-            self.template_menu.set(display)
+            self._add_template_option(path)
             self._activate_template(path)
             return
         path = self._template_paths.get(choice)
         if path:
             self._activate_template(path)
+
+    def _add_template_option(self, path):
+        """Registra 'path' en el dropdown de plantillas (si no estaba) y lo
+        deja seleccionado -- sin esto, _activate_template solo actualiza el
+        estado interno pero el dropdown se queda mostrando lo de antes hasta
+        reiniciar la app."""
+        display = os.path.splitext(os.path.basename(path))[0]
+        if display not in self._template_paths:
+            self._template_paths[display] = path
+            values = list(self.template_menu.cget("values"))
+            if display not in values:
+                values.insert(-1, display)
+                self.template_menu.configure(values=values)
+        self.template_menu.set(display)
 
     def _activate_template(self, path):
         try:
@@ -1104,7 +1753,8 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
     def _deactivate_template(self):
         self.template_path = None
         self.template_box = None
-        self.template_info.configure(text="", text_color=TEXT_GRAY)
+        self.template_info.configure(
+            text="arrastra un .png aquí para usarlo de plantilla", text_color=TEXT_GRAY)
         self.template_delete_btn.configure(state="disabled")
         self.config_data["template"] = None
         save_config(self.config_data)
@@ -1130,6 +1780,11 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
             except OSError as exc:
                 self._set_status(f"No se pudo eliminar la plantilla: {exc}", RED)
                 return
+        # Quitarla del diccionario para que no reaparezca al refrescar (las
+        # demas plantillas externas si se conservan)
+        display = next((d for d, p in self._template_paths.items() if p == path), None)
+        if display:
+            self._template_paths.pop(display, None)
         self._deactivate_template()
         self._refresh_template_menu()
         self.template_menu.set(NO_TEMPLATE)
@@ -1143,7 +1798,12 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
             self.preview_win.withdraw()
             return
         self._ensure_preview_window()
-        self._schedule_preview(1)
+        # CTkToplevel esconde y vuelve a mostrar la ventana ~15ms despues de
+        # crearla (para pintar la barra de titulo oscura en Windows) -- si
+        # agendamos el render antes de eso, _preview_visible() lo ve como
+        # "no visible todavia" y no pasa nada hasta tocar otro control.
+        # Con este margen esperamos a que termine ese truco interno.
+        self.after(80, lambda: self._schedule_preview(1))
 
     def _ensure_preview_window(self):
         if self.preview_win is None or not self.preview_win.winfo_exists():
@@ -1194,38 +1854,31 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         layout, _, _ = build_layout(
             self.media_size, self.media_is_video, self._current_scale_pct(), template_box,
         )
-        texture = None
-        if self.texture_path:
-            try:
-                prepared = self._prepare_texture(*layout["canvas"])
-            except Exception:
-                prepared = self.texture_path
-            texture = (prepared,
-                       BLEND_MODES.get(self.blend_menu.get(), "lighten"),
-                       self.opacity_slider.get() / 100.0)
+        textures = self._current_textures(*layout["canvas"])
 
         cmd = [self.ffmpeg_exe, "-y"]
         if self.media_is_video:
-            start = parse_time_input(self.trim_start_entry.get()) or 0
+            start, _end = self.loop_slider.get_values()
             if self.media_duration:
                 start = min(start, max(0.0, self.media_duration - 0.5))
             if start > 0:
                 cmd += ["-ss", f"{start:.3f}"]
         cmd += ["-i", self.media_path]
         idx = 1
-        tpl_idx = tex_idx = None
+        tpl_idx = None
         if self.template_path:
             cmd += ["-i", self.template_path]
             tpl_idx = idx
             idx += 1
-        if texture:
-            cmd += ["-i", texture[0]]
-            tex_idx = idx
+        tex_layers = []
+        for path, mode, opacity in textures:
+            cmd += ["-i", path]
+            tex_layers.append((idx, mode, opacity))
             idx += 1
         fc = build_filtergraph(
-            layout, is_video=False, tpl_idx=tpl_idx, tex_idx=tex_idx,
-            tex_mode=texture[1] if texture else "lighten",
-            tex_opacity=texture[2] if texture else 0.5,
+            layout, is_video=False, tpl_idx=tpl_idx, textures=tex_layers,
+            focus=self._current_focus(),
+            sharpen=self._current_sharpen(), grain=self._current_grain(),
         )
         self._preview_counter += 1
         png = os.path.join(tempfile.gettempdir(), f"genvideo_preview_{self._preview_counter}.png")
@@ -1262,124 +1915,170 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
 
     # ------------------------------------------------------------- textura
 
-    def _refresh_texture_menu(self):
-        self._texture_paths = {}
-        values = [NO_TEXTURE]
+    def _available_texture_paths(self):
+        """Dict {nombre: ruta} de texturas disponibles para cualquier capa:
+        las de la carpeta administrada + las externas agregadas con
+        "Buscar archivo..." (en cualquier capa, se comparten entre todas)."""
+        self._texture_paths = {
+            display: path for display, path in self._texture_paths.items()
+            if os.path.dirname(path) != TEXTURES_DIR and os.path.exists(path)
+        }
         if os.path.isdir(TEXTURES_DIR):
             for name in sorted(os.listdir(TEXTURES_DIR)):
                 if os.path.splitext(name)[1].lower() in IMAGE_EXTS:
                     display = os.path.splitext(name)[0]
                     self._texture_paths[display] = os.path.join(TEXTURES_DIR, name)
-                    values.append(display)
-        values.append(BROWSE_TEMPLATE)
-        self.texture_menu.configure(values=values)
+        return self._texture_paths
 
-    def _restore_texture_from_config(self):
-        self.blend_menu.set(self.config_data.get("blend_mode", "Aclarar"))
-        opacity = self.config_data.get("texture_opacity", 47)
-        self.opacity_slider.set(opacity)
-        self._on_opacity_change(opacity, save=False)
-        tex_scale = self.config_data.get("texture_scale", 100)
-        self.texture_scale_slider.set(tex_scale)
-        self.texture_scale_label.configure(text=f"Tamaño {int(tex_scale)}%")
-        saved = self.config_data.get("texture")
-        if not saved or not os.path.exists(saved):
-            return
-        display = os.path.splitext(os.path.basename(saved))[0]
-        if display not in self._texture_paths:
-            self._texture_paths[display] = saved
-            values = list(self.texture_menu.cget("values"))
-            values.insert(-1, display)
-            self.texture_menu.configure(values=values)
-        self.texture_menu.set(display)
-        self._activate_texture(saved)
+    def _register_texture_path(self, path):
+        """Agrega 'path' al diccionario compartido de texturas disponibles
+        (se llama al elegir por archivo o al soltarla en una capa), asi
+        cualquier otra capa tambien puede ofrecerla en su propio dropdown."""
+        display = os.path.splitext(os.path.basename(path))[0]
+        self._texture_paths[display] = path
 
-    def _on_texture_selected(self, choice):
-        if choice == NO_TEXTURE:
-            self._deactivate_texture()
-            return
-        if choice == BROWSE_TEMPLATE:
-            path = filedialog.askopenfilename(
-                title="Seleccionar textura",
-                filetypes=[("Imagen", " ".join(f"*{e}" for e in sorted(IMAGE_EXTS)))],
-            )
-            if not path:
-                self.texture_menu.set(NO_TEXTURE if not self.texture_path
-                                      else os.path.splitext(os.path.basename(self.texture_path))[0])
-                return
-            display = os.path.splitext(os.path.basename(path))[0]
-            self._texture_paths[display] = path
-            values = list(self.texture_menu.cget("values"))
-            if display not in values:
-                values.insert(-1, display)
-                self.texture_menu.configure(values=values)
-            self.texture_menu.set(display)
-            self._activate_texture(path)
-            return
-        path = self._texture_paths.get(choice)
-        if path:
-            self._activate_texture(path)
-
-    def _activate_texture(self, path):
+    def _browse_texture_file(self):
+        path = filedialog.askopenfilename(
+            title="Seleccionar textura",
+            filetypes=[("Imagen", " ".join(f"*{e}" for e in sorted(IMAGE_EXTS)))],
+        )
+        if not path:
+            return None
         try:
             with Image.open(path):
                 pass
         except Exception as exc:
-            self.texture_menu.set(NO_TEXTURE)
-            self._deactivate_texture()
             self._set_status(f"No se pudo leer la textura: {exc}", RED)
-            return
-        self.texture_path = path
-        self.texture_opts_row.grid()
-        self.texture_delete_btn.configure(state="normal")
-        self.config_data["texture"] = path
-        save_config(self.config_data)
-        self._schedule_preview()
+            return None
+        self._register_texture_path(path)
+        return path
 
-    def _deactivate_texture(self):
-        self.texture_path = None
-        self.texture_opts_row.grid_remove()
-        self.texture_delete_btn.configure(state="disabled")
-        self.config_data["texture"] = None
-        save_config(self.config_data)
-        self._schedule_preview()
-
-    def _delete_texture(self):
-        if not self.texture_path:
+    def _delete_texture_file(self, path):
+        """Borra el ARCHIVO de textura (solo si vive en la carpeta
+        administrada) y quita cualquier capa que lo tenga puesto."""
+        if not path:
             return
-        name = os.path.basename(self.texture_path)
+        name = os.path.basename(path)
+        if os.path.dirname(path) != TEXTURES_DIR:
+            messagebox.showinfo(
+                "No se puede eliminar",
+                f"\"{name}\" no está en la carpeta administrada de texturas, "
+                "así que no se borra el archivo original.\n\n"
+                "Usa la ✕ de la capa para quitarla de esta composición.",
+            )
+            return
         if not messagebox.askyesno(
             "Eliminar textura",
-            f"¿Eliminar la textura \"{name}\"?"
-            + ("\n\nEl archivo se borrará de la carpeta texturas."
-               if os.path.dirname(self.texture_path) == TEXTURES_DIR else
-               "\n\nSolo se quitará de la lista (el archivo original no se toca)."),
+            f"¿Eliminar \"{name}\" de la carpeta texturas? Se borra del disco "
+            "y de cualquier capa que la esté usando.",
         ):
             return
-        path = self.texture_path
-        if os.path.dirname(path) == TEXTURES_DIR:
-            try:
-                os.remove(path)
-            except OSError as exc:
-                self._set_status(f"No se pudo eliminar la textura: {exc}", RED)
-                return
-        self._deactivate_texture()
-        self._refresh_texture_menu()
-        self.texture_menu.set(NO_TEXTURE)
-        self._set_status(f"Textura eliminada: {name}")
+        try:
+            os.remove(path)
+        except OSError as exc:
+            self._set_status(f"No se pudo eliminar la textura: {exc}", RED)
+            return
+        display = os.path.splitext(name)[0]
+        self._texture_paths.pop(display, None)
+        for layer in list(self.texture_layers):
+            if layer.path == path:
+                self._remove_texture_layer(layer)
+        for layer in self.texture_layers:
+            layer.refresh_files()
+        self._set_status(f"Textura eliminada: {name}", GREEN)
 
-    def _prepare_texture(self, canvas_w, canvas_h):
+    def _add_texture_layer(self, state=None):
+        row = TextureLayerRow(
+            self.texture_layers_container,
+            available_paths_fn=self._available_texture_paths,
+            on_change=self._on_texture_layers_changed,
+            on_remove=self._remove_texture_layer,
+            on_browse=self._browse_texture_file,
+            make_pct_entry=self._make_pct_entry,
+            bind_pct_entry=self._bind_pct_entry,
+            set_pct_entry=self._set_pct_entry,
+            register_path_fn=self._register_texture_path,
+            on_delete_file=self._delete_texture_file,
+        )
+        row.grid(row=len(self.texture_layers), column=0, sticky="ew", pady=(0, 8))
+        self.texture_layers.append(row)
+        if state:
+            row.set_state(state)
+        self._refresh_texture_layers_visibility()
+        self._on_texture_layers_changed()
+        return row
+
+    def _remove_texture_layer(self, row):
+        if row in self.texture_layers:
+            self.texture_layers.remove(row)
+        row.destroy()
+        for i, remaining in enumerate(self.texture_layers):
+            remaining.grid(row=i, column=0, sticky="ew", pady=(0, 8))
+        self._refresh_texture_layers_visibility()
+        self._on_texture_layers_changed()
+
+    def _refresh_texture_layers_visibility(self):
+        if self.texture_layers:
+            self.texture_empty_hint.grid_remove()
+        else:
+            self.texture_empty_hint.grid()
+
+    def _on_texture_layers_changed(self):
+        self.config_data["textures"] = [
+            state for layer in self.texture_layers if (state := layer.get_state())
+        ]
+        save_config(self.config_data)
+        self._schedule_preview()
+
+    def _restore_texture_from_config(self):
+        layers_data = self.config_data.get("textures")
+        if layers_data is None:
+            # Migracion desde el formato anterior (una sola textura)
+            legacy_path = self.config_data.get("texture")
+            if legacy_path and os.path.exists(legacy_path):
+                layers_data = [{
+                    "path": legacy_path,
+                    "blend": self.config_data.get("blend_mode", "Aclarar"),
+                    "opacity": self.config_data.get("texture_opacity", 47),
+                    "scale": self.config_data.get("texture_scale", 100),
+                }]
+            else:
+                layers_data = []
+        for state in layers_data:
+            if state.get("path") and os.path.exists(state["path"]):
+                self._add_texture_layer(state=state)
+
+    def _current_textures(self, canvas_w, canvas_h):
+        """Prepara (con cache) cada capa activa y devuelve la lista lista
+        para build_command/build_compose_command: [(ruta, modo, opacidad)]."""
+        textures = []
+        for layer in self.texture_layers:
+            state = layer.get_state()
+            if not state:
+                continue
+            try:
+                prepared = self._prepare_texture(state["path"], state["scale"], canvas_w, canvas_h)
+            except Exception:
+                prepared = state["path"]
+            mode = BLEND_MODES.get(state["blend"], "lighten")
+            textures.append((prepared, mode, state["opacity"] / 100.0))
+        return textures
+
+    def _prepare_texture(self, texture_path, scale_pct, canvas_w, canvas_h):
         """Genera (con cache) la textura tileada al tamano del lienzo: se
         escala a su tamano natural x el porcentaje elegido y se repite en
-        mosaico, en vez de estirarla — asi el grano queda fino."""
-        scale = int(round(self.texture_scale_slider.get()))
-        key = (self.texture_path, scale, canvas_w, canvas_h)
+        mosaico, en vez de estirarla — asi el grano queda fino. Un archivo
+        por textura de origen (hash de la ruta) para que varias capas no se
+        pisen el cache entre si."""
+        scale = int(round(scale_pct))
+        key = (texture_path, scale, canvas_w, canvas_h)
         with self._texture_lock:
-            if self._texture_cache and self._texture_cache[0] == key \
-                    and os.path.exists(self._texture_cache[1]):
-                return self._texture_cache[1]
-            path = os.path.join(tempfile.gettempdir(), "genvideo_textura_preparada.png")
-            with Image.open(self.texture_path) as tex:
+            cached = self._texture_cache.get(texture_path)
+            if cached and cached[0] == key and os.path.exists(cached[1]):
+                return cached[1]
+            digest = hashlib.md5(texture_path.encode("utf-8")).hexdigest()[:10]
+            path = os.path.join(tempfile.gettempdir(), f"genvideo_textura_preparada_{digest}.png")
+            with Image.open(texture_path) as tex:
                 tex = tex.convert("RGB")
                 tile_w = max(2, round(tex.width * scale / 100))
                 tile_h = max(2, round(tex.height * scale / 100))
@@ -1389,28 +2088,8 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
                 for x in range(0, canvas_w, tile_w):
                     board.paste(tile, (x, y))
             board.save(path)
-            self._texture_cache = (key, path)
+            self._texture_cache[texture_path] = (key, path)
             return path
-
-    def _on_texture_scale_change(self, value):
-        pct = int(round(float(value)))
-        self.texture_scale_label.configure(text=f"Tamaño {pct}%")
-        self.config_data["texture_scale"] = pct
-        save_config(self.config_data)
-        self._schedule_preview()
-
-    def _on_blend_change(self, choice):
-        self.config_data["blend_mode"] = choice
-        save_config(self.config_data)
-        self._schedule_preview()
-
-    def _on_opacity_change(self, value, save=True):
-        pct = int(round(float(value)))
-        self.opacity_label.configure(text=f"Opacidad {pct}%")
-        if save:
-            self.config_data["texture_opacity"] = pct
-            save_config(self.config_data)
-            self._schedule_preview()
 
     # ------------------------------------------------------ descarga por link
 
@@ -1538,6 +2217,34 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         files = self.tk.splitlist(event.data)
         self._ingest_files(files)
 
+    def _handle_template_drop(self, event):
+        """Soltar un PNG sobre la seccion de Plantilla lo usa directo,
+        sin pasar por el buscador de archivos."""
+        for path in self.tk.splitlist(event.data):
+            if path.lower().endswith(".png"):
+                self._add_template_option(path)
+                self._activate_template(path)
+                return
+        self._set_status("Suelta un archivo .png para usarlo como plantilla.", RED)
+
+    def _handle_texture_new_drop(self, event):
+        """Soltar una o mas imagenes sobre la seccion de Texturas (fuera de
+        una capa existente) agrega una capa nueva por cada archivo valido."""
+        added = 0
+        for path in self.tk.splitlist(event.data):
+            if os.path.splitext(path)[1].lower() not in IMAGE_EXTS:
+                continue
+            try:
+                with Image.open(path):
+                    pass
+            except Exception:
+                continue
+            self._register_texture_path(path)
+            self._add_texture_layer(state={"path": path, "blend": "Aclarar", "opacity": 47, "scale": 100})
+            added += 1
+        if not added:
+            self._set_status("Suelta una imagen para agregarla como textura.", RED)
+
     def _handle_click(self, _event):
         all_media = IMAGE_EXTS | VIDEO_EXTS | AUDIO_EXTS
         paths = filedialog.askopenfilenames(
@@ -1569,6 +2276,7 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         try:
             with Image.open(path) as img:
                 width, height = img.size
+                focus_src = img.copy()
                 thumb_src = img.copy()
         except Exception as exc:
             self._set_status(f"No se pudo leer la imagen: {exc}", RED)
@@ -1585,6 +2293,11 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
             kind_text=f"Imagen · {width}x{height}",
             thumb=self._thumb_ref,
         )
+        self.focus_picker.set_image(focus_src)
+        self.focus_picker.set_scale_pct(self._current_scale_pct())
+        self.focus_zoom_slider.set(100)
+        self.focus_zoom_label.configure(text="Zoom 100%")
+        self.focus_row.grid()
         self._update_default_output()
         self._refresh_ready_state()
         self._set_status(f"Imagen lista: {os.path.basename(path)}")
@@ -1597,6 +2310,7 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self.media_duration = None
         self.media_interlaced = False
         self.media_chip.show(os.path.basename(path), kind_text="Video · analizando...")
+        self.focus_row.grid_remove()
         self._update_default_output()
         self._refresh_ready_state()
         self._set_status(f"Clip listo: {os.path.basename(path)} (se repetirá en loop)")
@@ -1630,11 +2344,9 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
                 self._thumb_ref = ctk.CTkImage(light_image=thumb_img, size=thumb_img.size)
                 self.media_chip.set_thumb(self._thumb_ref)
             self.media_duration = duration
-            self.trim_start_entry.delete(0, "end")
-            self.trim_start_entry.insert(0, "0:00")
-            self.trim_end_entry.delete(0, "end")
-            if duration:
-                self.trim_end_entry.insert(0, format_duration(duration))
+            self.loop_slider.set_duration(duration)
+            self.trim_total_label.configure(text=format_duration(duration) or "0:00")
+            self._update_trim_readout()
             self._schedule_preview()
         self.after(0, apply)
 
@@ -1674,6 +2386,7 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self.scale_row.grid_remove()
         self.trim_row.grid_remove()
         self.speed_row.grid_remove()
+        self.focus_row.grid_remove()
         self._refresh_ready_state()
         self._schedule_preview()
 
@@ -1686,14 +2399,225 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
 
     def _on_scale_change(self, value):
         pct = int(round(value))
-        if pct >= 100:
-            self.scale_value_label.configure(text="100% · pantalla completa")
+        if pct == 100:
+            self.scale_value_label.configure(text="100% · tamaño natural")
+        elif pct < 100:
+            self.scale_value_label.configure(text=f"{pct}% · con bordes")
         else:
-            self.scale_value_label.configure(text=f"{pct}% · con bordes negros")
+            self.scale_value_label.configure(text=f"{pct}% · ampliada")
+        self._set_pct_entry(self.scale_entry, pct)
+        self.focus_picker.set_scale_pct(pct)
         self._schedule_preview()
 
     def _current_scale_pct(self):
         return int(round(self.scale_slider.get()))
+
+    def _on_grain_change(self, value):
+        pct = int(round(float(value)))
+        self._set_pct_entry(self.grain_entry, pct)
+        self.config_data["grain"] = pct
+        save_config(self.config_data)
+        self._schedule_preview()
+
+    def _on_sharpen_change(self, value):
+        pct = int(round(float(value)))
+        self._set_pct_entry(self.sharpen_entry, pct)
+        self.config_data["sharpen"] = pct
+        save_config(self.config_data)
+        self._schedule_preview()
+
+    def _current_grain(self):
+        return int(round(self.grain_slider.get()))
+
+    def _current_sharpen(self):
+        return int(round(self.sharpen_slider.get()))
+
+    # ---------------------------------------------------- ajustar imagen
+
+    def _on_focus_change(self, zoom, _focus_x, _focus_y):
+        pct = round(zoom * 100)
+        self.focus_zoom_slider.set(pct)
+        self.focus_zoom_label.configure(text=f"Zoom {pct}%")
+        self._set_pct_entry(self.focus_zoom_entry, pct)
+        self._schedule_preview()
+
+    def _on_focus_zoom_change(self, value):
+        pct = int(round(value))
+        self.focus_zoom_label.configure(text=f"Zoom {pct}%")
+        self._set_pct_entry(self.focus_zoom_entry, pct)
+        self.focus_picker.set_zoom(pct)  # dispara _on_focus_change -> _schedule_preview
+
+    def _reset_focus(self):
+        self.focus_picker.set_state(100, 0.5, 0.5)
+        self.focus_zoom_slider.set(100)
+        self.focus_zoom_label.configure(text="Zoom 100%")
+        self._set_pct_entry(self.focus_zoom_entry, 100)
+        self._schedule_preview()
+
+    def _current_focus(self):
+        if self.media_is_video or not self.media_path:
+            return None
+        return self.focus_picker.get_state()
+
+    # --------------------------------------------------------- recorte del loop
+
+    def _update_trim_readout(self):
+        start, end = self.loop_slider.get_values()
+        self.trim_readout.configure(
+            text=f"{format_duration(start)} – {format_duration(end)}"
+                 f" · {format_duration(end - start)} de loop")
+
+    def _on_loop_change(self, _start, _end):
+        self._update_trim_readout()
+        self._schedule_preview(500)
+
+    # -------------------------------------------------------------- presets
+
+    def _refresh_preset_menu(self, select=None):
+        names = [p["name"] for p in self.presets]
+        has_presets = bool(names)
+        self.preset_menu.configure(values=names if has_presets else [NO_PRESET])
+        self.preset_menu.set(select if select in names else (names[0] if has_presets else NO_PRESET))
+        state = "normal" if has_presets else "disabled"
+        self.preset_rename_btn.configure(state=state)
+        self.preset_delete_btn.configure(state=state)
+
+    def _find_preset(self, name):
+        return next((p for p in self.presets if p["name"] == name), None)
+
+    def _snapshot_preset(self, name):
+        return {
+            "name": name,
+            "template": self.template_path,
+            "textures": [state for layer in self.texture_layers if (state := layer.get_state())],
+            "scale_pct": self._current_scale_pct(),
+            "speed": self.speed_control.get(),
+            "grain": self._current_grain(),
+            "sharpen": self._current_sharpen(),
+        }
+
+    def _save_preset(self):
+        dialog = ctk.CTkInputDialog(text="Nombre del preset:", title="Guardar preset")
+        name = (dialog.get_input() or "").strip()
+        if not name:
+            return
+        existing = self._find_preset(name)
+        if existing and not messagebox.askyesno(
+            "Sobrescribir preset", f"Ya existe un preset llamado \"{name}\". ¿Sobrescribirlo?"
+        ):
+            return
+        snapshot = self._snapshot_preset(name)
+        if existing:
+            self.presets[self.presets.index(existing)] = snapshot
+        else:
+            self.presets.append(snapshot)
+        self.config_data["presets"] = self.presets
+        save_config(self.config_data)
+        self._refresh_preset_menu(select=name)
+        self._set_status(f"Preset guardado: {name}", GREEN)
+
+    def _on_preset_selected(self, name):
+        preset = self._find_preset(name)
+        if not preset:
+            return
+        template = preset.get("template")
+        if template and os.path.exists(template):
+            display = os.path.splitext(os.path.basename(template))[0]
+            if display not in self._template_paths:
+                self._template_paths[display] = template
+                values = list(self.template_menu.cget("values"))
+                values.insert(-1, display)
+                self.template_menu.configure(values=values)
+            self.template_menu.set(display)
+            self._activate_template(template)
+        else:
+            self.template_menu.set(NO_TEMPLATE)
+            self._deactivate_template()
+
+        # Quitar las capas de textura actuales y reconstruir con las del preset
+        for layer in list(self.texture_layers):
+            self._remove_texture_layer(layer)
+        textures_data = preset.get("textures")
+        if textures_data is None:
+            # Presets guardados antes de las capas multiples (una sola textura)
+            legacy_path = preset.get("texture")
+            textures_data = [{
+                "path": legacy_path,
+                "blend": preset.get("blend_mode", "Aclarar"),
+                "opacity": preset.get("texture_opacity", 47),
+                "scale": preset.get("texture_scale", 100),
+            }] if legacy_path else []
+        missing_textures = []
+        for state in textures_data:
+            path = state.get("path")
+            if path and os.path.exists(path):
+                self._add_texture_layer(state=state)
+            elif path:
+                missing_textures.append(os.path.basename(path))
+
+        if "scale_pct" in preset:
+            scale_pct = preset["scale_pct"]
+        elif "border_pct" in preset:
+            # Presets guardados durante la version intermedia del control
+            # (0% = sin borde, 80% = borde maximo) -- se convierte a la
+            # escala actual (100% = natural, bidireccional)
+            scale_pct = max(20, min(200, 100 - preset["border_pct"]))
+        else:
+            scale_pct = 100
+        self.scale_slider.set(scale_pct)
+        self._on_scale_change(scale_pct)
+        speed = preset.get("speed")
+        if speed:
+            self.speed_control.set(speed)
+
+        grain = preset.get("grain", 0)
+        self.grain_slider.set(grain)
+        self._on_grain_change(grain)
+        sharpen = preset.get("sharpen", 0)
+        self.sharpen_slider.set(sharpen)
+        self._on_sharpen_change(sharpen)
+
+        missing = []
+        if template and not os.path.exists(template):
+            missing.append("plantilla")
+        if missing_textures:
+            missing.append("textura" if len(missing_textures) == 1 else "texturas")
+        if missing:
+            self._set_status(
+                f"Preset \"{name}\" aplicado — no se encontró la {'/'.join(missing)} guardada", RED)
+        else:
+            self._set_status(f"Preset aplicado: {name}", GREEN)
+
+    def _rename_preset(self):
+        old_name = self.preset_menu.get()
+        preset = self._find_preset(old_name)
+        if not preset:
+            return
+        dialog = ctk.CTkInputDialog(text=f"Nuevo nombre para \"{old_name}\":", title="Renombrar preset")
+        new_name = (dialog.get_input() or "").strip()
+        if not new_name or new_name == old_name:
+            return
+        if self._find_preset(new_name):
+            self._set_status(f"Ya existe un preset llamado \"{new_name}\".", RED)
+            return
+        preset["name"] = new_name
+        self.config_data["presets"] = self.presets
+        save_config(self.config_data)
+        self._refresh_preset_menu(select=new_name)
+        self._set_status(f"Preset renombrado a: {new_name}", GREEN)
+
+    def _delete_preset(self):
+        name = self.preset_menu.get()
+        preset = self._find_preset(name)
+        if not preset:
+            return
+        if not messagebox.askyesno("Eliminar preset", f"¿Eliminar el preset \"{name}\"?"):
+            return
+        self.presets.remove(preset)
+        self.config_data["presets"] = self.presets
+        save_config(self.config_data)
+        self._refresh_preset_menu()
+        self._set_status(f"Preset eliminado: {name}")
 
     # ------------------------------------------------------------- salida
 
@@ -1723,6 +2647,79 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
             self.output_path = path
             self.user_chose_output = True
             self.output_label.configure(text=truncate_path(path))
+
+    def _download_cover(self):
+        """Renderiza la misma composicion (plantilla + texturas + ajustes)
+        del fotograma actual como un PNG de 1920x1080, sin generar el
+        video completo."""
+        if not self.media_path:
+            self._set_status("Carga una imagen o un clip primero para descargar la portada.", RED)
+            return
+        if self.media_is_video and not self.media_size:
+            self._set_status("Todavía analizando el clip, intenta en un segundo...", RED)
+            return
+
+        initial = "portada.png"
+        initial_dir = None
+        if self.output_path:
+            initial = os.path.splitext(os.path.basename(self.output_path))[0] + "_portada.png"
+            initial_dir = os.path.dirname(self.output_path) or None
+        path = filedialog.asksaveasfilename(
+            title="Guardar portada como",
+            defaultextension=".png",
+            filetypes=[("Imagen PNG", "*.png")],
+            initialfile=initial,
+            initialdir=initial_dir,
+        )
+        if not path:
+            return
+
+        template_box = self.template_box if self.template_path else None
+        layout, _, _ = build_layout(
+            self.media_size, self.media_is_video, self._current_scale_pct(), template_box,
+        )
+        textures = self._current_textures(*layout["canvas"])
+
+        cmd = [self.ffmpeg_exe, "-y"]
+        if self.media_is_video:
+            start, _end = self.loop_slider.get_values()
+            if self.media_duration:
+                start = min(start, max(0.0, self.media_duration - 0.5))
+            if start > 0:
+                cmd += ["-ss", f"{start:.3f}"]
+        cmd += ["-i", self.media_path]
+        idx = 1
+        tpl_idx = None
+        if self.template_path:
+            cmd += ["-i", self.template_path]
+            tpl_idx = idx
+            idx += 1
+        tex_layers = []
+        for tex_path, mode, opacity in textures:
+            cmd += ["-i", tex_path]
+            tex_layers.append((idx, mode, opacity))
+            idx += 1
+        fc = build_filtergraph(
+            layout, is_video=False, tpl_idx=tpl_idx, textures=tex_layers,
+            focus=self._current_focus(),
+            sharpen=self._current_sharpen(), grain=self._current_grain(),
+        )
+        cmd += ["-filter_complex", fc, "-map", "[vout]", "-frames:v", "1", path]
+
+        self.cover_btn.configure(state="disabled")
+        self._set_status("Generando portada...")
+        threading.Thread(target=self._cover_job, args=(cmd, path), daemon=True).start()
+
+    def _cover_job(self, cmd, path):
+        proc = subprocess.run(cmd, capture_output=True, creationflags=CREATE_NO_WINDOW)
+
+        def apply():
+            self.cover_btn.configure(state="normal")
+            if proc.returncode == 0 and os.path.exists(path):
+                self._set_status(f"Portada guardada: {os.path.basename(path)}", GREEN)
+            else:
+                self._set_status("No se pudo generar la portada.", RED)
+        self.after(0, apply)
 
     def _refresh_ready_state(self):
         ready = bool(self.media_path and self.audio_path)
@@ -1755,18 +2752,8 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
 
         self.trim_range = None
         if self.media_is_video:
-            start = parse_time_input(self.trim_start_entry.get())
-            end = parse_time_input(self.trim_end_entry.get())
-            if start is None or end is None:
-                self._set_status("Recorte inválido: usa el formato m:ss, por ejemplo 1:10 o 1.10.", RED)
-                return
+            start, end = self.loop_slider.get_values()
             duration = self.media_duration
-            if duration:
-                start = min(start, duration)
-                end = min(end, duration)
-            if end - start < 0.5:
-                self._set_status("Recorte inválido: 'Hasta' debe ser mayor que 'Desde' (mínimo 0.5 s).", RED)
-                return
             # Solo recortamos si el rango es mas angosto que el clip completo
             if start > 0.05 or (duration and end < duration - 0.35):
                 self.trim_range = (start, end)
@@ -1817,12 +2804,7 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
                 self._current_scale_pct(), template_box if template_path else None,
             )
 
-            texture = None
-            if self.texture_path:
-                mode = BLEND_MODES.get(self.blend_menu.get(), "lighten")
-                opacity = self.opacity_slider.get() / 100.0
-                prepared = self._prepare_texture(*layout["canvas"])
-                texture = (prepared, mode, opacity)
+            textures = self._current_textures(*layout["canvas"])
 
             if info["audio_codec"] == "aac":
                 strategies = ["copy", "aac_mf", "aac"]
@@ -1847,7 +2829,8 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
                     build_compose_command(
                         self.ffmpeg_exe, self.media_path, temp_unit, layout,
                         trim=trim, speed=speed, deinterlace=self.media_interlaced,
-                        template_path=template_path, texture=texture,
+                        template_path=template_path, textures=textures,
+                        sharpen=self._current_sharpen(), grain=self._current_grain(),
                     ),
                     unit_duration,
                 )
@@ -1886,7 +2869,9 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
                     cmd = build_command(
                         self.ffmpeg_exe, self.media_path,
                         self.audio_path, self.output_path, duration, audio_args,
-                        layout, template_path=template_path, texture=texture,
+                        layout, template_path=template_path, textures=textures,
+                        focus=self._current_focus(),
+                        sharpen=self._current_sharpen(), grain=self._current_grain(),
                     )
                     returncode = self._run_ffmpeg(cmd, duration)
                     if returncode == 0 or self.cancel_requested:
