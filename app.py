@@ -273,18 +273,13 @@ def parse_out_time(line):
 
 
 # Calidad/peso del video: veryfast comprime ~2x mejor que ultrafast casi a
-# la misma velocidad. El tope de bitrate evita que el grano/textura disparen
-# el peso sin limite (CRF solo, en escenas muy detalladas, puede pasar de
-# 700 MB en un clip de 3 min) -- pero un tope muy ajustado (12 Mbps) ahoga
-# al encoder en escenas con mucho movimiento o grano, perdiendo nitidez
-# frente al original. Con 18 Mbps de techo y CRF 18 hay mas margen para esas
-# escenas sin disparar el peso en el resto del video (que sigue dominado por
-# CRF, no por el tope). El peso final tambien escala con la duracion de la
-# cancion (el video hace loop hasta el final del beat) -- eso no lo controla
-# ningun ajuste de codificacion.
+# la misma velocidad, y el tope de bitrate (VBV 12 Mbps, el rango que usa
+# YouTube para 1080p) evita que el grano dispare el peso -- sin tope, CRF
+# intenta preservar el ruido pixel por pixel y un video de 3 min puede
+# pasar de 700 MB. Con el tope queda en ~180-250 MB manteniendo la nitidez.
 VIDEO_QUALITY_ARGS = [
-    "-preset", "veryfast", "-crf", "18",
-    "-maxrate", "18M", "-bufsize", "36M",
+    "-preset", "veryfast", "-crf", "19",
+    "-maxrate", "12M", "-bufsize", "24M",
 ]
 
 # Estrategias de audio en orden de preferencia. "copy" solo aplica si el
