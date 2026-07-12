@@ -4,3 +4,4 @@ imageio-ffmpeg
 customtkinter
 yt-dlp
 certifi
+pywebview

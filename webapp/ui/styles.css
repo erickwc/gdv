@@ -1,0 +1,578 @@
+@font-face {
+  font-family: "Inter";
+  src: url("fonts/Inter-Regular.ttf") format("truetype");
+  font-weight: 400;
+}
+@font-face {
+  font-family: "Inter";
+  src: url("fonts/Inter-Light.ttf") format("truetype");
+  font-weight: 300;
+}
+@font-face {
+  font-family: "Inter";
+  src: url("fonts/Inter-Medium.ttf") format("truetype");
+  font-weight: 500;
+}
+
+:root {
+  --bg: #121214;
+  --chip-bg: #232326;
+  --hover-bg: #2c2c30;
+  --border: #313136;
+  --text: #f2f2f3;
+  --text-soft: #c7c7cb;
+  --text-faint: #8b8b92;
+  --accent: #19a866;
+  --accent-hover: #148953;
+  --accent-text: #0a0f0c;
+  --red: #e35b4e;
+  --radius: 10px;
+  --radius-sm: 7px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Inter", "Segoe UI", -apple-system, sans-serif;
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+}
+
+.shell {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.shell-header h1 {
+  margin: 0 0 4px;
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.hint {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-faint);
+  font-weight: 300;
+  line-height: 1.5;
+}
+
+.card {
+  /* Antes esto era una tarjeta con fondo/borde propio -- se veia como un
+     modal flotando dentro de la ventana. Ahora es solo un contenedor de
+     layout: mismo fondo que <body>, sin caja visible, para que toda la
+     ventana se sienta como una sola superficie continua. */
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.section h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-soft);
+  text-transform: none;
+}
+
+.section-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.section-title-row h2 {
+  flex: 1;
+}
+
+.section-title-row.collapsible {
+  cursor: pointer;
+  user-select: none;
+}
+
+.collapse-arrow {
+  color: var(--accent);
+  font-size: 11px;
+  width: 14px;
+}
+
+.section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ---- dropzone ---- */
+
+.dropzone {
+  border: 1.5px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 28px 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.dropzone:hover,
+.dropzone.drag-active {
+  border-color: var(--accent);
+  background: rgba(25, 168, 102, 0.06);
+}
+
+.dropzone-title {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.dropzone-sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-faint);
+  font-weight: 300;
+}
+
+/* ---- inputs / links ---- */
+
+.link-row {
+  display: flex;
+  gap: 8px;
+}
+
+.text-input,
+.link-row input {
+  flex: 1;
+  background: var(--chip-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12.5px;
+  padding: 9px 12px;
+  outline: none;
+  transition: border-color 120ms ease;
+}
+
+.text-input:focus,
+.link-row input:focus {
+  border-color: var(--accent);
+}
+
+.text-input::placeholder,
+.link-row input::placeholder {
+  color: var(--text-faint);
+}
+
+/* ---- chips ---- */
+
+.chip-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--chip-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+
+.chip-thumb {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  background: var(--hover-bg);
+  flex-shrink: 0;
+}
+
+.chip-thumb-audio {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  font-size: 16px;
+}
+
+.chip-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.chip-name {
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chip-kind {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-weight: 300;
+}
+
+/* ---- buttons ---- */
+
+.btn {
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 120ms ease, opacity 120ms ease;
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.btn-ghost {
+  background: var(--chip-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 9px 14px;
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--hover-bg);
+}
+
+.btn-secondary {
+  background: var(--chip-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 9px 18px;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: var(--hover-bg);
+}
+
+.btn-text {
+  background: transparent;
+  color: var(--text-faint);
+  padding: 4px 6px;
+}
+
+.btn-text:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.btn-icon {
+  background: var(--chip-bg);
+  border: 1px solid var(--border);
+  color: var(--text-soft);
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.btn-icon:hover:not(:disabled) {
+  background: var(--hover-bg);
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: var(--accent-text);
+  padding: 13px;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.btn-generate {
+  font-size: 14px;
+}
+
+/* ---- selects / dropdowns ---- */
+
+.select {
+  flex: 1;
+  background: var(--chip-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12.5px;
+  padding: 9px 12px;
+  outline: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238b8b92'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 28px;
+}
+
+.select-sm {
+  padding: 7px 10px;
+  padding-right: 24px;
+  font-size: 12px;
+}
+
+.control-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.control-row-compact {
+  gap: 8px;
+}
+
+.control-label {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  font-weight: 300;
+  width: 56px;
+  flex-shrink: 0;
+}
+
+.unit {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  width: 12px;
+}
+
+.num-entry {
+  width: 44px;
+  background: var(--chip-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: center;
+  padding: 5px 2px;
+  outline: none;
+}
+
+.num-entry:focus {
+  border-color: var(--accent);
+}
+
+/* ---- sliders ---- */
+
+.slider {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  outline: none;
+}
+
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: none;
+}
+
+.slider::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: none;
+}
+
+/* ---- ajustar imagen ---- */
+
+.focus-picker {
+  /* Tamano fijo (no 100%): el canvas tiene coordenadas internas en
+     pixeles (352x200, ver FocusPicker en app.js) -- si CSS lo estira a
+     otro tamano, el arrastre del mouse queda desalineado con el dibujo. */
+  width: 352px;
+  height: 200px;
+  display: block;
+  margin: 0 auto;
+  cursor: grab;
+  border-radius: var(--radius);
+  background: var(--chip-bg);
+  border: 1px solid var(--border);
+}
+
+/* ---- texturas: capas ---- */
+
+.texture-layers {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.texture-layer {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto auto;
+  grid-template-rows: auto auto;
+  gap: 8px;
+  background: var(--chip-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+}
+
+.texture-layer > .control-row {
+  grid-column: 1 / 3;
+}
+
+/* ---- recorte del loop: slider de doble asa ---- */
+
+.range-slider {
+  position: relative;
+  height: 24px;
+}
+
+.range-track {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 4px;
+  transform: translateY(-50%);
+  background: var(--border);
+  border-radius: 2px;
+}
+
+.range-fill {
+  position: absolute;
+  top: 50%;
+  height: 4px;
+  transform: translateY(-50%);
+  background: var(--text-soft);
+  border-radius: 2px;
+  left: 20%;
+  right: 60%;
+}
+
+.range-handle {
+  position: absolute;
+  top: 50%;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--text);
+  transform: translate(-50%, -50%);
+  cursor: grab;
+}
+
+#loop-handle-start {
+  left: 20%;
+}
+
+#loop-handle-end {
+  left: 40%;
+}
+
+/* ---- velocidad: segmented control ---- */
+
+.segmented {
+  display: flex;
+  background: var(--chip-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+  gap: 3px;
+}
+
+.segmented-item {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--text-faint);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 7px 0;
+  cursor: pointer;
+}
+
+.segmented-item:hover {
+  color: var(--text);
+}
+
+.segmented-active {
+  background: var(--hover-bg);
+  color: var(--text) !important;
+}
+
+/* ---- salida ---- */
+
+.output-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* ---- progreso / estado ---- */
+
+.progress-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--chip-bg);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 150ms ease;
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.status-text {
+  font-size: 12px;
+  color: var(--text-faint);
+  flex: 1;
+}
+
+.status-actions {
+  display: flex;
+  gap: 8px;
+}
