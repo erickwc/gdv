@@ -338,16 +338,14 @@ def build_focus_crop(focus):
 
 
 def build_filtergraph(layout, is_video=False, speed=1.0, deinterlace=False,
-                      tpl_idx=None, textures=None, focus=None, sharpen=0, grain=0):
+                      tpl_idx=None, textures=None, focus=None):
     """Arma el filter_complex completo: medio (des-entrelazado + velocidad +
-    ajuste manual de encuadre + escala/recorte/bordes + enfoque) -> texturas
-    mezcladas encima (una sobre otra, en el orden de la lista) -> grano ->
-    plantilla encima. Los clips de video salen a 30 fps constantes para que
-    el loop por copia directa sea perfectamente uniforme (sin glitches).
+    ajuste manual de encuadre + escala/recorte/bordes) -> texturas mezcladas
+    encima (una sobre otra, en el orden de la lista) -> plantilla encima.
+    Los clips de video salen a 30 fps constantes para que el loop por copia
+    directa sea perfectamente uniforme (sin glitches).
 
-    textures: lista de (indice_de_entrada, modo_ffmpeg, opacidad_0_a_1).
-    sharpen/grain: 0-100, ambos nativos (sin archivo de textura) y limitados
-    a la foto -- nunca tocan el borde negro, igual que las texturas."""
+    textures: lista de (indice_de_entrada, modo_ffmpeg, opacidad_0_a_1)."""
     inner_w, inner_h = layout["inner"]
     canvas_w, canvas_h = layout["canvas"]
 
@@ -366,10 +364,6 @@ def build_filtergraph(layout, is_video=False, speed=1.0, deinterlace=False,
     # mezclar la textura, para que la textura solo caiga sobre la foto y
     # nunca sobre el borde negro.
     chain += f"scale={inner_w}:{inner_h}:force_original_aspect_ratio=increase:force_divisible_by=2,crop={inner_w}:{inner_h}"
-    if sharpen > 0:
-        # unsharp: mientras mas alto el "amount", mas nitido -- 0 es no-op
-        amount = min(2.0, sharpen / 100 * 2.0)
-        chain += f",unsharp=5:5:{amount:.3f}:5:5:0.0"
     if layout["mode"] == "bordered":
         # inner_h es siempre el alto natural de la foto (nunca cambia), asi
         # que "cubrir" inner_w x inner_h solo recorta ANCHO cuando el control
@@ -402,12 +396,6 @@ def build_filtergraph(layout, is_video=False, speed=1.0, deinterlace=False,
         )
         last = out_label
 
-    if grain > 0:
-        # grano nativo (sin archivo), va al final -- despues de las
-        # texturas y antes del borde, para que tampoco toque el negro
-        parts.append(f"[{last}]noise=alls={grain}:allf=t+u[grained]")
-        last = "grained"
-
     parts.append(f"[{last}]{pad_expr}[padded]")
     last = "padded"
 
@@ -420,7 +408,7 @@ def build_filtergraph(layout, is_video=False, speed=1.0, deinterlace=False,
 
 
 def build_command(ffmpeg_exe, media_path, audio_path, output_path, duration, audio_args,
-                  layout, template_path=None, textures=None, focus=None, sharpen=0, grain=0):
+                  layout, template_path=None, textures=None, focus=None):
     """Pasada unica para imagenes fijas (el video es barato a 10 fps)."""
     cmd = [ffmpeg_exe, "-y", "-loop", "1", "-framerate", "1", "-i", media_path, "-i", audio_path]
     idx = 2
@@ -436,7 +424,6 @@ def build_command(ffmpeg_exe, media_path, audio_path, output_path, duration, aud
         idx += 1
     fc = build_filtergraph(
         layout, is_video=False, tpl_idx=tpl_idx, textures=tex_layers, focus=focus,
-        sharpen=sharpen, grain=grain,
     )
     cmd += [
         "-filter_complex", fc, "-map", "[vout]", "-map", "1:a:0",
@@ -453,8 +440,7 @@ def build_command(ffmpeg_exe, media_path, audio_path, output_path, duration, aud
 
 
 def build_compose_command(ffmpeg_exe, media_path, temp_path, layout, trim=None, speed=1.0,
-                          deinterlace=False, template_path=None, textures=None,
-                          sharpen=0, grain=0):
+                          deinterlace=False, template_path=None, textures=None):
     """FASE 1 (solo clips de video): compone UNA sola vuelta del loop —
     recorte + velocidad + texturas + escala/bordes o plantilla — en un mp4
     corto sin audio, a 30 fps constantes y con GOP cerrado para que la
@@ -476,7 +462,7 @@ def build_compose_command(ffmpeg_exe, media_path, temp_path, layout, trim=None, 
         idx += 1
     fc = build_filtergraph(
         layout, is_video=True, speed=speed, deinterlace=deinterlace,
-        tpl_idx=tpl_idx, textures=tex_layers, sharpen=sharpen, grain=grain,
+        tpl_idx=tpl_idx, textures=tex_layers,
     )
     cmd += [
         "-filter_complex", fc, "-map", "[vout]",
@@ -1064,6 +1050,7 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self.audio_path = None
         self.output_path = None
         self.user_chose_output = False
+        self.custom_output_name = ""
         self.template_path = None
         self.template_box = None
         self._template_paths = {}
@@ -1085,12 +1072,6 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self._restore_template_from_config()
         self._restore_texture_from_config()
         self._apply_textures_panel_state()
-        grain = self.config_data.get("grain", 0)
-        self.grain_slider.set(grain)
-        self._set_pct_entry(self.grain_entry, grain)
-        sharpen = self.config_data.get("sharpen", 0)
-        self.sharpen_slider.set(sharpen)
-        self._set_pct_entry(self.sharpen_entry, sharpen)
 
         # Se puede soltar archivos en cualquier parte de la ventana (como
         # imagen/video/audio principal), excepto en Plantilla y Texturas,
@@ -1303,9 +1284,9 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         texture_head.grid(row=0, column=0, sticky="ew")
         texture_head.grid_columnconfigure(1, weight=1)
 
-        # Panel desplegable: la flecha y el titulo ocultan/muestran el
-        # contenido (capas de textura + grano y enfoque) para que la
-        # seccion no coma espacio cuando hay varias texturas cargadas.
+        # Panel desplegable: la flecha y el titulo ocultan/muestran las
+        # capas de textura para que la seccion no coma espacio cuando hay
+        # varias texturas cargadas.
         self.textures_collapsed = bool(self.config_data.get("textures_collapsed", False))
 
         self.texture_toggle = ctk.CTkLabel(
@@ -1334,7 +1315,7 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         )
         self.texture_add_btn.grid(row=0, column=2, sticky="e")
 
-        # Todo el contenido plegable (capas + grano y enfoque) vive en un
+        # Todo el contenido plegable (las capas de textura) vive en un
         # solo frame que NUNCA se desmonta: plegar solo reduce su altura a
         # 1px (grid_propagate off). Desmontar/montar widgets provoca un
         # parpadeo blanco en macOS (Tk pinta el area antes del primer
@@ -1362,59 +1343,6 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         register_drop_recursive(self.texture_row, self._handle_texture_new_drop)
 
         self.texture_layers = []
-
-        # Grano y enfoque: efectos nativos (sin archivo), igual que la
-        # textura solo caen sobre la foto, nunca sobre el borde negro.
-        # Vive dentro del cuerpo plegable del panel de Texturas.
-        self.effects_row = ctk.CTkFrame(self.texture_body, fg_color="transparent")
-        self.effects_row.grid(row=2, column=0, sticky="ew", pady=(14, 0))
-        self.effects_row.grid_columnconfigure(1, weight=1)
-
-        effects_title = ctk.CTkLabel(
-            self.effects_row, text="Grano y enfoque", text_color=TEXT_DARK,
-            font=ctk.CTkFont(FONT_MEDIUM, 14), anchor="w",
-        )
-        effects_title.grid(row=0, column=0, columnspan=3, sticky="w")
-
-        grain_label = ctk.CTkLabel(
-            self.effects_row, text="Grano", text_color=TEXT_GRAY,
-            font=ctk.CTkFont(FONT_LIGHT, 12), width=70, anchor="w",
-        )
-        grain_label.grid(row=1, column=0, sticky="w", pady=(8, 0))
-
-        self.grain_slider = ctk.CTkSlider(
-            self.effects_row, from_=0, to=100, number_of_steps=100,
-            progress_color=GREEN, button_color=GREEN, button_hover_color=GREEN_HOVER,
-            command=self._on_grain_change,
-        )
-        self.grain_slider.set(0)
-        self.grain_slider.grid(row=1, column=1, sticky="ew", padx=(10, 8), pady=(8, 0))
-
-        self.grain_entry = self._make_pct_entry(self.effects_row)
-        self.grain_entry.insert(0, "0")
-        self.grain_entry.grid(row=1, column=2, pady=(8, 0))
-        self._bind_pct_entry(self.grain_entry, self.grain_slider, 0, 100,
-                             lambda v: self._on_grain_change(v))
-
-        sharpen_label = ctk.CTkLabel(
-            self.effects_row, text="Enfoque", text_color=TEXT_GRAY,
-            font=ctk.CTkFont(FONT_LIGHT, 12), width=70, anchor="w",
-        )
-        sharpen_label.grid(row=2, column=0, sticky="w", pady=(8, 0))
-
-        self.sharpen_slider = ctk.CTkSlider(
-            self.effects_row, from_=0, to=100, number_of_steps=100,
-            progress_color=GREEN, button_color=GREEN, button_hover_color=GREEN_HOVER,
-            command=self._on_sharpen_change,
-        )
-        self.sharpen_slider.set(0)
-        self.sharpen_slider.grid(row=2, column=1, sticky="ew", padx=(10, 8), pady=(8, 0))
-
-        self.sharpen_entry = self._make_pct_entry(self.effects_row)
-        self.sharpen_entry.insert(0, "0")
-        self.sharpen_entry.grid(row=2, column=2, pady=(8, 0))
-        self._bind_pct_entry(self.sharpen_entry, self.sharpen_slider, 0, 100,
-                             lambda v: self._on_sharpen_change(v))
 
         # Recorte del loop (solo para clips de video)
         self.trim_row = ctk.CTkFrame(card, fg_color="transparent")
@@ -1563,6 +1491,29 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
             text_color=TEXT_GRAY, font=ctk.CTkFont(FONT_LIGHT, 12), anchor="w",
         )
         preset_hint.grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
+
+        # Nombre del archivo: reemplaza el nombre automatico (el del audio)
+        # con el que escriba el usuario, sin tener que abrir el buscador.
+        name_row = ctk.CTkFrame(card, fg_color="transparent")
+        name_row.grid(row=row, column=0, sticky="ew", padx=24, pady=(14, 0))
+        name_row.grid_columnconfigure(0, weight=1)
+        row += 1
+
+        name_label = ctk.CTkLabel(
+            name_row, text="Nombre del archivo", text_color=TEXT_DARK,
+            font=ctk.CTkFont(FONT_MEDIUM, 14), anchor="w",
+        )
+        name_label.grid(row=0, column=0, sticky="ew")
+
+        self.filename_entry = ctk.CTkEntry(
+            name_row, height=34, corner_radius=8,
+            fg_color=CARD_BG, border_color=BORDER, border_width=1,
+            text_color=TEXT_DARK, placeholder_text_color=TEXT_GRAY,
+            placeholder_text="se usa el nombre del audio si lo dejas vacío",
+            font=ctk.CTkFont(FONT_LIGHT, 12),
+        )
+        self.filename_entry.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self.filename_entry.bind("<KeyRelease>", self._on_filename_entry_change)
 
         # Guardar como
         save_row = ctk.CTkFrame(card, fg_color="transparent")
@@ -2009,7 +1960,6 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         fc = build_filtergraph(
             layout, is_video=False, tpl_idx=tpl_idx, textures=tex_layers,
             focus=self._current_focus(),
-            sharpen=self._current_sharpen(), grain=self._current_grain(),
         )
         self._preview_counter += 1
         png = os.path.join(tempfile.gettempdir(), f"genvideo_preview_{self._preview_counter}.png")
@@ -2170,9 +2120,9 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self._apply_textures_panel_state()
 
     def _apply_textures_panel_state(self):
-        """Pliega o despliega el contenido del panel de Texturas (capas +
-        grano y enfoque). Plegar NO desmonta los widgets (eso parpadea en
-        blanco en macOS): solo congela la altura del cuerpo en 1px.
+        """Pliega o despliega el contenido del panel de Texturas (capas).
+        Plegar NO desmonta los widgets (eso parpadea en blanco en macOS):
+        solo congela la altura del cuerpo en 1px.
         El encabezado con la flecha queda siempre visible; plegado, el
         titulo resume cuantas capas hay."""
         if self.textures_collapsed:
@@ -2627,26 +2577,6 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
     def _current_scale_pct(self):
         return int(round(self.scale_slider.get()))
 
-    def _on_grain_change(self, value):
-        pct = int(round(float(value)))
-        self._set_pct_entry(self.grain_entry, pct)
-        self.config_data["grain"] = pct
-        save_config(self.config_data)
-        self._schedule_preview()
-
-    def _on_sharpen_change(self, value):
-        pct = int(round(float(value)))
-        self._set_pct_entry(self.sharpen_entry, pct)
-        self.config_data["sharpen"] = pct
-        save_config(self.config_data)
-        self._schedule_preview()
-
-    def _current_grain(self):
-        return int(round(self.grain_slider.get()))
-
-    def _current_sharpen(self):
-        return int(round(self.sharpen_slider.get()))
-
     # ---------------------------------------------------- ajustar imagen
 
     def _on_focus_change(self, zoom, _focus_x, _focus_y):
@@ -2707,8 +2637,6 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
             "textures": [state for layer in self.texture_layers if (state := layer.get_state())],
             "scale_pct": self._current_scale_pct(),
             "speed": self.speed_control.get(),
-            "grain": self._current_grain(),
-            "sharpen": self._current_sharpen(),
         }
 
     def _save_preset(self):
@@ -2785,13 +2713,6 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         if speed:
             self.speed_control.set(speed)
 
-        grain = preset.get("grain", 0)
-        self.grain_slider.set(grain)
-        self._on_grain_change(grain)
-        sharpen = preset.get("sharpen", 0)
-        self.sharpen_slider.set(sharpen)
-        self._on_sharpen_change(sharpen)
-
         missing = []
         if template and not os.path.exists(template):
             missing.append("plantilla")
@@ -2837,17 +2758,37 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
     # ------------------------------------------------------------- salida
 
     def _update_default_output(self):
-        """El video se nombra como la cancion y se guarda junto a ella.
-        Si el usuario ya eligio una ruta manualmente, se respeta."""
+        """El video se nombra como el "Nombre del archivo" que haya escrito
+        el usuario, o si esta vacio, como la cancion -- y se guarda junto a
+        ella. Si el usuario ya eligio una ruta manualmente, se respeta."""
         if self.user_chose_output:
             return
         source = self.audio_path or self.media_path
         if not source:
             return
         folder = os.path.dirname(source)
-        base = os.path.splitext(os.path.basename(source))[0]
+        base = self.custom_output_name.strip() or os.path.splitext(os.path.basename(source))[0]
         self.output_path = unique_output_path(folder, base)
         self.output_label.configure(text=truncate_path(self.output_path))
+
+    def _on_filename_entry_change(self, _event=None):
+        self.custom_output_name = self.filename_entry.get()
+        if self.user_chose_output and self.output_path:
+            # Ya eligio carpeta con "Cambiar" -- esa carpeta se respeta,
+            # pero el nombre se sigue actualizando con lo que escriba (o el
+            # del audio si lo deja vacio). Sin esto, escribir un nombre
+            # nuevo despues de "Cambiar" no tenia ningun efecto y el video
+            # se guardaba con el nombre de antes de ese click.
+            source = self.audio_path or self.media_path
+            default_base = (
+                os.path.splitext(os.path.basename(source))[0] if source
+                else os.path.splitext(os.path.basename(self.output_path))[0]
+            )
+            base = self.custom_output_name.strip() or default_base
+            self.output_path = unique_output_path(os.path.dirname(self.output_path), base)
+            self.output_label.configure(text=truncate_path(self.output_path))
+        else:
+            self._update_default_output()
 
     def _choose_output(self):
         initial = self.output_path or "video.mp4"
@@ -2917,7 +2858,6 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         fc = build_filtergraph(
             layout, is_video=False, tpl_idx=tpl_idx, textures=tex_layers,
             focus=self._current_focus(),
-            sharpen=self._current_sharpen(), grain=self._current_grain(),
         )
         cmd += ["-filter_complex", fc, "-map", "[vout]", "-frames:v", "1", path]
 
@@ -3048,7 +2988,6 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
                         self.ffmpeg_exe, self.media_path, temp_unit, layout,
                         trim=trim, speed=speed, deinterlace=self.media_interlaced,
                         template_path=template_path, textures=textures,
-                        sharpen=self._current_sharpen(), grain=self._current_grain(),
                     ),
                     unit_duration,
                 )
@@ -3089,7 +3028,6 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
                         self.audio_path, self.output_path, duration, audio_args,
                         layout, template_path=template_path, textures=textures,
                         focus=self._current_focus(),
-                        sharpen=self._current_sharpen(), grain=self._current_grain(),
                     )
                     returncode = self._run_ffmpeg(cmd, duration)
                     if returncode == 0 or self.cancel_requested:
