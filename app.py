@@ -1541,17 +1541,6 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         )
         self.browse_btn.grid(row=0, column=1, rowspan=2, padx=(12, 0))
 
-        # Descargar portada: la misma imagen compuesta (plantilla + texturas
-        # + ajustes) en un PNG de 1920x1080, sin necesidad de generar el video
-        self.cover_btn = ctk.CTkButton(
-            card, text="Descargar portada (1920x1080)", height=34, corner_radius=8,
-            fg_color=CARD_BG, hover_color=HOVER_BG, text_color=TEXT_DARK,
-            border_width=1, border_color=BORDER,
-            font=ctk.CTkFont(FONT_MEDIUM, 12), command=self._download_cover,
-        )
-        self.cover_btn.grid(row=row, column=0, sticky="ew", padx=24, pady=(10, 0))
-        row += 1
-
         # Boton principal
         self.generate_btn = ctk.CTkButton(
             card, text="Generar video", height=44, corner_radius=10,
@@ -2803,78 +2792,6 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
             self.output_path = path
             self.user_chose_output = True
             self.output_label.configure(text=truncate_path(path))
-
-    def _download_cover(self):
-        """Renderiza la misma composicion (plantilla + texturas + ajustes)
-        del fotograma actual como un PNG de 1920x1080, sin generar el
-        video completo."""
-        if not self.media_path:
-            self._set_status("Carga una imagen o un clip primero para descargar la portada.", RED)
-            return
-        if self.media_is_video and not self.media_size:
-            self._set_status("Todavía analizando el clip, intenta en un segundo...", RED)
-            return
-
-        initial = "portada.png"
-        initial_dir = None
-        if self.output_path:
-            initial = os.path.splitext(os.path.basename(self.output_path))[0] + "_portada.png"
-            initial_dir = os.path.dirname(self.output_path) or None
-        path = filedialog.asksaveasfilename(
-            title="Guardar portada como",
-            defaultextension=".png",
-            filetypes=[("Imagen PNG", "*.png")],
-            initialfile=initial,
-            initialdir=initial_dir,
-        )
-        if not path:
-            return
-
-        template_box = self.template_box if self.template_path else None
-        layout, _, _ = build_layout(
-            self.media_size, self.media_is_video, self._current_scale_pct(), template_box,
-        )
-        textures = self._current_textures(*layout["canvas"])
-
-        cmd = [self.ffmpeg_exe, "-y"]
-        if self.media_is_video:
-            start, _end = self.loop_slider.get_values()
-            if self.media_duration:
-                start = min(start, max(0.0, self.media_duration - 0.5))
-            if start > 0:
-                cmd += ["-ss", f"{start:.3f}"]
-        cmd += ["-i", self.media_path]
-        idx = 1
-        tpl_idx = None
-        if self.template_path:
-            cmd += ["-i", self.template_path]
-            tpl_idx = idx
-            idx += 1
-        tex_layers = []
-        for tex_path, mode, opacity in textures:
-            cmd += ["-i", tex_path]
-            tex_layers.append((idx, mode, opacity))
-            idx += 1
-        fc = build_filtergraph(
-            layout, is_video=False, tpl_idx=tpl_idx, textures=tex_layers,
-            focus=self._current_focus(),
-        )
-        cmd += ["-filter_complex", fc, "-map", "[vout]", "-frames:v", "1", path]
-
-        self.cover_btn.configure(state="disabled")
-        self._set_status("Generando portada...")
-        threading.Thread(target=self._cover_job, args=(cmd, path), daemon=True).start()
-
-    def _cover_job(self, cmd, path):
-        proc = subprocess.run(cmd, capture_output=True, creationflags=CREATE_NO_WINDOW)
-
-        def apply():
-            self.cover_btn.configure(state="normal")
-            if proc.returncode == 0 and os.path.exists(path):
-                self._set_status(f"Portada guardada: {os.path.basename(path)}", GREEN)
-            else:
-                self._set_status("No se pudo generar la portada.", RED)
-        self.after(0, apply)
 
     def _refresh_ready_state(self):
         ready = bool(self.media_path and self.audio_path)
