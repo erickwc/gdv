@@ -272,6 +272,16 @@ def parse_out_time(line):
     return int(h) * 3600 + int(m) * 60 + float(s)
 
 
+# Calidad/peso del video: veryfast comprime ~2x mejor que ultrafast casi a
+# la misma velocidad, y el tope de bitrate (VBV 12 Mbps, el rango que usa
+# YouTube para 1080p) evita que el grano dispare el peso -- sin tope, CRF
+# intenta preservar el ruido pixel por pixel y un video de 3 min puede
+# pasar de 700 MB. Con el tope queda en ~180-250 MB manteniendo la nitidez.
+VIDEO_QUALITY_ARGS = [
+    "-preset", "veryfast", "-crf", "19",
+    "-maxrate", "12M", "-bufsize", "24M",
+]
+
 # Estrategias de audio en orden de preferencia. "copy" solo aplica si el
 # audio de origen ya es AAC (0% perdida y sin tiempo de codificacion).
 # aac_mf usa el codificador acelerado de Windows (~15x mas rapido que el nativo),
@@ -431,7 +441,7 @@ def build_command(ffmpeg_exe, media_path, audio_path, output_path, duration, aud
     cmd += [
         "-filter_complex", fc, "-map", "[vout]", "-map", "1:a:0",
         "-r", "10",
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+        "-c:v", "libx264", *VIDEO_QUALITY_ARGS,
         "-pix_fmt", "yuv420p", "-tune", "stillimage",
         *audio_args,
         "-shortest",
@@ -471,7 +481,7 @@ def build_compose_command(ffmpeg_exe, media_path, temp_path, layout, trim=None, 
     cmd += [
         "-filter_complex", fc, "-map", "[vout]",
         "-an",
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", *VIDEO_QUALITY_ARGS, "-pix_fmt", "yuv420p",
         "-flags", "+cgop",
         "-video_track_timescale", "15360",
         "-progress", "pipe:1", "-nostats",
@@ -1074,6 +1084,7 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self._build_widgets()
         self._restore_template_from_config()
         self._restore_texture_from_config()
+        self._apply_textures_panel_state()
         grain = self.config_data.get("grain", 0)
         self.grain_slider.set(grain)
         self._set_pct_entry(self.grain_entry, grain)
@@ -1290,31 +1301,58 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
 
         texture_head = ctk.CTkFrame(self.texture_row, fg_color="transparent")
         texture_head.grid(row=0, column=0, sticky="ew")
-        texture_head.grid_columnconfigure(0, weight=1)
+        texture_head.grid_columnconfigure(1, weight=1)
 
-        texture_title = ctk.CTkLabel(
+        # Panel desplegable: la flecha y el titulo ocultan/muestran el
+        # contenido (capas de textura + grano y enfoque) para que la
+        # seccion no coma espacio cuando hay varias texturas cargadas.
+        self.textures_collapsed = bool(self.config_data.get("textures_collapsed", False))
+
+        self.texture_toggle = ctk.CTkLabel(
+            texture_head, text="▼", text_color=GREEN, width=26,
+            font=ctk.CTkFont(FONT_MEDIUM, 13), anchor="w",
+        )
+        self.texture_toggle.grid(row=0, column=0, sticky="w")
+
+        self.texture_title = ctk.CTkLabel(
             texture_head, text="Texturas", text_color=TEXT_DARK,
             font=ctk.CTkFont(FONT_MEDIUM, 14), anchor="w",
         )
-        texture_title.grid(row=0, column=0, sticky="w")
+        self.texture_title.grid(row=0, column=1, sticky="ew")
+
+        for widget in (self.texture_toggle, self.texture_title):
+            widget.bind("<Button-1>", lambda _e: self._toggle_textures_panel())
+            try:
+                widget._label.configure(cursor="hand2")
+            except Exception:
+                pass
 
         self.texture_add_btn = ctk.CTkButton(
             texture_head, text="+ Agregar textura", height=28, corner_radius=8,
             fg_color=CHIP_BG, hover_color=HOVER_BG, text_color=TEXT_DARK,
-            font=ctk.CTkFont(FONT_MEDIUM, 12), command=self._add_texture_layer,
+            font=ctk.CTkFont(FONT_MEDIUM, 12), command=self._on_add_texture_click,
         )
-        self.texture_add_btn.grid(row=0, column=1, sticky="e")
+        self.texture_add_btn.grid(row=0, column=2, sticky="e")
 
-        self.texture_layers_container = ctk.CTkFrame(self.texture_row, fg_color="transparent")
-        self.texture_layers_container.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        # Todo el contenido plegable (capas + grano y enfoque) vive en un
+        # solo frame que NUNCA se desmonta: plegar solo reduce su altura a
+        # 1px (grid_propagate off). Desmontar/montar widgets provoca un
+        # parpadeo blanco en macOS (Tk pinta el area antes del primer
+        # dibujado); manteniendolos montados el parpadeo no puede ocurrir.
+        self.texture_body = ctk.CTkFrame(self.texture_row, fg_color="transparent")
+        self.texture_body.grid(row=1, column=0, sticky="ew")
+        self.texture_body.grid_columnconfigure(0, weight=1)
+
+        self.texture_layers_container = ctk.CTkFrame(self.texture_body, fg_color="transparent")
+        self.texture_layers_container.grid(row=0, column=0, sticky="ew", pady=(8, 0))
         self.texture_layers_container.grid_columnconfigure(0, weight=1)
 
         self.texture_empty_hint = ctk.CTkLabel(
-            self.texture_row,
+            self.texture_body,
             text="Sin texturas — usa \"+ Agregar textura\" o arrastra una o varias imágenes aquí",
             text_color=TEXT_GRAY, font=ctk.CTkFont(FONT_LIGHT, 12), anchor="w", wraplength=360,
         )
-        self.texture_empty_hint.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+        self.texture_empty_hint.grid(row=1, column=0, sticky="ew", pady=(6, 0))
 
         # Soltar imagenes en cualquier parte de esta seccion (titulo, boton,
         # espacio vacio) crea una capa nueva por archivo. Cada capa,
@@ -1326,53 +1364,53 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self.texture_layers = []
 
         # Grano y enfoque: efectos nativos (sin archivo), igual que la
-        # textura solo caen sobre la foto, nunca sobre el borde negro
-        effects_row = ctk.CTkFrame(card, fg_color="transparent")
-        effects_row.grid(row=row, column=0, sticky="ew", padx=24, pady=(14, 0))
-        effects_row.grid_columnconfigure(1, weight=1)
-        row += 1
+        # textura solo caen sobre la foto, nunca sobre el borde negro.
+        # Vive dentro del cuerpo plegable del panel de Texturas.
+        self.effects_row = ctk.CTkFrame(self.texture_body, fg_color="transparent")
+        self.effects_row.grid(row=2, column=0, sticky="ew", pady=(14, 0))
+        self.effects_row.grid_columnconfigure(1, weight=1)
 
         effects_title = ctk.CTkLabel(
-            effects_row, text="Grano y enfoque", text_color=TEXT_DARK,
+            self.effects_row, text="Grano y enfoque", text_color=TEXT_DARK,
             font=ctk.CTkFont(FONT_MEDIUM, 14), anchor="w",
         )
         effects_title.grid(row=0, column=0, columnspan=3, sticky="w")
 
         grain_label = ctk.CTkLabel(
-            effects_row, text="Grano", text_color=TEXT_GRAY,
+            self.effects_row, text="Grano", text_color=TEXT_GRAY,
             font=ctk.CTkFont(FONT_LIGHT, 12), width=70, anchor="w",
         )
         grain_label.grid(row=1, column=0, sticky="w", pady=(8, 0))
 
         self.grain_slider = ctk.CTkSlider(
-            effects_row, from_=0, to=100, number_of_steps=100,
+            self.effects_row, from_=0, to=100, number_of_steps=100,
             progress_color=GREEN, button_color=GREEN, button_hover_color=GREEN_HOVER,
             command=self._on_grain_change,
         )
         self.grain_slider.set(0)
         self.grain_slider.grid(row=1, column=1, sticky="ew", padx=(10, 8), pady=(8, 0))
 
-        self.grain_entry = self._make_pct_entry(effects_row)
+        self.grain_entry = self._make_pct_entry(self.effects_row)
         self.grain_entry.insert(0, "0")
         self.grain_entry.grid(row=1, column=2, pady=(8, 0))
         self._bind_pct_entry(self.grain_entry, self.grain_slider, 0, 100,
                              lambda v: self._on_grain_change(v))
 
         sharpen_label = ctk.CTkLabel(
-            effects_row, text="Enfoque", text_color=TEXT_GRAY,
+            self.effects_row, text="Enfoque", text_color=TEXT_GRAY,
             font=ctk.CTkFont(FONT_LIGHT, 12), width=70, anchor="w",
         )
         sharpen_label.grid(row=2, column=0, sticky="w", pady=(8, 0))
 
         self.sharpen_slider = ctk.CTkSlider(
-            effects_row, from_=0, to=100, number_of_steps=100,
+            self.effects_row, from_=0, to=100, number_of_steps=100,
             progress_color=GREEN, button_color=GREEN, button_hover_color=GREEN_HOVER,
             command=self._on_sharpen_change,
         )
         self.sharpen_slider.set(0)
         self.sharpen_slider.grid(row=2, column=1, sticky="ew", padx=(10, 8), pady=(8, 0))
 
-        self.sharpen_entry = self._make_pct_entry(effects_row)
+        self.sharpen_entry = self._make_pct_entry(self.effects_row)
         self.sharpen_entry.insert(0, "0")
         self.sharpen_entry.grid(row=2, column=2, pady=(8, 0))
         self._bind_pct_entry(self.sharpen_entry, self.sharpen_slider, 0, 100,
@@ -2111,10 +2149,57 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self._on_texture_layers_changed()
 
     def _refresh_texture_layers_visibility(self):
+        # El contenedor de capas se oculta cuando esta VACIO: un CTkFrame
+        # sin hijos reserva su tamano por defecto (200px de alto) y deja
+        # un hueco enorme en la seccion. Con el panel plegado no importa
+        # (el cuerpo entero mide 1px), asi que aqui solo se decide entre
+        # contenedor y texto de ayuda.
         if self.texture_layers:
+            self.texture_layers_container.grid()
             self.texture_empty_hint.grid_remove()
         else:
+            self.texture_layers_container.grid_remove()
             self.texture_empty_hint.grid()
+
+    # ------------------------------------------- panel de texturas plegable
+
+    def _toggle_textures_panel(self):
+        self.textures_collapsed = not self.textures_collapsed
+        self.config_data["textures_collapsed"] = self.textures_collapsed
+        save_config(self.config_data)
+        self._apply_textures_panel_state()
+
+    def _apply_textures_panel_state(self):
+        """Pliega o despliega el contenido del panel de Texturas (capas +
+        grano y enfoque). Plegar NO desmonta los widgets (eso parpadea en
+        blanco en macOS): solo congela la altura del cuerpo en 1px.
+        El encabezado con la flecha queda siempre visible; plegado, el
+        titulo resume cuantas capas hay."""
+        if self.textures_collapsed:
+            self.texture_body.grid_propagate(False)
+            self.texture_body.configure(height=1)
+            self.texture_toggle.configure(text="▶")
+            n = len(self.texture_layers)
+            extra = f" ({n} capa{'s' if n != 1 else ''})" if n else ""
+            self.texture_title.configure(text=f"Texturas{extra}")
+        else:
+            self.texture_body.grid_propagate(True)
+            self.texture_toggle.configure(text="▼")
+            self.texture_title.configure(text="Texturas")
+            self._refresh_texture_layers_visibility()
+
+    def _expand_textures_panel(self):
+        """Abre el panel si estaba plegado (al agregar una textura, para
+        que el usuario vea lo que acaba de entrar)."""
+        if self.textures_collapsed:
+            self.textures_collapsed = False
+            self.config_data["textures_collapsed"] = False
+            save_config(self.config_data)
+            self._apply_textures_panel_state()
+
+    def _on_add_texture_click(self):
+        self._expand_textures_panel()
+        self._add_texture_layer()
 
     def _on_texture_layers_changed(self):
         self.config_data["textures"] = [
@@ -2372,6 +2457,8 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
             added += 1
         if not added:
             self._set_status("Suelta una imagen para agregarla como textura.", RED)
+        else:
+            self._expand_textures_panel()
 
     def _handle_click(self, _event):
         all_media = IMAGE_EXTS | VIDEO_EXTS | AUDIO_EXTS
