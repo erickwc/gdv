@@ -21,10 +21,20 @@ function formatDuration(sec) {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+// ------------------------------------------------------- tema claro/oscuro
+
+function applyAppearance(state) {
+  const light = state.appearance === "light";
+  document.body.classList.toggle("light", light);
+  const sw = $("#theme-switch");
+  if (sw && sw.checked !== !light) sw.checked = !light; // marcado = oscuro
+}
+
 // --------------------------------------------------------------- render
 
 function render(state) {
   lastState = state;
+  applyAppearance(state);
   renderChips(state);
   FocusPicker.applyState(state);
   renderTemplate(state);
@@ -192,7 +202,7 @@ function buildTextureLayerRow(layer, index) {
   deleteFileBtn.textContent = "🗑";
   deleteFileBtn.addEventListener("click", () => {
     const name = layer.path.split(/[\\/]/).pop();
-    if (!confirm(`¿Eliminar "${name}" de la carpeta texturas? Se borra del disco y de cualquier capa que la esté usando.`)) return;
+    if (!confirm(`¿Quitar la textura "${name}" de la app y de las capas que la usan?`)) return;
     pywebview.api.delete_texture_file(layer.path).then((r) => {
       if (!r.ok) {
         $("#status-text").textContent = r.error || "No se pudo eliminar la textura.";
@@ -413,6 +423,13 @@ window.addEventListener("pywebviewready", () => {
 
   Promise.all([refreshTemplates(), refreshAvailableTextures()]).then(refresh);
 
+  // ------------------------------------------------------- tema
+  $("#theme-switch").addEventListener("change", (e) => {
+    const mode = e.target.checked ? "dark" : "light";
+    document.body.classList.toggle("light", mode === "light");
+    pywebview.api.set_appearance(mode);
+  });
+
   // ------------------------------------------------------- archivos
   $("#dropzone").addEventListener("click", () => {
     pywebview.api.browse_media().then(handleResult);
@@ -614,25 +631,37 @@ window.addEventListener("pywebviewready", () => {
 
 const FocusPicker = (() => {
   const W = 352, H = 200; // debe coincidir con FOCUS_PICKER_W/H en api.py
+  const HANDLE = 5;       // medio lado del tirador de esquina (dibujo)
+  const HIT = 11;         // radio de agarre de una esquina (interaccion)
   let canvas, ctx;
   let image = null;
   let imgW = W, imgH = H; // tamano ajustado (fit) de la imagen dentro del canvas
   let zoom = 100, focusX = 0.5, focusY = 0.5;
   let scalePct = 100; // sincronizado con la seccion Escala
   let lastPreviewUri = null;
-  let dragging = false;
+  // null | {mode:"move"} | {mode:"resize", ax, ay} (ancla = esquina opuesta)
+  let drag = null;
 
   function clamp01(v) {
     return Math.max(0, Math.min(1, v));
   }
 
-  function focusRect() {
-    const frac = 100 / zoom;
-    const cw = imgW * frac, ch = imgH * frac;
-    const ox = (W - imgW) / 2, oy = (H - imgH) / 2;
-    const cx = ox + (imgW - cw) * focusX;
-    const cy = oy + (imgH - ch) * focusY;
-    return [cx, cy, cx + cw, cy + ch];
+  function minDim() {
+    return Math.min(imgW, imgH);
+  }
+
+  function origin() {
+    return [(W - imgW) / 2, (H - imgH) / 2];
+  }
+
+  // Recuadro CUADRADO del recorte -- exactamente lo que exporta ffmpeg
+  // (build_focus_crop): lado min(iw,ih)/zoom colocado con focusX/focusY.
+  function cropRect() {
+    const side = minDim() * (100 / zoom);
+    const [ox, oy] = origin();
+    const x = ox + (imgW - side) * focusX;
+    const y = oy + (imgH - side) * focusY;
+    return [x, y, side];
   }
 
   function scaleCropFracs() {
@@ -641,17 +670,27 @@ const FocusPicker = (() => {
     return [s / cover, 1.0 / cover];
   }
 
+  // Recuadro visible: el cuadrado del recorte encogido por la seccion
+  // "Bordes de la imagen" (igual que hace el pipeline al exportar).
   function finalRect() {
-    const [fx0, fy0, fx1, fy1] = focusRect();
-    const fw = fx1 - fx0, fh = fy1 - fy0;
-    const side = Math.min(fw, fh);
-    const sx0 = fx0 + (fw - side) / 2;
-    const sy0 = fy0 + (fh - side) / 2;
-    const sx1 = sx0 + side, sy1 = sy0 + side;
+    const [x, y, side] = cropRect();
     const [wFrac, hFrac] = scaleCropFracs();
     const shrinkX = side * (1 - wFrac) / 2;
     const shrinkY = side * (1 - hFrac) / 2;
-    return [sx0 + shrinkX, sy0 + shrinkY, sx1 - shrinkX, sy1 - shrinkY];
+    return [x + shrinkX, y + shrinkY, x + side - shrinkX, y + side - shrinkY];
+  }
+
+  // Esquinas del recuadro visible, con el cursor de flechas que le toca a
+  // cada una (nwse = ↘↖, nesw = ↙↗) y su esquina opuesta (el ancla al
+  // redimensionar).
+  function corners() {
+    const [x0, y0, x1, y1] = finalRect();
+    return [
+      { x: x0, y: y0, cursor: "nwse-resize", ax: x1, ay: y1 },
+      { x: x1, y: y0, cursor: "nesw-resize", ax: x0, ay: y1 },
+      { x: x0, y: y1, cursor: "nesw-resize", ax: x1, ay: y0 },
+      { x: x1, y: y1, cursor: "nwse-resize", ax: x0, ay: y0 },
+    ];
   }
 
   function redraw() {
@@ -665,7 +704,7 @@ const FocusPicker = (() => {
       ctx.fillText("Carga una imagen", W / 2, H / 2);
       return;
     }
-    const ox = (W - imgW) / 2, oy = (H - imgH) / 2;
+    const [ox, oy] = origin();
     ctx.drawImage(image, ox, oy, imgW, imgH);
     const [cx0, cy0, cx1, cy1] = finalRect();
     if (cx0 > ox + 0.5 || cy0 > oy + 0.5 || cx1 < ox + imgW - 0.5 || cy1 < oy + imgH - 0.5) {
@@ -678,26 +717,60 @@ const FocusPicker = (() => {
     ctx.strokeStyle = "#19a866";
     ctx.lineWidth = 2;
     ctx.strokeRect(cx0, cy0, cx1 - cx0, cy1 - cy0);
+    // tiradores de esquina (cuadraditos) para redimensionar
+    for (const c of corners()) {
+      ctx.fillStyle = "#19a866";
+      ctx.fillRect(c.x - HANDLE, c.y - HANDLE, HANDLE * 2, HANDLE * 2);
+      ctx.strokeStyle = "rgba(255,255,255,0.9)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(c.x - HANDLE + 0.5, c.y - HANDLE + 0.5, HANDLE * 2 - 1, HANDLE * 2 - 1);
+    }
   }
 
   function notify() {
-    pywebview.api.set_focus(zoom, focusX, focusY);
-  }
-
-  function syncZoomControls() {
-    $("#focus-zoom").value = zoom;
-    $("#focus-zoom-entry").value = zoom;
-  }
-
-  function setZoom(value, { notify: shouldNotify = true } = {}) {
-    zoom = Math.max(100, Math.min(300, Math.round(value)));
-    syncZoomControls();
-    redraw();
-    if (shouldNotify) notify();
+    pywebview.api.set_focus(Math.round(zoom), focusX, focusY);
   }
 
   function setScalePct(pct) {
     scalePct = pct;
+    redraw();
+  }
+
+  function canvasPos(e) {
+    const rect = canvas.getBoundingClientRect();
+    return [e.clientX - rect.left, e.clientY - rect.top];
+  }
+
+  function hitTest(px, py) {
+    for (const c of corners()) {
+      if (Math.abs(px - c.x) <= HIT && Math.abs(py - c.y) <= HIT) {
+        return { mode: "resize", ...c };
+      }
+    }
+    const [x0, y0, x1, y1] = finalRect();
+    if (px >= x0 && px <= x1 && py >= y0 && py <= y1) {
+      return { mode: "move" };
+    }
+    return null;
+  }
+
+  function applyResize(px, py, ax, ay) {
+    const [wFrac, hFrac] = scaleCropFracs();
+    // lado deseado del CUADRADO completo segun el eje dominante del gesto
+    const bySideW = Math.abs(px - ax) / Math.max(0.05, wFrac);
+    const bySideH = Math.abs(py - ay) / Math.max(0.05, hFrac);
+    let side = Math.max(bySideW, bySideH);
+    side = Math.max(minDim() / 3, Math.min(minDim(), side)); // zoom 100..300
+    zoom = (100 * minDim()) / side;
+    // la esquina ancla del recuadro visible queda clavada en su lugar
+    const frW = side * wFrac, frH = side * hFrac;
+    const fx0 = px >= ax ? ax : ax - frW;
+    const fy0 = py >= ay ? ay : ay - frH;
+    const x = fx0 - side * (1 - wFrac) / 2; // esquina del cuadrado completo
+    const y = fy0 - side * (1 - hFrac) / 2;
+    const [ox, oy] = origin();
+    focusX = imgW - side < 1 ? 0.5 : clamp01((x - ox) / (imgW - side));
+    focusY = imgH - side < 1 ? 0.5 : clamp01((y - oy) / (imgH - side));
     redraw();
   }
 
@@ -729,7 +802,6 @@ const FocusPicker = (() => {
     focusX = state.focus_x ?? 0.5;
     focusY = state.focus_y ?? 0.5;
     scalePct = state.scale_pct || 100;
-    syncZoomControls();
     loadImage(state.show_focus ? state.media_focus_preview : null);
     redraw();
   }
@@ -742,43 +814,47 @@ const FocusPicker = (() => {
 
     canvas.addEventListener("pointerdown", (e) => {
       if (!image) return;
-      dragging = true;
+      const [px, py] = canvasPos(e);
+      const hit = hitTest(px, py);
+      if (!hit) return;
+      drag = hit.mode === "resize" ? { mode: "resize", ax: hit.ax, ay: hit.ay } : { mode: "move" };
       canvas.setPointerCapture(e.pointerId);
     });
     canvas.addEventListener("pointermove", (e) => {
-      if (!dragging) return;
+      if (!drag) {
+        // sin arrastre: solo actualizar el cursor (flechas en esquinas,
+        // "mover" dentro del recuadro)
+        if (!image) return;
+        const [px, py] = canvasPos(e);
+        const hit = hitTest(px, py);
+        canvas.style.cursor = hit ? (hit.mode === "resize" ? hit.cursor : "move") : "default";
+        return;
+      }
+      if (drag.mode === "resize") {
+        const [px, py] = canvasPos(e);
+        applyResize(px, py, drag.ax, drag.ay);
+        return;
+      }
       // Movimiento RELATIVO (movementX/Y) en vez de una posicion absoluta
-      // (offsetX/Y) medida contra un origen fijo: offsetX/Y se vuelve
-      // poco confiable en cuanto el cursor sale del area del canvas (algo
-      // que pasa seguido, porque mide solo 352x200), y con eso el
-      // arrastre se quedaba corto o se disparaba de mas cerca de los
-      // bordes. El delta relativo no depende de estar "dentro" del canvas.
-      const frac = 100 / zoom;
-      const rangeX = Math.max(1, imgW * (1 - frac));
-      const rangeY = Math.max(1, imgH * (1 - frac));
+      // (offsetX/Y): offsetX/Y se vuelve poco confiable en cuanto el
+      // cursor sale del canvas (mide solo 352x200) -- el delta relativo
+      // no depende de estar "dentro". setPointerCapture mantiene el
+      // arrastre vivo fuera del canvas.
+      const side = minDim() * (100 / zoom);
+      const rangeX = Math.max(1, imgW - side);
+      const rangeY = Math.max(1, imgH - side);
       focusX = clamp01(focusX + e.movementX / rangeX);
       focusY = clamp01(focusY + e.movementY / rangeY);
       redraw();
     });
     const endDrag = () => {
-      if (!dragging) return;
-      dragging = false;
+      if (!drag) return;
+      drag = null;
       notify();
     };
-    // OJO: NO usar pointerleave para terminar el arrastre -- el canvas
-    // mide solo 200px de alto, asi que al arrastrar hacia arriba/abajo el
-    // cursor sale de esos limites antes de llegar al tope real de la
-    // imagen, y pointerleave cortaria el drag ahi. Con setPointerCapture
-    // activo, pointermove sigue llegando aunque el cursor salga del
-    // canvas -- pointerup (+ pointercancel) es lo unico que debe cerrarlo.
     canvas.addEventListener("pointerup", endDrag);
     canvas.addEventListener("pointercancel", endDrag);
 
-    $("#focus-zoom").addEventListener("input", (e) => setZoom(e.target.value));
-    $("#focus-zoom-entry").addEventListener("change", (e) => setZoom(e.target.value));
-    $("#focus-zoom-entry").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") setZoom(e.target.value);
-    });
     $("#focus-reset").addEventListener("click", () => {
       pywebview.api.reset_focus().then((r) => applyState(r.state));
     });

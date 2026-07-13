@@ -25,6 +25,18 @@ AUDIO_EXTS = {".mp3", ".wav", ".flac", ".aac", ".m4a", ".ogg", ".wma", ".opus"}
 CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 IS_MAC = sys.platform == "darwin"
 
+# En Mac, el Python de python.org no trae certificados SSL configurados y
+# toda conexion HTTPS falla (CERTIFICATE_VERIFY_FAILED) -- sin esto la
+# descarga por link con yt-dlp dependeria de que yt-dlp encuentre certifi
+# por su cuenta. Se configura aqui (modulo compartido) para que cualquier
+# UI que importe el motor quede cubierta.
+if IS_MAC:
+    try:
+        import certifi
+        os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+    except ImportError:
+        pass
+
 # Empaquetada (PyInstaller): las carpetas del usuario (plantillas, texturas,
 # config) van junto al ejecutable para que sean faciles de encontrar y editar.
 if getattr(sys, "frozen", False):
@@ -115,6 +127,27 @@ def detect_template_window(template_path):
                 top -= 1
                 h += 1
         return left, top, w, h
+
+
+def template_canvas_box(template_path, box):
+    """Convierte el rectangulo detectado (en pixeles de la plantilla) a
+    coordenadas del lienzo 1920x1080. Una plantilla que no es 1920x1080 se
+    escala para caber completa y se CENTRA (igual que la dibuja el
+    filtergraph); su ventana transparente debe transformarse con la misma
+    escala y el mismo desplazamiento para que el medio caiga donde toca."""
+    with Image.open(template_path) as img:
+        w, h = img.size
+    if (w, h) == (MAX_WIDTH, MAX_HEIGHT):
+        return box
+    factor = min(MAX_WIDTH / w, MAX_HEIGHT / h)
+    off_x = (MAX_WIDTH - int(round(w * factor))) // 2
+    off_y = (MAX_HEIGHT - int(round(h * factor))) // 2
+    x, y, bw, bh = box
+    new_w = max(16, int(round(bw * factor)) // 2 * 2)
+    new_h = max(16, int(round(bh * factor)) // 2 * 2)
+    new_x = max(0, min(MAX_WIDTH - new_w, off_x + int(round(x * factor))))
+    new_y = max(0, min(MAX_HEIGHT - new_h, off_y + int(round(y * factor))))
+    return new_x, new_y, new_w, new_h
 
 
 def probe_media(ffmpeg_exe, media_path):
@@ -247,19 +280,22 @@ def build_layout(media_size, is_video, scale_pct, template_box):
 
 
 def build_focus_crop(focus):
-    """Recorte manual (zoom + punto de interes) aplicado ANTES de todo lo
-    demas: recorta el origen a iw/zoom x ih/zoom (misma proporcion, solo
-    mas cerca) centrado en (focus_x, focus_y). zoom=1.0 y foco centrado
-    -> no-op, asi que no cambia nada para quien no toque el ajuste."""
+    """Recorte manual de "Ajustar imagen", aplicado ANTES de todo lo demas.
+    Recorta un CUADRADO de lado min(iw,ih)/zoom colocado con (focus_x,
+    focus_y) en 0..1 -- exactamente el recuadro que dibuja la UI. Antes se
+    recortaba iw/zoom x ih/zoom (proporcion de la foto) y luego el pipeline
+    centraba el cuadrado: en fotos rectangulares eso impedia mover el
+    recuadro fuera del centro sin hacer mucho zoom. zoom=1.0 y foco
+    centrado -> no-op (mismo resultado que el recorte centrado de siempre),
+    asi que no cambia nada para quien no toque el ajuste."""
     zoom, focus_x, focus_y = focus
     zoom = max(1.0, zoom)
     if zoom == 1.0 and focus_x == 0.5 and focus_y == 0.5:
         return ""
-    crop_w = f"iw/{zoom:.4f}"
-    crop_h = f"ih/{zoom:.4f}"
-    crop_x = f"(iw-({crop_w}))*{focus_x:.4f}"
-    crop_y = f"(ih-({crop_h}))*{focus_y:.4f}"
-    return f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y},"
+    side = f"min(iw\\,ih)/{zoom:.4f}"
+    crop_x = f"(iw-({side}))*{focus_x:.4f}"
+    crop_y = f"(ih-({side}))*{focus_y:.4f}"
+    return f"crop={side}:{side}:{crop_x}:{crop_y},"
 
 
 def build_filtergraph(layout, is_video=False, speed=1.0, deinterlace=False,
@@ -325,7 +361,16 @@ def build_filtergraph(layout, is_video=False, speed=1.0, deinterlace=False,
     last = "padded"
 
     if tpl_idx is not None:
-        parts.append(f"[{last}][{tpl_idx}:v]overlay=0:0[tpld]")
+        # La plantilla se escala para caber completa en el lienzo y se
+        # CENTRA (relleno transparente alrededor) -- una plantilla que no
+        # es 1920x1080 antes quedaba pegada a la esquina superior
+        # izquierda. template_canvas_box aplica la misma transformacion al
+        # rectangulo de la ventana.
+        parts.append(
+            f"[{tpl_idx}:v]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=decrease,"
+            f"pad={canvas_w}:{canvas_h}:(ow-iw)/2:(oh-ih)/2:color=black@0[tplfit]"
+        )
+        parts.append(f"[{last}][tplfit]overlay=0:0[tpld]")
         last = "tpld"
 
     parts.append(f"[{last}]format=yuv420p[vout]")

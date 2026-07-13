@@ -8,7 +8,14 @@
 <body>
   <div class="shell">
     <header class="shell-header">
-      <h1>Generador de Video</h1>
+      <div class="shell-header-row">
+        <h1>Generador de Video</h1>
+        <label class="theme-toggle" title="Tema claro/oscuro">
+          <input type="checkbox" id="theme-switch">
+          <span class="theme-toggle-track"><span class="theme-toggle-thumb"></span></span>
+          <span class="theme-toggle-label">Oscuro</span>
+        </label>
+      </div>
       <p class="hint">Arrastra una imagen o un clip de video + un audio. MP4 · AAC 320 kbps · HD/Full HD</p>
     </header>
 
@@ -53,12 +60,7 @@
           <button class="btn btn-text" id="focus-reset">↺ Centrar</button>
         </div>
         <canvas class="focus-picker" id="focus-picker" width="352" height="200"></canvas>
-        <div class="control-row">
-          <label class="control-label">Zoom</label>
-          <input type="range" class="slider" id="focus-zoom" min="100" max="300" value="100">
-          <input type="text" class="num-entry" id="focus-zoom-entry" value="100">
-          <span class="unit">%</span>
-        </div>
+        <p class="hint">Arrastra el recuadro para moverlo · jala las esquinas para cambiar el tamaño</p>
       </section>
 
       <!-- Plantilla -->

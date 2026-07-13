@@ -30,6 +30,22 @@
   --radius-sm: 7px;
 }
 
+/* Tema claro: mismos nombres de variable; la clase la pone app.js segun
+   la preferencia guardada en config.json ("appearance"). */
+body.light {
+  --bg: #f2f2f4;
+  --chip-bg: #ffffff;
+  --hover-bg: #e9e9ee;
+  --border: #d8d8de;
+  --text: #17171a;
+  --text-soft: #45454d;
+  --text-faint: #7b7b84;
+  --accent: #148f57;
+  --accent-hover: #0f7546;
+  --accent-text: #ffffff;
+  --red: #c9372c;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -61,6 +77,64 @@ body {
   font-size: 22px;
   font-weight: 500;
   letter-spacing: -0.01em;
+}
+
+.shell-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* Interruptor de tema claro/oscuro */
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.theme-toggle input {
+  display: none;
+}
+
+.theme-toggle-label {
+  font-size: 12px;
+  font-weight: 300;
+  color: var(--text-faint);
+}
+
+.theme-toggle-track {
+  position: relative;
+  width: 38px;
+  height: 20px;
+  border-radius: 10px;
+  background: var(--hover-bg);
+  border: 1px solid var(--border);
+  transition: background 120ms ease;
+}
+
+.theme-toggle input:checked + .theme-toggle-track {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.theme-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text);
+  transition: transform 120ms ease;
+}
+
+.theme-toggle input:checked + .theme-toggle-track .theme-toggle-thumb {
+  transform: translateX(18px);
+  background: #ffffff;
 }
 
 .hint {
@@ -134,7 +208,8 @@ body {
 }
 
 .dropzone:hover,
-.dropzone.drag-active {
+.dropzone.drag-active,
+body.drag-active .dropzone {
   border-color: var(--accent);
   background: rgba(25, 168, 102, 0.06);
 }

@@ -154,6 +154,7 @@ class Api:
             "speed": self.speed,
             "trim_start": self.trim_start,
             "trim_end": self.trim_end,
+            "appearance": self.config_data.get("appearance", "dark"),
             # banderas derivadas -- equivalente a _refresh_ready_state()
             "ready": bool(self.media_path and self.audio_path),
             "show_focus": bool(self.media_path) and not self.media_is_video,
@@ -272,7 +273,9 @@ class Api:
         display = os.path.splitext(os.path.basename(path))[0]
         self._template_paths[display] = path
         self.template_path = path
-        self.template_box = box
+        # box viene en pixeles de la plantilla; a coordenadas del lienzo
+        # (plantillas que no son 1920x1080 se escalan y CENTRAN)
+        self.template_box = engine.template_canvas_box(path, box)
         self.config_data["template"] = path
         engine.save_config(self.config_data)
         return {"ok": True, "template_path": path, "template_box": box}
@@ -347,6 +350,15 @@ class Api:
         engine.save_config(self.config_data)
         return {"ok": True}
 
+    # ----------------------------------------------------------- apariencia
+
+    def set_appearance(self, mode):
+        """Tema claro/oscuro de la UI -- misma clave de config que usaba la
+        version de customtkinter, asi la preferencia sobrevive el cambio."""
+        self.config_data["appearance"] = "dark" if mode == "dark" else "light"
+        engine.save_config(self.config_data)
+        return {"ok": True}
+
     def _restore_textures_from_config(self):
         layers_data = self.config_data.get("textures")
         if layers_data is None:
@@ -398,19 +410,16 @@ class Api:
         return {"ok": True, "texture_layers": self.texture_layers}
 
     def delete_texture_file(self, path):
-        """Borra el ARCHIVO de textura (solo si vive en la carpeta
-        administrada) y quita cualquier capa que lo tenga puesto. La
-        confirmacion vive en la UI (modal HTML), no aca."""
-        if os.path.dirname(path) != engine.TEXTURES_DIR:
-            return {
-                "ok": False,
-                "error": "No está en la carpeta administrada de texturas, así que no se "
-                         "borra el archivo original. Usa la ✕ de la capa para quitarla.",
-            }
-        try:
-            os.remove(path)
-        except OSError as exc:
-            return {"ok": False, "error": str(exc)}
+        """Quita la textura de la APP: sale de la lista de disponibles y de
+        cualquier capa que la use. El archivo solo se borra del disco si es
+        la copia administrada dentro de la carpeta texturas/ -- un archivo
+        del usuario (Descargas, etc.) jamas se toca. Antes esto devolvia un
+        error para archivos externos y el boton parecia no hacer nada."""
+        if os.path.dirname(path) == engine.TEXTURES_DIR:
+            try:
+                os.remove(path)
+            except OSError as exc:
+                return {"ok": False, "error": str(exc)}
         display = os.path.splitext(os.path.basename(path))[0]
         self._texture_paths.pop(display, None)
         self.texture_layers = [layer for layer in self.texture_layers if layer["path"] != path]
@@ -782,6 +791,14 @@ class Api:
         inyecta pywebviewFullPath en cada archivo soltado, asi que no hace
         falta ningun puente extra en JS para esto (a diferencia de
         tkinterdnd2, que si lo necesitaba con un parametro "skip" manual)."""
+        # El body entero acepta medios (como la app vieja: soltar en
+        # CUALQUIER parte de la ventana carga imagen/video/audio) -- las
+        # secciones especificas cortan la propagacion, asi que un drop
+        # sobre Plantilla/Texturas no llega al body. Ademas, sin un
+        # preventDefault global, soltar un archivo fuera de una zona
+        # registrada hacia que el webview NAVEGARA al archivo (la UI
+        # desaparecia y quedaba la imagen suelta).
+        self._bind_drop_zone("body", self._on_dropzone_drop)
         self._bind_drop_zone("#dropzone", self._on_dropzone_drop)
         self._bind_drop_zone("#template-section", self._on_template_drop)
         self._bind_drop_zone("#texture-section", self._on_texture_drop)
