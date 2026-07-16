@@ -1,0 +1,1584 @@
+@font-face {
+  font-family: "Inter";
+  src: url("fonts/Inter-Regular.ttf") format("truetype");
+  font-weight: 400;
+}
+@font-face {
+  font-family: "Inter";
+  src: url("fonts/Inter-Light.ttf") format("truetype");
+  font-weight: 300;
+}
+@font-face {
+  font-family: "Inter";
+  src: url("fonts/Inter-Medium.ttf") format("truetype");
+  font-weight: 500;
+}
+
+:root {
+  /* Se abandono el fondo Mica/Acrylic nativo (backgroundMaterial +
+     transparent:true, ver main.js) -- solo existia en Windows, y perdia el
+     redondeo automatico de esquinas sin que CSS ni SetWindowRgn lo
+     recortaran bien. En su lugar: la capa .background (mas abajo, un
+     monton de radial-gradient() muy sutiles + backdrop-filter en los
+     paneles) -- efecto "vidrio esmerilado" 100% CSS, sin transparencia
+     real de ventana, asi que funciona igual en Windows, Mac y Linux. */
+  --bg: #050309;
+  --panel-bg: #171320;
+  /* Panel "de vidrio" -- fondo casi transparente + backdrop-filter (ver
+     .app-root) para que se note el desenfoque de las manchas de color de
+     atras. Blanco a baja opacidad, no un gris solido. */
+  --glass-panel-bg: rgba(255, 255, 255, 0.015);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  /* Panel grande del previsualizador (.preview-surface) -- un poco mas
+     opaco que --glass-panel-bg, para que se note como "tarjeta" separada. */
+  --glass-card-bg: rgba(255, 255, 255, 0.035);
+  --chip-bg: rgba(255, 255, 255, 0.04);
+  --hover-bg: rgba(255, 255, 255, 0.09);
+  --border: rgba(255, 255, 255, 0.1);
+  /* Para la linea entre panel de controles/previsualizador -- mas tenue
+     que --border (esa se sigue usando en inputs/tarjetas). */
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --text: #ffffff;
+  --text-soft: #dcd9e6;
+  --text-faint: #a29dbb;
+  --accent: #8b5cf6;
+  --accent-hover: #7c3aed;
+  --accent-text: #ffffff;
+  /* Mismo color que --accent pero como rgba() de baja opacidad, para el
+     halo de foco (box-shadow) -- separado de --accent porque box-shadow
+     no puede tomar un color hex y aplicarle opacidad el solo. JS
+     (setAdaptiveAccent en silk-aurora-background.js) actualiza ambas
+     variables juntas cuando cambia el color dominante de la foto/video
+     cargado. */
+  --accent-glow: rgba(139, 92, 246, 0.18);
+  --red: #e35b4e;
+  --radius: 10px;
+  --radius-sm: 6px;
+}
+
+/* Tema claro: mismos nombres de variable; la clase la pone app.js segun
+   la preferencia guardada en config.json ("appearance"). .background se
+   oculta en claro (ver mas abajo) -- ese glow es una estetica de modo
+   oscuro, en blanco se veria como manchas sucias en vez de "glow". */
+body.light {
+  --bg: #f4f2fa;
+  --panel-bg: #ffffff;
+  --glass-panel-bg: rgba(255, 255, 255, 0.6);
+  --glass-border: rgba(0, 0, 0, 0.08);
+  --glass-card-bg: rgba(0, 0, 0, 0.025);
+  --chip-bg: rgba(0, 0, 0, 0.045);
+  --hover-bg: rgba(0, 0, 0, 0.07);
+  --border: rgba(0, 0, 0, 0.1);
+  --border-subtle: rgba(0, 0, 0, 0.06);
+  --text: #17171a;
+  --text-soft: #45454d;
+  --text-faint: #7b7b84;
+  --accent: #7c3aed;
+  --accent-hover: #6d28d9;
+  --accent-text: #ffffff;
+  --accent-glow: rgba(124, 58, 237, 0.18);
+  --red: #c9372c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Inter", "Segoe UI", -apple-system, sans-serif;
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+  position: relative;
+}
+
+.hint {
+  margin: 0;
+  font-size: 12px;
+  color: #959595;
+  font-weight: 300;
+  line-height: 1.5;
+}
+
+/* ---------------------------------------------------------------- fondo */
+/* Imagen estatica (background.png, exportada de Figma con el grano ya
+   horneado en los pixeles) -- reemplaza el intento anterior con el SVG
+   inline (que tambien funcionaba, pero esto es mas simple de mantener: un
+   solo archivo de imagen, sin filtros SVG encadenados en el HTML).
+   position:fixed: no lo recorta el overflow:hidden de .app-root ni afecta
+   el layout. z-index:-1: queda detras del contenido de .app-root. */
+.background {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  background: url("background.png") center / cover no-repeat, #050309;
+}
+
+body.light .background {
+  /* El shader/glow es una estetica de modo oscuro -- en claro se ve raro. */
+  display: none;
+}
+
+/* Desatura el aurora (silk-aurora-background.js) ademas de oscurecerlo
+   (::after, mas abajo) -- entre esto y el overlay, el efecto queda de
+   fondo ambiente en vez de competir con el texto. 0 = blanco y negro,
+   1 = colores originales del shader, >1 = mas saturado. */
+.background canvas {
+    filter: contrast(1.3) brightness(.45) saturate(2.5) ;
+}
+
+.background::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: .02;
+    background: repeating-radial-gradient(#000 0 0.0001%, #fff 0 0.0002%) 50% 0 / 2500px 2500px, repeating-conic-gradient(#000 0 0.0001%, #fff 0 0.0002%) 60% 60% / 2500px 2500px;
+    background-blend-mode: difference;
+    animation: noise .2s infinite alternate;
+}
+
+@keyframes noise {
+    100% {
+        background-position: 50% 0, 60% 50%;
+    }
+}
+
+
+/* ------------------------------------------------------- layout general */
+
+/* Envoltorio de TODA la ventana (barra de titulo + app-shell) -- el panel
+   "de vidrio": fondo casi transparente, SIN backdrop-filter. El blur ya
+   viene horneado en background.svg (sus propios <feGaussianBlur> en los
+   blobs) -- un backdrop-filter en vivo aca ENCIMA volvia a desenfocar todo
+   lo de atras, incluido el grano que el SVG ya trae listo (por eso no se
+   notaba). Esquinas redondeadas de verdad: sin transparent:true en
+   main.js, Windows/macOS ya redondean la ventana ellos solos -- el
+   border-radius/overflow de aca es solo un respaldo. */
+.app-root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--glass-panel-bg);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow:
+    0 8px 40px rgba(0, 0, 0, 0.35),
+    inset 0 1px rgba(255, 255, 255, 0.06);
+}
+
+/* Barra de titulo propia -- transparente (deja ver el gradiente de
+   .app-root) con un borde inferior sutil para separarla del resto. El
+   padding reserva el hueco donde el sistema dibuja los controles nativos
+   de la ventana -- a la derecha en Windows/Linux (titleBarOverlay), a la
+   izquierda en macOS (los 3 semaforos, trafficLightPosition en main.js) --
+   [data-platform] lo pone index.html bien temprano. */
+.app-titlebar {
+  flex-shrink: 0;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 112px 0 16px;
+  border-bottom: 1px solid var(--border);
+  -webkit-app-region: drag;
+}
+
+[data-platform="darwin"] .app-titlebar {
+  padding: 0 16px 0 84px;
+}
+
+.app-shell {
+  display: flex;
+  align-items: stretch;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Se probo como tarjeta flotante aparte (con gap, fondo, sombra, blur
+   propio) y se alejaba de la referencia -- ahi el panel va pegado al
+   borde de la ventana, sin caja ni separacion, solo con una linea MUY
+   tenue dividiendolo del previsualizador (no la linea marcada de antes). */
+.control-panel {
+  width: 400px;
+  flex-shrink: 0;
+  background: transparent;
+  border-right: 1px solid var(--border-subtle);
+  max-height: 100%;
+  overflow-y: auto;
+}
+
+/* ---- scroll invisible (panel de controles + lista de presets) ----
+   Sin barra visible, pero el scroll en si sigue andando igual (rueda del
+   mouse, trackpad, flechas) -- overflow-y:auto no se toca, solo se oculta
+   el track/thumb. scrollbar-width:none es el equivalente de Firefox al
+   ::-webkit-scrollbar{display:none} de Chromium/Electron. */
+.control-panel,
+.preset-dropdown-list {
+  scrollbar-width: none;
+}
+
+.control-panel::-webkit-scrollbar,
+.preset-dropdown-list::-webkit-scrollbar {
+  display: none;
+}
+
+.control-panel-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 24px;
+}
+
+.preview-panel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  /* Sin padding abajo -- "Generar video" (o la barra de progreso/estado
+     cuando esta generando) queda pegado al borde inferior de la ventana.
+     El gap de arriba ya separa cada seccion entre si, no hace falta
+     tambien un margin-bottom por elemento (eso duplicaba el espacio, y
+     encima le pegaba al boton aunque las secciones ocultas de despues
+     -- progress-bar/status-row -- no se estuvieran mostrando, porque
+     :not(:last-child) no distingue [hidden] de visible). */
+  padding: 20px 20px 8px;
+}
+
+/* --------------------------------------------------- encabezado panel */
+
+/* Interruptor de tema claro/oscuro */
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  /* Sin esto queda debajo de .app-titlebar-drag y el clic mueve la
+     ventana en vez de cambiar el tema. */
+  -webkit-app-region: no-drag;
+  flex-shrink: 0;
+}
+
+.theme-toggle input {
+  display: none;
+}
+
+.theme-toggle-track {
+  position: relative;
+  width: 38px;
+  height: 20px;
+  border-radius: 10px;
+  background: var(--hover-bg);
+  border: 1px solid var(--border);
+  transition: background 120ms ease;
+}
+
+.theme-toggle input:checked + .theme-toggle-track {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.theme-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text);
+  transition: transform 120ms ease;
+}
+
+.theme-toggle input:checked + .theme-toggle-track .theme-toggle-thumb {
+  transform: translateX(18px);
+  background: #ffffff;
+}
+
+/* --------------------------------------------------------- secciones */
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+
+.section h2 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 400;
+  color: #ffffff;
+  text-transform: none;
+}
+
+.section-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.section-title-row h2 {
+  flex: 1;
+}
+
+/* ---- dropzone ---- */
+
+.dropzone {
+  border: 1.5px dashed var(--border);
+  border-radius: 6px;
+  padding: 28px 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.dropzone:hover,
+.dropzone.drag-active,
+body.drag-active .dropzone {
+  border-color: var(--accent);
+  background: var(--accent-glow);
+}
+
+.dropzone-title {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.dropzone-sub {
+  margin: 0;
+  font-size: 12px;
+  color: #cbcbcb;
+  font-weight: 300;
+}
+
+/* ---- inputs / links ---- */
+
+.link-row {
+  display: flex;
+  gap: 8px;
+}
+
+.text-input,
+.link-row input {
+  flex: 1;
+  height: fit-content;
+  /* background: var(--chip-bg); */
+  /* Blur propio (no del fondo general, ver .app-root) -- estos campos son
+     chicos y --chip-bg es bien translucido, sin blur se veian planos/poco
+     definidos encima del fondo. */
+  background: linear-gradient(
+    190deg,
+    rgba(255, 255, 255, 0.10) 0%,
+    rgba(255, 255, 255, 0.04) 40%,
+    rgba(255, 255, 255, 0.04) 100%
+);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: none;
+  border-radius: 8px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 7px 8px;
+  outline: none;
+  border: 1px solid rgb(255 255 255 / 8%);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+  box-shadow: black;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
+}
+
+.text-input:hover:not(:focus),
+.link-row input:hover:not(:focus) {
+  border-color: var(--glass-border);
+}
+
+.text-input:focus,
+.link-row input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-glow);
+}
+
+.text-input::placeholder,
+.link-row input::placeholder {
+  color: #ffffff8f;
+  font-weight:300;
+}
+
+/* ---- chips ---- */
+
+.chip-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: linear-gradient(
+    190deg,
+    rgba(255, 255, 255, 0.1) 0%,
+    rgba(255, 255, 255, 0.04) 40%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 10px;
+  padding: 8px 10px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
+}
+
+/* Icono de tipo de archivo (no la miniatura real, ver fillStaticIcons en
+   app.js) -- cuadrado con un radio mas chico que el del chip que lo
+   contiene (--radius-sm = 6px), no circulo, para que no se vea raro
+   "flotando" dentro de una tarjeta con esquinas rectas. */
+.chip-thumb {
+  display: none;
+  width: 36px;
+  height: 36px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 4px;
+  background: linear-gradient(190deg, rgb(173 173 173 / 28%) 0%, var(--accent-glow) 100%);
+  border: 1px solid rgb(225 225 225 / 4%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  color: var(--accent);
+}
+
+.chip-thumb svg {
+  width: 17px;
+  height: 17px;
+}
+
+.chip-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap:4px;
+}
+
+.chip .btn-icon {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.chip-name {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chip-kind {
+  font-size: 11.5px;
+  color: #acacac;
+  font-weight: 300;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- buttons ---- */
+
+.btn {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 300;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 120ms ease, opacity 120ms ease, border-color 120ms ease,
+    color 120ms ease, transform 100ms ease;
+}
+
+.btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.btn-ghost {
+  background: var(--chip-bg);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 4px 14px;
+  border-radius:6px;
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--hover-bg);
+  border-color: var(--glass-border);
+}
+
+.btn-text {
+  background: transparent;
+  color: #b1b1b1;
+  padding: 4px 6px;
+}
+
+.btn-text:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.btn-icon {
+  background: linear-gradient(
+    190deg,
+    rgba(255, 255, 255, 0.1) 0%,
+    rgba(255, 255, 255, 0.04) 40%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 8px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
+  color: var(--text-soft);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  padding: 6px;
+  flex-shrink: 0;
+}
+
+.btn-icon:hover:not(:disabled) {
+  background: var(--hover-bg);
+  color: var(--text);
+  border-color: var(--glass-border);
+}
+
+.btn-primary {
+  /* Blanco solido en vez del vidrio translucido -- con el fondo tomando
+     el color de la foto/video cargado (ver silk-aurora-background.js),
+     un vidrio muy sutil se perdia contra fondos claros; blanco solido
+     siempre contrasta, sea cual sea el color de atras. Texto oscuro
+     (--bg, no --text) para que se lea encima del blanco. */
+  background: var(--text);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: var(--bg);
+  padding: 10px;
+  border-radius: 8px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
+  /* Sin transform en la transition de hover -- se saco el "se mueve" al
+     pasar el mouse (translateY), se dejo solo el brillo. El transform SI
+     se usa en :active (mas abajo). */
+  transition: background 120ms ease, border-color 120ms ease, transform 100ms ease;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #f2f2f2;
+}
+
+.btn-primary:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.btn-generate {
+  font-size: 14px;
+}
+
+/* ---- selects / dropdowns ---- */
+
+.select {
+  flex: 1;
+  height: fit-content;
+  /* Sin esto un <select> nativo cae al fondo blanco por default del
+     navegador detras del degradado translucido de background-image (que
+     solo pinta ENCIMA, no reemplaza el background-color base). */
+  background-color: transparent;
+  /* 2 capas de background-image: el degradado de vidrio + la flechita del
+     select (que ya usaba background-image aparte) -- van juntas en una
+     sola declaracion (con su repeat/position en el mismo orden) porque
+     una segunda declaracion de background-image pisaria a la primera. */
+  background-image:
+    linear-gradient(
+      190deg,
+      rgba(255, 255, 255, 0.1) 0%,
+      rgba(255, 255, 255, 0.04) 40%,
+      rgba(255, 255, 255, 0.04) 100%
+    ),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238b8b92'/%3E%3C/svg%3E");
+  background-repeat: no-repeat, no-repeat;
+  background-position: center, right 12px center;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 12px;
+  outline: none;
+  appearance: none;
+  padding-right: 28px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-glow);
+}
+
+.select-sm {
+  padding-right: 24px;
+}
+
+/* ---- dropdown personalizado de presets ---- */
+
+.preset-dropdown {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.preset-dropdown-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: linear-gradient(
+    190deg,
+    rgba(255, 255, 255, 0.1) 0%,
+    rgba(255, 255, 255, 0.04) 40%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 8px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 8px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.preset-dropdown-trigger span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preset-dropdown-chevron {
+  flex-shrink: 0;
+  display: flex;
+  color: var(--text-faint);
+  transition: transform 120ms ease;
+}
+
+.preset-dropdown.open .preset-dropdown-chevron {
+  transform: rotate(180deg);
+}
+
+.preset-dropdown-list {
+  /* position/top/left/width reales los pone dropdownPositioning.js en JS
+     (position:fixed, con auto-flip hacia arriba si no hay espacio abajo) --
+     esto es solo el fallback antes de que corra ese calculo. La lista se
+     mueve a <body> al abrirse para escapar el overflow-y:auto de
+     .control-panel (si no, cualquier dropdown cerca del borde del panel
+     quedaba recortado ahi). */
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 50;
+  max-height: 220px;
+  overflow-y: auto;
+  background: linear-gradient(190deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.04) 40%, rgba(255, 255, 255, 0.04) 100%);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+/* Version con mas cuerpo, solo para el dropdown de modo de mezcla: se abre
+   encima de los sliders de opacidad/escala (no de un fondo vacio como el
+   de presets), asi que el vidrio bien translucido de arriba dejaba leer
+   doble. El de presets queda intacto -- ese vidrio estaba bien. */
+.preset-dropdown-list-solid {
+  background: linear-gradient(190deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.04) 40%, rgba(255, 255, 255, 0.04) 100%);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+/* El trigger (el "select" cerrado) de este dropdown en particular usa el
+   mismo vidrio que .chip -- antes tenia su propio fondo plano mas opaco
+   (por la lista de abajo, que si necesita quedar solida encima de los
+   sliders de opacidad/escala) pero cerrado no hay nada debajo con lo que
+   se pueda leer doble, asi que no hace falta ser distinto del resto de
+   los "chips" de la UI. */
+.preset-dropdown-trigger-solid {
+  background: linear-gradient(
+    190deg,
+    rgba(255, 255, 255, 0.1) 0%,
+    rgba(255, 255, 255, 0.04) 40%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgb(255 255 255 / 8%);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
+}
+
+body.light .preset-dropdown-list-solid {
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.preset-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 8px;
+  border-radius: 6px;
+  line-height:1.3;
+  transition: background 100ms ease;
+}
+
+.preset-dropdown-item:hover {
+  background: var(--hover-bg);
+}
+
+.preset-dropdown-item.active {
+  background: var(--hover-bg);
+}
+
+.preset-dropdown-item-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  cursor: pointer;
+  font-weight:300;
+}
+
+.preset-dropdown-item-icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  /* border-radius: 5px; */
+  color: white;
+  cursor: pointer;
+  padding: 0px;
+  transition: color 100ms ease, transform 100ms ease;
+}
+
+.preset-dropdown-item-icon:hover {
+  color: var(--text);
+  transform: scale(1.12);
+}
+
+.preset-dropdown-item-icon:active {
+  transform: scale(0.92);
+}
+
+.preset-inline-input {
+  flex: 1;
+  min-width: 0;
+  height: fit-content;
+  background: var(--panel-bg);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 12px;
+  outline: none;
+}
+
+.control-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.control-row-compact {
+  gap: 8px;
+}
+
+.control-label {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  font-weight: 300;
+  width: 56px;
+  flex-shrink: 0;
+}
+
+.unit {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  width: 12px;
+}
+
+/* "%" como icono (ver fillStaticIcons en app.js) en vez del caracter de
+   texto -- .unit ya reserva el ancho, esto solo centra el svg adentro. */
+.unit-percent {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.num-entry {
+  width: 48px;
+  background: linear-gradient(
+    190deg,
+    rgba(255, 255, 255, 0.1) 0%,
+    rgba(255, 255, 255, 0.04) 40%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 50px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: center;
+  padding: 6px 6px;
+  outline: none;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+/* m:ss (ej "2:20") en la fila del titulo de Recorte del loop -- mas
+   angosto que un .num-entry normal para que quepa junto al h2. */
+.num-entry-time-sm {
+  padding: 6px 2px;
+  flex-shrink: 0;
+}
+
+.num-entry:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-glow);
+}
+
+/* ---- sliders ---- */
+
+.slider {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  outline: none;
+}
+
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--text);
+  cursor: pointer;
+  border: none;
+  transition: transform 120ms ease;
+}
+
+.slider:hover::-webkit-slider-thumb {
+  transform: scale(1.2);
+}
+
+.slider:active::-webkit-slider-thumb {
+  transform: scale(1.35);
+}
+
+.slider::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--text);
+  cursor: pointer;
+  border: none;
+  transition: transform 120ms ease;
+}
+
+.slider:hover::-moz-range-thumb {
+  transform: scale(1.2);
+}
+
+.slider:active::-moz-range-thumb {
+  transform: scale(1.35);
+}
+
+/* ---- ajustar imagen ---- */
+
+.focus-picker {
+  /* Tamano fijo (no 100%): el canvas tiene coordenadas internas en
+     pixeles (352x200, ver FocusPicker en app.js) -- si CSS lo estira a
+     otro tamano, el arrastre del mouse queda desalineado con el dibujo. */
+  width: 352px;
+  height: 200px;
+  max-width: 100%;
+  display: block;
+  margin: 0 auto;
+  cursor: grab;
+  border-radius: var(--radius);
+  background: var(--chip-bg);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border);
+}
+
+/* ---- galerias: Plantilla / Texturas ---- */
+
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 8px;
+}
+
+/* Sin plantillas/texturas cargadas, .gallery queda sin hijos -- pero sigue
+   contando para el gap:8px de .section (el espacio entre el titulo y la
+   galeria vacia), asi que "Plantilla"/"Texturas" quedaban con un hueco de
+   sobra debajo del titulo aunque no hubiera nada que mostrar. :empty la
+   saca del todo del flujo (0 gap) hasta que tenga al menos una tarjeta. */
+.gallery:empty {
+  display: none;
+}
+
+/* Rediseno: la tarjeta es marco + nombre debajo (2 piezas separadas), no
+   una sola caja con la miniatura a pantalla completa y el nombre
+   superpuesto encima con un degradado de sombra (eso era lo "raro" que se
+   queria sacar). */
+/* Entrada suave cada vez que se (re)pinta la galeria -- renderTemplateGallery/
+   renderTextureGallery en app.js tiran todo el innerHTML y reconstruyen las
+   tarjetas de cero en cada refresh(), asi que esto puede repetirse seguido;
+   se mantiene corta y sutil (no un rebote grande) para que se sienta como
+   un "respiro" del refresco, no como parpadeo. */
+@keyframes galleryCardIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.gallery-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: pointer;
+  animation: galleryCardIn 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.gallery-card-frame {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Aire alrededor de la miniatura -- es lo que hace que se vea "adentro
+     de un marco" en vez de pegada a los bordes. */
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid rgb(255 255 255 / 8%);
+  background: linear-gradient(
+    190deg,
+    rgba(255, 255, 255, 0.1) 0%,
+    rgba(255, 255, 255, 0.04) 40%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
+  transition: border-color 120ms ease, transform 160ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.gallery-card:hover .gallery-card-frame {
+  border-color: var(--text-faint);
+  transform: translateY(-2px) scale(1.03);
+}
+
+.gallery-card:active .gallery-card-frame {
+  transform: translateY(0) scale(0.98);
+}
+
+.gallery-card.active .gallery-card-frame {
+  border-color: var(--accent);
+  border-width: 2px;
+}
+
+.gallery-card-thumb {
+  width: 100%;
+  height: 100%;
+  border-radius: 4px;
+  background: var(--hover-bg) center / cover no-repeat;
+}
+
+.gallery-card-name {
+  font-size: 10.5px;
+  color: var(--text-soft);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gallery-card-delete {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 9px;
+  line-height: 1;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 120ms ease, transform 100ms ease;
+}
+
+.gallery-card:hover .gallery-card-delete {
+  display: flex;
+}
+
+.gallery-card-delete:hover {
+  background: var(--red);
+  transform: scale(1.08);
+}
+
+.gallery-card-delete:active {
+  transform: scale(0.92);
+}
+
+/* Retroalimentacion visual al arrastrar un archivo sobre Plantilla/
+   Texturas -- setupDragHighlight (app.js) alterna la clase "drag-active"
+   en #template-section/#texture-section al entrar/salir del drag.
+   El fondo resaltado va en un ::before que se "infla" hacia afuera del
+   borde real de la seccion (inset negativo) en vez de agrandar la seccion
+   con padding real -- asi el texto nunca queda pegado al borde del
+   resaltado, pero tampoco se mueve ni un pixel el layout de nada (ni el
+   titulo, ni el "+ Añadir", ni la galeria de abajo). En reposo no hay
+   ninguna caja/borde visible -- nada de dos "dropzones" permanentes. */
+#template-section,
+#texture-section {
+  position: relative;
+}
+
+#template-section.drag-active::before,
+#texture-section.drag-active::before {
+  content: "";
+  position: absolute;
+  inset: -10px -12px;
+  background: var(--accent-glow);
+  border-radius: var(--radius-sm);
+  z-index: -1;
+}
+
+/* El link "+ Añadir" tambien pasa a color de acento mientras se arrastra
+   encima -- asi el unico elemento "interactivo" de la fila confirma que
+   soltar ahi va a agregar el archivo, sin necesidad de un borde aparte. */
+#template-section.drag-active #template-add-btn,
+#texture-section.drag-active #texture-add-btn {
+  color: var(--accent);
+}
+
+.layer-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: linear-gradient(190deg, rgba(255, 255, 255, 0.10) 0%, rgba(255, 255, 255, 0.04) 40%, rgba(255, 255, 255, 0.04) 100%);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px;
+}
+
+/* ---- recorte del loop: slider de doble asa ---- */
+
+.range-slider {
+  position: relative;
+  height: 24px;
+}
+
+.range-track {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 4px;
+  transform: translateY(-50%);
+  background: var(--border);
+  border-radius: 2px;
+}
+
+.range-fill {
+  position: absolute;
+  top: 50%;
+  height: 4px;
+  transform: translateY(-50%);
+  background: var(--text);
+  border-radius: 2px;
+  left: 20%;
+  right: 60%;
+}
+
+.range-handle {
+  position: absolute;
+  top: 50%;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--text);
+  transform: translate(-50%, -50%);
+  cursor: grab;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.range-handle:hover {
+  transform: translate(-50%, -50%) scale(1.2);
+  box-shadow: 0 0 0 6px rgba(255, 255, 255, 0.18);
+}
+
+.range-handle:active {
+  cursor: grabbing;
+  transform: translate(-50%, -50%) scale(1.35);
+  box-shadow: 0 0 0 8px rgba(255, 255, 255, 0.22);
+}
+
+#loop-handle-start {
+  left: 20%;
+}
+
+#loop-handle-end {
+  left: 40%;
+}
+
+/* ---- velocidad: chips individuales (no una sola caja unida) ---- */
+
+.segmented {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.segmented-item {
+  flex: 1;
+  min-width: 44px;
+  background: linear-gradient(190deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.04) 40%, rgba(255, 255, 255, 0.04) 100%);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 300;
+  padding: 6px 0;
+  cursor: pointer;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
+}
+
+.segmented-item {
+  position: relative;
+  overflow: hidden;
+
+  flex: 1;
+  min-width: 44px;
+  border-radius: 999px;
+
+  background: linear-gradient(190deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.04) 40%, rgba(255, 255, 255, 0.04) 100%);
+
+  border: 1px solid var(--border);
+
+  transition: border-color .15s ease, transform 100ms ease;
+}
+
+.segmented-item:active {
+  transform: scale(0.95);
+}
+
+.segmented-item::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+
+  background: linear-gradient(
+    190deg,
+    rgba(255,255,255,.02),
+    rgba(255,255,255,.01)
+  );
+
+  opacity: 0;
+  transition: opacity .15s ease;
+}
+
+.segmented-item:hover {
+  border-color: var(--glass-border);
+}
+
+.segmented-item:hover::before {
+  opacity: 1;
+}
+
+.segmented-item > * {
+  position: relative;
+  z-index: 1;
+}
+
+
+
+.segmented-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text) !important;
+  font-weight: 500;
+  
+}
+
+/* ---------------------------------------------------- previsualizador */
+
+.preview-surface {
+  position: relative;
+  width: 100%;
+  /* Antes era flex:1 (estiraba a lo alto del panel) -- eso dejaba una franja
+     de panel vacia arriba/abajo cada vez que el video de adentro no llenaba
+     esa altura (por ejemplo con una foto vertical, que ya viene con barras
+     laterales). Con aspect-ratio 16:9 (el lienzo real que arma
+     build_filtergraph, siempre 1920x1080) la caja queda del mismo tamano
+     que el frame compuesto -- sin panel de sobra y con el boton de
+     "agrandar" pegado a la esquina del video, no flotando afuera. */
+  aspect-ratio: 16 / 9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(
+    190deg,
+    rgba(255, 255, 255, 0.1) 0%,
+    rgba(255, 255, 255, 0.04) 40%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
+}
+
+.preview-surface .dropzone {
+  width: 100%;
+  max-width: 420px;
+  border: none;
+  background: transparent;
+}
+
+.preview-surface #preview-image,
+.preview-surface #loop-preview-video {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  /* Sin esto, un redondeo de sub-pixel entre el aspect-ratio real de
+     .preview-surface y el 16:9 exacto del lienzo compuesto podia dejar una
+     franja de 1px a cada lado donde se transparentaba el panel de vidrio
+     de atras -- con fondo solido detras de la imagen/video, esa franja (si
+     existe) se ve negra opaca, no transparente. */
+  background: #000;
+}
+
+.preview-expand-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 38px;
+  height: 38px;
+  border: none;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 120ms ease, transform 100ms ease;
+}
+
+.preview-expand-btn:hover {
+  background: rgba(0, 0, 0, 0.75);
+  transform: scale(1.06);
+}
+
+.preview-expand-btn:active {
+  transform: scale(0.94);
+}
+
+/* Aparece encima del fotograma estatico apenas hay un fragmento de loop
+   listo (onLoopPreviewReady en app.js) -- el video NUNCA se reproduce
+   solo, este boton es la unica forma de verlo, a proposito. */
+.loop-preview-play-btn {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 56px;
+  height: 56px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 120ms ease, transform 120ms ease;
+}
+
+.loop-preview-play-btn svg {
+  width: 22px;
+  height: 22px;
+  margin-left: 3px;
+}
+
+.loop-preview-play-btn:hover {
+  background: rgba(0, 0, 0, 0.75);
+  transform: translate(-50%, -50%) scale(1.06);
+}
+
+.loop-preview-play-btn:active {
+  transform: translate(-50%, -50%) scale(0.96);
+}
+
+/* Barra propia de pausa/reproducir + buscar momento, mostrada al pasar el
+   mouse por CUALQUIER parte de .preview-surface (no solo sobre el video) --
+   ver comentario en index.html sobre por que no se usan los controles
+   nativos del <video>. Oculta con opacity/pointer-events (no [hidden]) para
+   poder animar la aparicion; JS solo le saca [hidden] cuando hay un loop
+   visible reproduciendose. */
+.loop-preview-controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: linear-gradient(0deg, rgba(0, 0, 0, 0.65) 0%, rgba(0, 0, 0, 0) 100%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease;
+}
+
+.preview-surface:hover .loop-preview-controls:not([hidden]) {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.loop-preview-toggle {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 120ms ease, transform 100ms ease;
+}
+
+.loop-preview-toggle:hover {
+  background: rgba(255, 255, 255, 0.28);
+  transform: scale(1.08);
+}
+
+.loop-preview-toggle:active {
+  transform: scale(0.92);
+}
+
+.loop-preview-toggle svg {
+  width: 14px;
+  height: 14px;
+}
+
+.loop-preview-seek {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+}
+
+.loop-preview-seek::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 120ms ease;
+}
+
+.loop-preview-seek:hover::-webkit-slider-thumb {
+  transform: scale(1.25);
+}
+
+.loop-preview-seek:active::-webkit-slider-thumb {
+  transform: scale(1.4);
+}
+
+/* ---- salida (titulo editable + ruta) ---- */
+
+.output-block {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 12px;
+  margin-top: auto;
+}
+
+/* Nombre del proyecto / Ruta de almacenamiento -- una columna cada uno,
+   con su propio label arriba (antes era una sola columna sin separar,
+   "titulo" y "ruta" no se distinguian a simple vista). */
+.output-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.output-field-label {
+  font-size: 12px;
+  font-weight: 300;
+  color: var(--text);
+}
+
+/* Nombre del proyecto: el input ya lleva class="text-input" en el markup
+   (mismo vidrio que "Nombre del preset"/"Descargador de videos" de arriba)
+   -- aca solo lo que hace falta ENCIMA de eso: el hueco para el lapiz y
+   el wrap para poder posicionarlo. */
+.output-title-wrap {
+  position: relative;
+  display: flex;
+}
+
+.output-title-input {
+  width: 100%;
+  padding-right: 28px;
+  font-weight: 500;
+}
+
+.output-title-pencil {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  opacity: 0;
+  transition: opacity 120ms ease;
+  pointer-events: none;
+}
+
+.output-title-pencil svg {
+  width: 13px;
+  height: 13px;
+}
+
+.output-title-wrap:hover .output-title-pencil,
+.output-title-input:focus ~ .output-title-pencil {
+  opacity: 1;
+}
+
+/* Ruta de almacenamiento: mismo patron que .link-row (input/valor + boton
+   AL LADO, no metido adentro) -- el markup reusa la clase .link-row
+   directamente en vez de duplicar el mismo layout con otro nombre. */
+#output-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- progreso / estado ---- */
+
+.progress-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--chip-bg);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 150ms ease;
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.status-text {
+  font-size: 12px;
+  color: var(--text-faint);
+  flex: 1;
+}
+
+.status-actions {
+  display: flex;
+  gap: 8px;
+}

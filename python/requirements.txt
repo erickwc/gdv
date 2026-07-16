@@ -1,0 +1,4 @@
+Pillow
+imageio-ffmpeg
+yt-dlp
+certifi

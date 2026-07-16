@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Vista previa</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #000;
+    overflow: hidden;
+    cursor: zoom-out;
+  }
+  #preview-img,
+  #preview-video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+  .close-hint {
+    position: fixed;
+    left: 50%;
+    bottom: 22px;
+    transform: translateX(-50%);
+    color: rgba(255, 255, 255, 0.55);
+    font: 13px "Segoe UI", -apple-system, sans-serif;
+    pointer-events: none;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+  <img id="preview-img" alt="">
+  <video id="preview-video" hidden loop muted autoplay playsinline></video>
+  <span class="close-hint">clic o Esc para cerrar</span>
+  <script>
+    function closePreview() {
+      if (window.previewBridge) window.previewBridge.hide();
+    }
+    // Imagen (fotograma estatico) y video (loop reproduciendose) son
+    // mutuamente excluyentes -- cada uno oculta al otro al mostrarse, igual
+    // que #preview-image/#loop-preview-video en la ventana principal.
+    window.setPreviewImage = function (src) {
+      const video = document.getElementById("preview-video");
+      video.pause();
+      video.hidden = true;
+      video.removeAttribute("src");
+      const img = document.getElementById("preview-img");
+      img.hidden = false;
+      img.src = src;
+    };
+    window.setPreviewVideo = function (src) {
+      const img = document.getElementById("preview-img");
+      img.hidden = true;
+      const video = document.getElementById("preview-video");
+      video.src = src;
+      video.hidden = false;
+      video.play().catch(() => {});
+    };
+    if (window.previewBridge) {
+      window.previewBridge.onImage(window.setPreviewImage);
+      window.previewBridge.onVideo(window.setPreviewVideo);
+      // Se pausa al cerrar -- sin esto el video seguia decodificando de
+      // fondo (la ventana solo se oculta, no se destruye) hasta la
+      // proxima vez que se abriera "Agrandar".
+      window.previewBridge.onHidden(() => document.getElementById("preview-video").pause());
+    }
+    document.addEventListener("click", closePreview);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closePreview();
+    });
+  </script>
+</body>
+</html>
