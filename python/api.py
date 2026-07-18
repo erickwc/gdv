@@ -109,6 +109,7 @@ class Api:
         self.audio_path = None
         self.audio_kind_text = None
         self.audio_clip_warning = None  # True/False/None (None = sin medir todavia)
+        self.audio_peak_db = None  # pico real en dB -- ver audio_strategy_args en engine.py
 
         self.output_path = None
         self.user_chose_output = False
@@ -208,7 +209,6 @@ class Api:
             "speed": self.speed,
             "trim_start": self.trim_start,
             "trim_end": self.trim_end,
-            "appearance": self.config_data.get("appearance", "dark"),
             # banderas derivadas -- equivalente a _refresh_ready_state()
             "ready": bool(self.media_path and self.audio_path),
             "show_focus": bool(self.media_path) and not self.media_is_video,
@@ -254,9 +254,16 @@ class Api:
         """Aplica la ruta elegida en el dialogo nativo 'Guardar como' -- el
         dialogo en si lo abre Electron (dialog.showSaveDialog); aca solo se
         guarda el resultado, igual que hacia choose_output_path() en la
-        version pywebview despues de llamar a create_file_dialog."""
+        version pywebview despues de llamar a create_file_dialog.
+
+        El dialogo nativo YA deja escribir un nombre de archivo ahi mismo
+        -- sin esto, "Nombre del video" se quedaba con el nombre viejo
+        (o vacio) aunque el usuario acabara de escribir uno nuevo al
+        elegir donde guardar. Se sincroniza para que ambos campos
+        muestren siempre el mismo nombre."""
         self.output_path = path
         self.user_chose_output = True
+        self.custom_output_name = os.path.splitext(os.path.basename(path))[0]
         return self.output_path
 
     # ----------------------------------------------------------- plantilla
@@ -388,14 +395,6 @@ class Api:
         engine.save_config(self.config_data)
         return {"ok": True}
 
-    # ----------------------------------------------------------- apariencia
-
-    def set_appearance(self, mode):
-        """Tema claro/oscuro de la UI -- misma clave de config que usaba la
-        version de customtkinter, asi la preferencia sobrevive el cambio."""
-        self.config_data["appearance"] = "dark" if mode == "dark" else "light"
-        engine.save_config(self.config_data)
-        return {"ok": True}
 
     def _restore_textures_from_config(self):
         layers_data = self.config_data.get("textures")
@@ -415,6 +414,17 @@ class Api:
             dict(state) for state in layers_data
             if state.get("path") and os.path.exists(state["path"])
         ]
+        # add_texture_layer() registra el archivo en _texture_paths (asi
+        # aparece en la galeria, ver list_available_textures) -- restaurar
+        # texture_layers directo del config, como arriba, se saltaba ese
+        # registro. Los ajustes (opacidad/escala) igual se veian bien al
+        # reabrir el preset porque esos salen de texture_layers, pero la
+        # textura en si no aparecia en la galeria (ni la tarjeta activa)
+        # porque list_available_textures() no la conocia todavia.
+        for state in self.texture_layers:
+            path = state["path"]
+            display = os.path.splitext(os.path.basename(path))[0]
+            self._texture_paths[display] = path
 
     def _persist_texture_layers(self):
         self.config_data["textures"] = self.texture_layers
@@ -656,6 +666,7 @@ class Api:
         self.audio_path = path
         self.audio_kind_text = "Audio · analizando..."
         self.audio_clip_warning = None
+        self.audio_peak_db = None
         self._update_default_output()
         threading.Thread(target=self._measure_peak_job, args=(path,), daemon=True).start()
 
@@ -663,6 +674,7 @@ class Api:
         peak = engine.measure_peak_db(self.ffmpeg_exe, path)
         if path != self.audio_path:
             return  # el usuario ya cambio de audio
+        self.audio_peak_db = peak
         prefix = "Audio"
         if peak is None:
             self.audio_kind_text = prefix
@@ -721,6 +733,7 @@ class Api:
         self.audio_path = None
         self.audio_kind_text = None
         self.audio_clip_warning = None
+        self.audio_peak_db = None
         return {"ok": True, "state": self.get_state()}
 
     # ------------------------------------------ recorte del loop / velocidad / escala
@@ -1158,7 +1171,7 @@ class Api:
                 self._push_status("Generando video (loop + beat)...")
                 returncode = -1
                 for strategy in strategies:
-                    audio_args = engine.audio_strategy_args(strategy, info["sample_rate"])
+                    audio_args = engine.audio_strategy_args(strategy, info["sample_rate"], self.audio_peak_db)
                     cmd = engine.build_mux_command(
                         self.ffmpeg_exe, temp_list, self.audio_path,
                         self.output_path, duration, audio_args,
@@ -1171,7 +1184,7 @@ class Api:
                 self._push_status(f"Generando video a {width}x{height}{tpl_note}...")
                 returncode = -1
                 for strategy in strategies:
-                    audio_args = engine.audio_strategy_args(strategy, info["sample_rate"])
+                    audio_args = engine.audio_strategy_args(strategy, info["sample_rate"], self.audio_peak_db)
                     cmd = engine.build_command(
                         self.ffmpeg_exe, self.media_path,
                         self.audio_path, self.output_path, duration, audio_args,
@@ -1281,66 +1294,133 @@ class Api:
         return {"ok": True}
 
     def _download_job(self, url):
+        tmpdir = tempfile.gettempdir()
+        for name in os.listdir(tmpdir):
+            if name.startswith("genvideo_descarga."):
+                try:
+                    os.remove(os.path.join(tmpdir, name))
+                except OSError:
+                    pass
+
         try:
-            from yt_dlp import YoutubeDL
-
-            # Limpiar descargas anteriores
-            tmpdir = tempfile.gettempdir()
-            for name in os.listdir(tmpdir):
-                if name.startswith("genvideo_descarga."):
-                    try:
-                        os.remove(os.path.join(tmpdir, name))
-                    except OSError:
-                        pass
-
-            def hook(d):
-                if d.get("status") == "downloading":
-                    pct = (d.get("_percent_str") or "").strip()
-                    self._push_download_status(f"Descargando video... {pct}")
-                elif d.get("status") == "finished":
-                    self._push_download_status("Procesando la descarga...")
-
-            opts = {
-                # Sin audio cuando se puede (el beat lo pone la app) y max 1080p.
-                # vcodec^=avc1 (H.264) primero: YouTube por default ofrece AV1
-                # para 1080p, que decodifica por software varias veces mas
-                # lento que H.264 -- eso alentaba tanto el preview del loop
-                # como la generacion real (ambos vuelven a decodificar este
-                # archivo cada vez). Con H.264 disponible se usa ese; AV1/VP9
-                # quedan como respaldo si el video no trae H.264 en 1080p.
-                "format": (
-                    "bv*[vcodec^=avc1][height<=1080][ext=mp4]/"
-                    "bv*[height<=1080][ext=mp4]/bv*[height<=1080]/b[height<=1080]/b"
-                ),
-                "outtmpl": os.path.join(tmpdir, "genvideo_descarga.%(ext)s"),
-                "noplaylist": True,
-                "quiet": True,
-                "no_warnings": True,
-                "progress_hooks": [hook],
-                "ffmpeg_location": self.ffmpeg_exe,
-                "merge_output_format": "mp4",
-            }
-            with YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                if info.get("entries"):
-                    info = info["entries"][0]
-                path = None
-                requested = info.get("requested_downloads") or []
-                if requested:
-                    path = requested[0].get("filepath")
-                if not path:
-                    path = ydl.prepare_filename(info)
-            title = info.get("title") or "Video descargado"
-
-            self._set_video(path)
-            self.media_display_name = title
-            self._notify_state_changed()
-            self._push_download_done(True, "Video descargado ✔ listo para el loop")
+            self._download_video(url, tmpdir)
+            return
         except Exception as exc:
-            message = str(exc)
-            if len(message) > 140:
-                message = message[:140] + "..."
-            self._push_download_done(False, f"No se pudo descargar: {message}")
+            yt_dlp_error = str(exc)
+
+        # yt-dlp solo sabe extraer VIDEO -- un link a una imagen suelta (un
+        # pin de Pinterest, una foto de un sitio cualquiera) siempre le
+        # falla con algo como "No video formats found!". En vez de mostrar
+        # ese error tal cual (tecnico y confuso), se intenta sacar la
+        # imagen principal de la pagina (etiqueta og:image, la misma que
+        # usan las previsualizaciones de links en WhatsApp/Twitter/etc.) y
+        # cargarla directo -- si la pagina no tiene ninguna, recien ahi se
+        # avisa que ese tipo de link no se puede.
+        try:
+            image_path = self._try_download_page_image(url)
+        except Exception:
+            image_path = None
+
+        if image_path and self._set_image(image_path):
+            self.media_display_name = None
+            self._notify_state_changed()
+            self._push_download_done(True, "Imagen descargada ✔")
+            return
+
+        if len(yt_dlp_error) > 140:
+            yt_dlp_error = yt_dlp_error[:140] + "..."
+        looks_like_image_link = "no video formats found" in yt_dlp_error.lower()
+        if looks_like_image_link:
+            message = 'Acá no se puede insertar link de imágenes, debes de copiar la imagen y pegarla :)'
+        else:
+            message = f"No se pudo descargar: {yt_dlp_error}"
+        self._push_download_done(False, message)
+
+    def _download_video(self, url, tmpdir):
+        from yt_dlp import YoutubeDL
+
+        def hook(d):
+            if d.get("status") == "downloading":
+                pct = (d.get("_percent_str") or "").strip()
+                self._push_download_status(f"Descargando video... {pct}")
+            elif d.get("status") == "finished":
+                self._push_download_status("Procesando la descarga...")
+
+        opts = {
+            # Sin audio cuando se puede (el beat lo pone la app) y max 1080p.
+            # vcodec^=avc1 (H.264) primero: YouTube por default ofrece AV1
+            # para 1080p, que decodifica por software varias veces mas
+            # lento que H.264 -- eso alentaba tanto el preview del loop
+            # como la generacion real (ambos vuelven a decodificar este
+            # archivo cada vez). Con H.264 disponible se usa ese; AV1/VP9
+            # quedan como respaldo si el video no trae H.264 en 1080p.
+            "format": (
+                "bv*[vcodec^=avc1][height<=1080][ext=mp4]/"
+                "bv*[height<=1080][ext=mp4]/bv*[height<=1080]/b[height<=1080]/b"
+            ),
+            "outtmpl": os.path.join(tmpdir, "genvideo_descarga.%(ext)s"),
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "progress_hooks": [hook],
+            "ffmpeg_location": self.ffmpeg_exe,
+            "merge_output_format": "mp4",
+        }
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            if info.get("entries"):
+                info = info["entries"][0]
+            path = None
+            requested = info.get("requested_downloads") or []
+            if requested:
+                path = requested[0].get("filepath")
+            if not path:
+                path = ydl.prepare_filename(info)
+        title = info.get("title") or "Video descargado"
+
+        self._set_video(path)
+        self.media_display_name = title
+        self._notify_state_changed()
+        self._push_download_done(True, "Video descargado ✔ listo para el loop")
+
+    @staticmethod
+    def _try_download_page_image(url):
+        """Busca la etiqueta og:image de la pagina (la misma que usan las
+        previsualizaciones de link de WhatsApp/Twitter/iMessage) y
+        descarga esa imagen. Devuelve la ruta local, o None si la pagina
+        no tiene una."""
+        import urllib.request
+
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; GenVideo/1.0)"}
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            html = resp.read(500_000).decode("utf-8", errors="ignore")
+
+        match = re.search(
+            r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html,
+        ) or re.search(
+            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', html,
+        )
+        if not match:
+            return None
+        image_url = match.group(1).replace("&amp;", "&")
+
+        req = urllib.request.Request(image_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = resp.read()
+
+        ext = os.path.splitext(image_url.split("?", 1)[0])[1].lower()
+        if ext not in engine.IMAGE_EXTS:
+            ext = ".jpg"
+        path = os.path.join(tempfile.gettempdir(), f"genvideo_descarga{ext}")
+        with open(path, "wb") as fh:
+            fh.write(data)
+        try:
+            with Image.open(path):
+                pass
+        except Exception:
+            return None
+        return path
 
     def _push_download_done(self, ok, message):
         self._emit("onDownloadDone", {"ok": ok, "message": message})

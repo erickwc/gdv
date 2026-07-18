@@ -38,12 +38,7 @@
          les da un fondo propio (parte del mismo gradiente de toda la app)
          para que no floten sueltos. El resto de la franja (a la izquierda
          del toggle) es arrastrable. -->
-    <div class="app-titlebar">
-      <label class="theme-toggle" title="Tema claro/oscuro">
-        <input type="checkbox" id="theme-switch">
-        <span class="theme-toggle-track"><span class="theme-toggle-thumb"></span></span>
-      </label>
-    </div>
+    <div class="app-titlebar"></div>
 
     <div class="app-shell">
 
@@ -63,6 +58,17 @@
               <div class="preset-dropdown-list" id="preset-list" hidden></div>
             </div>
             <button class="btn btn-icon" id="preset-save" title="Guardar preset"></button>
+          </div>
+          <!-- Solo aparece si hay un preset activo Y modificado (asterisco) --
+               guardar sobre el MISMO nombre sin preguntar seria facil de
+               hacer sin querer; el flujo de "Guardar como nuevo" cae al
+               input de siempre (#preset-save-row). -->
+          <div class="control-row preset-save-choice" id="preset-save-choice" hidden>
+            <button class="btn btn-primary" id="preset-overwrite-btn">
+              Sobrescribir "<span id="preset-overwrite-name"></span>"
+            </button>
+            <button class="btn btn-ghost" id="preset-save-as-new-btn">Guardar como nuevo</button>
+            <button class="btn btn-icon" id="preset-save-choice-cancel" title="Cancelar"></button>
           </div>
           <div class="control-row" id="preset-save-row" hidden>
             <input type="text" class="text-input" id="preset-save-input" placeholder="Nombre del preset">
@@ -233,7 +239,7 @@
 
       <div class="output-block">
         <div class="output-field">
-          <label class="output-field-label" for="project-title">Nombre del proyecto</label>
+          <label class="output-field-label" for="project-title">Nombre del video</label>
           <div class="output-title-wrap" id="output-title-wrap">
             <input type="text" id="project-title" class="text-input output-title-input" placeholder="Sin título">
             <span class="output-title-pencil" id="output-title-pencil"></span>

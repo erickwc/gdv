@@ -56,30 +56,6 @@
   --radius-sm: 6px;
 }
 
-/* Tema claro: mismos nombres de variable; la clase la pone app.js segun
-   la preferencia guardada en config.json ("appearance"). .background se
-   oculta en claro (ver mas abajo) -- ese glow es una estetica de modo
-   oscuro, en blanco se veria como manchas sucias en vez de "glow". */
-body.light {
-  --bg: #f4f2fa;
-  --panel-bg: #ffffff;
-  --glass-panel-bg: rgba(255, 255, 255, 0.6);
-  --glass-border: rgba(0, 0, 0, 0.08);
-  --glass-card-bg: rgba(0, 0, 0, 0.025);
-  --chip-bg: rgba(0, 0, 0, 0.045);
-  --hover-bg: rgba(0, 0, 0, 0.07);
-  --border: rgba(0, 0, 0, 0.1);
-  --border-subtle: rgba(0, 0, 0, 0.06);
-  --text: #17171a;
-  --text-soft: #45454d;
-  --text-faint: #7b7b84;
-  --accent: #7c3aed;
-  --accent-hover: #6d28d9;
-  --accent-text: #ffffff;
-  --accent-glow: rgba(124, 58, 237, 0.18);
-  --red: #c9372c;
-}
-
 * {
   box-sizing: border-box;
 }
@@ -124,11 +100,6 @@ body {
   z-index: -1;
   overflow: hidden;
   background: url("background.png") center / cover no-repeat, #050309;
-}
-
-body.light .background {
-  /* El shader/glow es una estetica de modo oscuro -- en claro se ve raro. */
-  display: none;
 }
 
 /* Desatura el aurora (silk-aurora-background.js) ademas de oscurecerlo
@@ -207,14 +178,19 @@ body.light .background {
   min-height: 0;
 }
 
-/* Se probo como tarjeta flotante aparte (con gap, fondo, sombra, blur
-   propio) y se alejaba de la referencia -- ahi el panel va pegado al
-   borde de la ventana, sin caja ni separacion, solo con una linea MUY
-   tenue dividiendolo del previsualizador (no la linea marcada de antes). */
+/* Vidrio esmerilado -- --glass-panel-bg + backdrop-filter propio (mismo
+   truco que .preview-surface, no el de .app-root: ahi blurear TODO habria
+   desenfocado tambien lo que hay detras de este panel, doble blur sobre
+   el fondo animado). Antes iba pegado al borde sin caja para no alejarse
+   de una referencia anterior, pero sin nada de fondo el texto competia
+   directo contra el fondo animado (Silk Aurora) de atras -- el blur lo
+   separa como panel propio sin taparlo del todo. */
 .control-panel {
   width: 400px;
   flex-shrink: 0;
-  background: transparent;
+  background: var(--glass-panel-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border-right: 1px solid var(--border-subtle);
   max-height: 100%;
   overflow-y: auto;
@@ -601,6 +577,16 @@ body.drag-active .dropzone {
   transform: scale(0.98);
 }
 
+/* "Sobrescribir <nombre>" puede llevar un nombre de preset largo -- se
+   achica antes que empujar a "Guardar como nuevo" fuera de la fila. */
+#preset-overwrite-btn {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .btn-generate {
   font-size: 14px;
 }
@@ -755,10 +741,6 @@ body.drag-active .dropzone {
   -webkit-backdrop-filter: blur(16px);
   border: 1px solid rgb(255 255 255 / 8%);
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
-}
-
-body.light .preset-dropdown-list-solid {
-  background: rgba(255, 255, 255, 0.94);
 }
 
 .preset-dropdown-item {
@@ -1317,8 +1299,41 @@ body.light .preset-dropdown-list-solid {
   background: transparent;
 }
 
+/* Pantalla completa DENTRO de la misma ventana (estilo YouTube), via la
+   Fullscreen API del navegador -- ver toggleExpand en app.js. Esto (en vez
+   de una BrowserWindow aparte, que era el enfoque viejo) no abre ninguna
+   ventana nueva y trae "Esc para salir" gratis, sin escribir el atajo a
+   mano: es comportamiento nativo del estandar, Electron ya lo respeta. */
+.preview-surface:fullscreen,
+.preview-surface:-webkit-full-screen {
+  width: 100vw;
+  height: 100vh;
+  aspect-ratio: unset;
+  border: none;
+  border-radius: 0;
+  background: #000;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+
 .preview-surface #preview-image,
 .preview-surface #loop-preview-video {
+  /* width/height 100% (no solo max-*) para que crezcan a llenar el
+     contenedor, no solo encojan si se pasan -- el fotograma estatico se
+     genera al tamano completo del lienzo (1920x1080) asi que SIEMPRE es
+     mas grande que .preview-surface y max-width/max-height bastaba para
+     encogerlo; pero el loop preview sale mas chico (ver
+     PREVIEW_QUALITY_ARGS en engine.py, pensado para regenerarse rapido) --
+     dentro del panel normal igual necesitaba encogerse, pero en pantalla
+     completa (el panel salta a 100vw/100vh) su tamano real quedaba MAS
+     CHICO que el contenedor y sin width/height:100% no habia nada que lo
+     hiciera crecer, se veia en su tamano natural con barras negras
+     alrededor. object-fit:contain sigue decidiendo el recorte/letterbox
+     real segun la proporcion, esto solo fuerza la CAJA a ocupar todo el
+     espacio disponible (mismo patron que usa YouTube en su reproductor). */
+  width: 100%;
+  height: 100%;
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
@@ -1355,6 +1370,19 @@ body.light .preset-dropdown-list-solid {
 
 .preview-expand-btn:active {
   transform: scale(0.94);
+}
+
+/* En pantalla completa el boton pasa a "achicar" (ver fullscreenchange en
+   app.js) -- abajo a la derecha y mas grande, mas facil de encontrar y de
+   acertarle en una pantalla ocupando todo el monitor. */
+.preview-surface:fullscreen .preview-expand-btn,
+.preview-surface:-webkit-full-screen .preview-expand-btn {
+  top: auto;
+  bottom: 24px;
+  right: 24px;
+  width: 48px;
+  height: 48px;
+  font-size: 20px;
 }
 
 /* Aparece encima del fotograma estatico apenas hay un fragmento de loop
@@ -1478,11 +1506,20 @@ body.light .preset-dropdown-list-solid {
 
 /* ---- salida (titulo editable + ruta) ---- */
 
+/* Tarjeta de vidrio, mismo criterio que .control-panel/.preview-surface --
+   antes "Nombre del proyecto"/"Ruta" flotaban sueltos sobre el fondo
+   animado, sin nada que los agrupe como una sola seccion. */
 .output-block {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px 12px;
   margin-top: auto;
+  padding: 16px;
+  background: var(--glass-panel-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
 }
 
 /* Nombre del proyecto / Ruta de almacenamiento -- una columna cada uno,
@@ -1547,6 +1584,7 @@ body.light .preset-dropdown-list-solid {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: pointer;
 }
 
 /* ---- progreso / estado ---- */

@@ -36,6 +36,8 @@ const ICONS = {
     + '<path d="M9 17v-13h10v13" /><path d="M9 8h10" />',
   expand: '<path d="M16 4h4v4" /><path d="M20 4l-5 5" /><path d="M8 20h-4v-4" /><path d="M4 20l5 -5" />'
     + '<path d="M16 20h4v-4" /><path d="M20 20l-5 -5" /><path d="M8 4h-4v4" /><path d="M4 4l5 5" />',
+  shrink: '<path d="M5 9l4 0l0 -4" /><path d="M3 3l6 6" /><path d="M5 15l4 0l0 4" /><path d="M3 21l6 -6" />'
+    + '<path d="M19 9l-4 0l0 -4" /><path d="M21 3l-6 6" /><path d="M19 15l-4 0l0 4" /><path d="M21 21l-6 -6" />',
   chevronDown: '<path d="M6 9l6 6l6 -6" />',
   plus: '<path d="M12 5l0 14" /><path d="M5 12l14 0" />',
   percentage: '<path d="M16 17a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" /><path d="M6 7a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" />'
@@ -45,6 +47,8 @@ const ICONS = {
     + '<path d="M3 7v-2a2 2 0 0 1 2 -2h2" /><path d="M3 17v2a2 2 0 0 0 2 2h2" />'
     + '<path d="M17 3h2a2 2 0 0 1 2 2v2" /><path d="M17 21h2a2 2 0 0 0 2 -2v-2" />',
   folderOpen: '<path d="M5 19l2.757 -7.351a1 1 0 0 1 .936 -.649h12.307a1 1 0 0 1 .986 1.164l-.996 5.211a2 2 0 0 1 -1.964 1.625h-14.026a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v2" />',
+  deviceFloppy: '<path d="M6 4h10l4 4v10a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2" />'
+    + '<path d="M12 4l0 4l6 0l0 -4" /><path d="M9 17a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />',
   cloudDownload: '<path d="M19 18a3.5 3.5 0 0 0 0 -7h-1a5 4.5 0 0 0 -11 -2a4.6 4.4 0 0 0 -2.1 8.4" />'
     + '<path d="M12 13l0 9" /><path d="M9 19l3 3l3 -3" />',
 };
@@ -88,12 +92,18 @@ function fillStaticIcons() {
   $("#preview-expand").innerHTML = iconSvg("expand");
   $("#loop-preview-play").innerHTML = iconSvgFilled("playerPlay");
   $("#loop-preview-toggle").innerHTML = iconSvgFilled("playerPause");
-  $("#output-browse").innerHTML = iconSvg("download");
+  // "Cambiar" (ruta de salida): antes un icono de descargar, que sugeria
+  // "bajar algo" -- una carpeta es mas directo para "elegir donde se
+  // guarda". "Guardar preset": tenia (por error) el mismo icono de
+  // carpeta que ahora usa la ruta de salida; un preset se GUARDA, asi que
+  // le toca un icono de guardar (disquete).
+  $("#output-browse").innerHTML = iconSvg("folderOpen");
   $$(".preset-dropdown-chevron").forEach((el) => (el.innerHTML = iconSvg("chevronDown")));
-  $("#preset-save").innerHTML = iconSvg("folderOpen");
+  $("#preset-save").innerHTML = iconSvg("deviceFloppy");
   $("#link-btn").innerHTML = iconSvg("cloudDownload");
   $("#preset-save-confirm").innerHTML = iconSvgFilled("check");
   $("#preset-save-cancel").innerHTML = iconSvgFilled("close");
+  $("#preset-save-choice-cancel").innerHTML = iconSvgFilled("close");
   $("#output-title-pencil").innerHTML = iconSvg("edit");
   $$(".unit-percent").forEach((el) => (el.innerHTML = iconSvg("percentage", 12)));
 }
@@ -120,20 +130,10 @@ function parseDuration(text) {
   return Number.isFinite(n) ? n : null;
 }
 
-// ------------------------------------------------------- tema claro/oscuro
-
-function applyAppearance(state) {
-  const light = state.appearance === "light";
-  document.body.classList.toggle("light", light);
-  const sw = $("#theme-switch");
-  if (sw && sw.checked !== !light) sw.checked = !light; // marcado = oscuro
-}
-
 // --------------------------------------------------------------- render
 
 function render(state) {
   lastState = state;
-  applyAppearance(state);
   renderChips(state);
   FocusPicker.applyState(state);
   renderTemplateGallery(state);
@@ -316,6 +316,7 @@ function browseTemplate() {
 }
 
 function toggleTemplate(path, active) {
+  markPresetModified();
   if (active) {
     pywebview.api.clear_template().then(() => refresh());
     return;
@@ -359,6 +360,7 @@ function renderTextureGallery(state) {
 function browseTexture() {
   pywebview.api.browse_texture_file().then((path) => {
     if (!path) return;
+    markPresetModified();
     pywebview.api.add_texture_layer(path).then(() => {
       selectedTexturePath = path;
       refreshAvailableTextures().then(refresh);
@@ -370,6 +372,7 @@ function browseTexture() {
 // deja seleccionada para editar sus controles debajo -- si se apaga, sus
 // controles se ocultan (deja de estar "seleccionada").
 function toggleTextureLayer(path, layerIndex) {
+  markPresetModified();
   if (layerIndex === -1) {
     pywebview.api.add_texture_layer(path).then(() => {
       selectedTexturePath = path;
@@ -391,6 +394,7 @@ function deleteTextureFile(path) {
       $("#status-text").textContent = r.error || "No se pudo eliminar la textura.";
       return;
     }
+    markPresetModified();
     if (selectedTexturePath === path) selectedTexturePath = null;
     refreshAvailableTextures().then(refresh);
   });
@@ -424,6 +428,7 @@ function commitTextureOpacity(v) {
   $("#texture-opacity-entry").value = v;
   const i = currentTextureLayerIndex();
   if (i === -1) return;
+  markPresetModified();
   pywebview.api.update_texture_layer(i, { opacity: v });
   Preview.schedulePreview();
   scheduleLoopPreview();
@@ -435,6 +440,7 @@ function commitTextureScale(v) {
   $("#texture-scale-entry").value = v;
   const i = currentTextureLayerIndex();
   if (i === -1) return;
+  markPresetModified();
   pywebview.api.update_texture_layer(i, { scale: v });
   Preview.schedulePreview();
   scheduleLoopPreview();
@@ -464,6 +470,7 @@ function commitScale(v) {
   v = Math.max(40, Math.min(200, Math.round(Number(v) || 100)));
   $("#scale-slider").value = v;
   $("#scale-entry").value = v;
+  markPresetModified();
   pywebview.api.set_scale_pct(SCALE_UI_SUM - v);
   Preview.schedulePreview();
   // Sin esto el fotograma estatico se actualizaba con el borde nuevo pero
@@ -493,13 +500,33 @@ let currentPresetName = null;   // ultimo preset aplicado (solo para el texto de
 let presetDropdownOpen = false;
 let presetRenamingName = null;  // si no es null, esa fila muestra el input de renombrar
 
+// "Modificado desde que se aplico/guardo": bandera simple en vez de
+// comparar snapshots -- los sliders de textura/bordes (opacidad, escala,
+// "Bordes de la imagen") a proposito NO disparan un refresh() de pantalla
+// completa al arrastrar (ver el comentario en commitTextureOpacity), asi
+// que una comparacion de estado en render() nunca los hubiera visto.
+// markPresetModified() se llama a mano en cada punto que toca un campo
+// que un preset guarda (plantilla, texturas, bordes, velocidad).
+let presetModified = false;
+
+function markPresetModified() {
+  if (!currentPresetName || presetModified) return;
+  presetModified = true;
+  if (lastState) renderPresets(lastState); // repinta el asterisco ya mismo, sin esperar un refresh()
+}
+
+function clearPresetModified() {
+  presetModified = false;
+}
+
 function renderPresets(state) {
   const names = state.presets || [];
   if (currentPresetName && !names.includes(currentPresetName)) {
     currentPresetName = null; // se borro o ya no existe
+    presetModified = false;
   }
   $("#preset-trigger-label").textContent = names.length
-    ? (currentPresetName || "Elegir preset")
+    ? (currentPresetName ? `${currentPresetName}${presetModified ? " *" : ""}` : "Elegir preset")
     : "(sin presets guardados)";
   renderPresetList(names);
 }
@@ -594,10 +621,26 @@ function applyPreset(name) {
       return;
     }
     currentPresetName = name;
+    clearPresetModified();
     closePresetDropdown();
+    // Selecciona la primera capa restaurada -- igual que onTextureAdded
+    // hace para el drag&drop (ver ese comentario): sin esto
+    // selectedTexturePath se queda en lo que hubiera antes (o null), la
+    // tarjeta aparece activa pero el panel de opacidad/escala de abajo
+    // sigue oculto -- no hay forma de editar la textura que acaba de
+    // cargar el preset.
+    const layers = r.state.texture_layers || [];
+    selectedTexturePath = layers.length ? layers[0].path : null;
     render(r.state);
     refreshTemplates();
-    refreshAvailableTextures();
+    // Sin encadenar el refresh, la galeria de texturas se repintaba con la
+    // lista VIEJA de availableTextures (la de antes de aplicar el preset):
+    // la textura del preset quedaba cargada de verdad (state.texture_layers
+    // la tenia), pero ninguna tarjeta se marcaba activa porque
+    // renderTextureGallery cruza availableTextures con texture_layers, y
+    // availableTextures todavia no incluia esa textura. Se veia como si la
+    // textura hubiera desaparecido al aplicar el preset.
+    refreshAvailableTextures().then(refresh);
     $("#status-text").textContent = r.missing && r.missing.length
       ? `Preset "${name}" aplicado — no se encontró la ${r.missing.join("/")} guardada`
       : `Preset aplicado: ${name}`;
@@ -688,18 +731,62 @@ function closeTextureBlendDropdown() {
 
 // -------------------------------------------- guardar preset (input en linea)
 
+// Con un preset activo y modificado (asterisco), el boton de guardar no
+// salta directo al input de nombre nuevo -- primero pregunta si es una
+// actualizacion del preset actual o uno nuevo aparte. Sin esto, guardar
+// los ajustes tocados sobre el MISMO preset significaba borrar el nombre
+// ya escrito y volver a teclearlo solo para disparar el "sobrescribir?".
+function handleSaveClick() {
+  if (currentPresetName && presetModified) {
+    showSaveChoice();
+  } else {
+    startSaveNewPreset();
+  }
+}
+
+function showSaveChoice() {
+  closePresetDropdown();
+  $("#preset-overwrite-name").textContent = currentPresetName;
+  $("#preset-controls").hidden = true;
+  $("#preset-save-choice").hidden = false;
+}
+
+function overwriteCurrentPreset() {
+  const name = currentPresetName;
+  pywebview.api.save_preset(name).then((r) => {
+    if (!r.ok) {
+      $("#status-text").textContent = r.error;
+      return;
+    }
+    clearPresetModified();
+    $("#status-text").textContent = `Preset actualizado: ${name}`;
+    $("#status-text").style.color = "var(--accent)";
+    resetPresetSaveUI();
+    refresh();
+  });
+}
+
 function startSaveNewPreset() {
   closePresetDropdown();
   $("#preset-controls").hidden = true;
+  $("#preset-save-choice").hidden = true;
   $("#preset-save-row").hidden = false;
   const input = $("#preset-save-input");
   input.value = "";
   input.focus();
 }
 
-function cancelSaveNewPreset() {
+function resetPresetSaveUI() {
   $("#preset-controls").hidden = false;
+  $("#preset-save-choice").hidden = true;
   $("#preset-save-row").hidden = true;
+}
+
+// alias -- el input de "guardar como nuevo" ya llamaba a esta funcion para
+// cancelar (Escape / boton Cancelar); se mantiene el nombre para no tocar
+// esos call sites.
+function cancelSaveNewPreset() {
+  resetPresetSaveUI();
 }
 
 function confirmSaveNewPreset() {
@@ -718,6 +805,9 @@ function confirmSaveNewPreset() {
       return;
     }
     currentPresetName = name;
+    // El preset se guarda con el estado ACTUAL (ver save_preset en
+    // api.py) -- ya coincide con si mismo, asi que arranca sin asterisco.
+    clearPresetModified();
     $("#status-text").textContent = `Preset guardado: ${name}`;
     $("#status-text").style.color = "var(--accent)";
     cancelSaveNewPreset();
@@ -913,13 +1003,6 @@ window.addEventListener("pywebviewready", () => {
 
   Promise.all([refreshTemplates(), refreshAvailableTextures()]).then(refresh);
 
-  // ------------------------------------------------------- tema
-  $("#theme-switch").addEventListener("change", (e) => {
-    const mode = e.target.checked ? "dark" : "light";
-    document.body.classList.toggle("light", mode === "light");
-    pywebview.api.set_appearance(mode);
-  });
-
   // ------------------------------------------ plantilla / texturas: "+ Añadir"
   $("#template-add-btn").addEventListener("click", browseTemplate);
   $("#texture-add-btn").addEventListener("click", browseTexture);
@@ -1000,6 +1083,7 @@ window.addEventListener("pywebviewready", () => {
       closeTextureBlendDropdown();
       const i = currentTextureLayerIndex();
       if (i === -1) return;
+      markPresetModified();
       pywebview.api.update_texture_layer(i, { blend: value });
       Preview.schedulePreview();
     });
@@ -1028,6 +1112,7 @@ window.addEventListener("pywebviewready", () => {
   $("#speed-control").addEventListener("click", (e) => {
     const btn = e.target.closest(".segmented-item");
     if (!btn) return;
+    markPresetModified();
     pywebview.api.set_speed(btn.dataset.value).then(() => refresh());
     scheduleLoopPreview();
   });
@@ -1052,7 +1137,10 @@ window.addEventListener("pywebviewready", () => {
       closePresetDropdown();
     }
   });
-  $("#preset-save").addEventListener("click", startSaveNewPreset);
+  $("#preset-save").addEventListener("click", handleSaveClick);
+  $("#preset-overwrite-btn").addEventListener("click", overwriteCurrentPreset);
+  $("#preset-save-as-new-btn").addEventListener("click", startSaveNewPreset);
+  $("#preset-save-choice-cancel").addEventListener("click", resetPresetSaveUI);
   $("#preset-save-confirm").addEventListener("click", confirmSaveNewPreset);
   $("#preset-save-cancel").addEventListener("click", cancelSaveNewPreset);
   $("#preset-save-input").addEventListener("keydown", (e) => {
@@ -1061,11 +1149,24 @@ window.addEventListener("pywebviewready", () => {
   });
 
   // ------------------------------------------------- direccion de salida
-  $("#output-browse").addEventListener("click", () => {
+  //
+  // Antes solo el botoncito (icono) abria el dialogo -- el texto de al
+  // lado, que ocupa casi todo el ancho de la fila y PARECE clickeable
+  // (mismo estilo que un campo), no hacia nada. Ahora los dos abren el
+  // mismo dialogo nativo.
+  const browseOutputPath = () => {
     pywebview.api.choose_output_path().then((path) => {
       $("#output-label").textContent = path || "Ruta donde se almacenará el video";
+      // El dialogo nativo de "Guardar como" deja escribir el nombre del
+      // archivo ahi mismo -- set_chosen_output (api.py) ya sincroniza
+      // custom_output_name con eso, pero hace falta refresh() para que
+      // "Nombre del video" recoja ese valor nuevo (path por si solo no
+      // alcanza, la logica de que nombre corresponde vive en Python).
+      refresh();
     });
-  });
+  };
+  $("#output-browse").addEventListener("click", browseOutputPath);
+  $("#output-label").addEventListener("click", browseOutputPath);
 
   // --------------------------------------------------------- generacion
   $("#generate-btn").addEventListener("click", () => {
@@ -1152,8 +1253,22 @@ const Preview = (() => {
     if (video.hidden) img.hidden = false;
   }
 
+  // Pantalla completa DENTRO de la misma ventana (estilo YouTube), con la
+  // Fullscreen API del navegador sobre #preview-surface -- antes esto abria
+  // una BrowserWindow de Electron aparte (ver previewWindow.js/main.js),
+  // que el usuario no queria (queria quedarse en la misma ventana) y que
+  // ademas nunca se habia confirmado con un clic real (erick lo dejo
+  // marcado como pendiente de verificar en el README). La Fullscreen API
+  // resuelve las dos cosas de una: mismo documento/ventana, y "Esc para
+  // salir" viene gratis del propio estandar -- Electron ya lo respeta, no
+  // hace falta escuchar la tecla a mano.
   function toggleExpand() {
-    pywebview.api.show_preview_window();
+    const surface = $("#preview-surface");
+    if (document.fullscreenElement === surface) {
+      document.exitFullscreen();
+    } else {
+      surface.requestFullscreen().catch(() => {});
+    }
   }
 
   function init() {
@@ -1161,6 +1276,16 @@ const Preview = (() => {
       pywebview.api.browse_media().then(handleResult);
     });
     $("#preview-expand").addEventListener("click", toggleExpand);
+    // Actualiza el icono/titulo del boton tanto al entrar como al salir --
+    // cubre el click del boton, la tecla Esc, Y salir por otras vias del
+    // sistema (ej. otro atajo de fullscreen), que no pasan por
+    // toggleExpand() pero SI disparan este evento.
+    document.addEventListener("fullscreenchange", () => {
+      const isFull = document.fullscreenElement === $("#preview-surface");
+      const btn = $("#preview-expand");
+      btn.innerHTML = iconSvg(isFull ? "shrink" : "expand");
+      btn.title = isFull ? "Salir de pantalla completa" : "Agrandar";
+    });
   }
 
   return { init, applyState, onReady, schedulePreview };

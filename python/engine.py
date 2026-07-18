@@ -265,14 +265,37 @@ def parse_out_time(line):
 # audio de origen ya es AAC (0% perdida y sin tiempo de codificacion).
 # aac_mf usa el codificador acelerado de Windows (~15x mas rapido que el nativo),
 # pero solo acepta 44.1/48 kHz, por eso las frecuencias mayores se bajan a 48k.
-def audio_strategy_args(strategy, sample_rate):
+#
+# peak_db (opcional, el mismo valor que measure_peak_db ya calcula para el
+# aviso de "puede clipear" en la UI): si el pico del ORIGEN pasa de la
+# franja segura, se agrega un "-af volume=Xdb" que baja el volumen entero
+# lo justo para que el pico mas alto quede debajo de 0 dBFS ANTES de
+# codificar. Sin esto, un audio con picos por encima de 0 dB (comun en wav
+# flotante -- ahi no truena porque el float no tiene techo real) SI se
+# aplasta contra el techo real de AAC al codificar: medido con un archivo
+# real, un pico de origen a +3 dB perdia 2.4 dB de pico y el crest factor
+# (la diferencia entre el golpe de un kick y el resto) se achicaba 2.3 dB
+# -- exactamente lo que suena como "el kick quedo comprimido/aplastado".
+# Bajar el volumen entero de forma pareja ANTES de codificar evita ese
+# aplastamiento sin tocar la dinamica relativa (mismo crest factor, +-0.01
+# dB, verificado) -- el resultado suena igual de punchy, solo mas bajito.
+# No aplica a "copy": ahi no hay filtro ni recodificacion, se copian los
+# bytes tal cual (si el archivo de origen ya viene aplastado, eso paso
+# antes, en quien lo exporto por primera vez -- no es algo que este
+# programa pueda arreglar sin alterar el archivo).
+def audio_strategy_args(strategy, sample_rate, peak_db=None):
     if strategy == "copy":
         return ["-c:a", "copy"]
     if sample_rate in (44100, 48000):
         rate = sample_rate
     else:
         rate = 48000
-    return ["-c:a", strategy, "-b:a", "320k", "-ar", str(rate)]
+    args = ["-c:a", strategy, "-b:a", "320k", "-ar", str(rate)]
+    safety_margin_db = 1.0
+    if peak_db is not None and peak_db > -safety_margin_db:
+        gain_db = -(peak_db + safety_margin_db)
+        args = ["-af", f"volume={gain_db:.2f}dB"] + args
+    return args
 
 
 def build_layout(media_size, is_video, scale_pct, template_box):

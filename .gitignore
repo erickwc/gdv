@@ -2,3 +2,5 @@ node_modules/
 python/venv/
 python/__pycache__/
 python/config.json
+.DS_Store
+*.app/
