@@ -18,6 +18,41 @@ from PIL import Image
 MAX_WIDTH = 1920
 MAX_HEIGHT = 1080
 
+# Resoluciones de salida elegibles (selector de calidad en la UI) -- el
+# lienzo de composicion (MAX_WIDTH/MAX_HEIGHT de arriba) NO cambia con
+# esto: todo el recorte/posicionamiento/plantillas se sigue calculando a
+# 1920x1080 como siempre, y "720p" solo agrega un escalado final en
+# build_filtergraph (ver output_size mas abajo). Evita tocar la matematica
+# de layout (que asume el lienzo fijo en varios lugares) solo para bajar la
+# resolucion de salida.
+OUTPUT_RESOLUTIONS = {
+    "1080p": (1920, 1080),
+    "720p": (1280, 720),
+}
+DEFAULT_OUTPUT_RESOLUTION = "1080p"
+
+
+def resolve_output_size(preference, media_size):
+    """Traduce la preferencia de calidad ("1080p"/"720p"/"original") a un
+    output_size real para el escalado final (ver build_filtergraph).
+
+    "original" no es un preset fijo: usa la ALTURA del medio cargado
+    (media_size), topeada a MAX_HEIGHT (nunca upscalea mas alla del lienzo
+    de composicion real -- por encima de eso no hay mas detalle que sacar,
+    solo un archivo mas pesado). El ancho se recalcula a la misma relacion
+    16:9 del lienzo, no al aspect ratio original del medio: la composicion
+    ya lo recorto/relleno a esa forma antes de este escalado, conservar el
+    aspect ratio de origen aca no tendria sentido. Sin medio cargado (o
+    todavia sin sondear) cae al preset por defecto, igual que un valor
+    invalido cualquiera."""
+    if preference == "original" and media_size:
+        h = min(media_size[1], MAX_HEIGHT)
+        h -= h % 2
+        w = round(h * MAX_WIDTH / MAX_HEIGHT)
+        w -= w % 2
+        return (w, h)
+    return OUTPUT_RESOLUTIONS.get(preference, OUTPUT_RESOLUTIONS[DEFAULT_OUTPUT_RESOLUTION])
+
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".gif"}
 AUDIO_EXTS = {".mp3", ".wav", ".flac", ".aac", ".m4a", ".ogg", ".wma", ".opus"}
@@ -70,6 +105,18 @@ BLEND_MODES = {
 # ningun ajuste de codificacion.
 VIDEO_QUALITY_ARGS = [
     "-preset", "veryfast", "-crf", "18",
+    "-maxrate", "18M", "-bufsize", "36M",
+]
+
+# NVENC (GPU) para la exportacion REAL cuando hay una tarjeta que lo
+# soporte -- Api._run_ffmpeg_job prueba esto primero (mismo criterio que
+# _loop_preview_job con el preview) y cae a VIDEO_QUALITY_ARGS (CPU) si
+# falla. p6/cq19 para quedar parejo con el crf 18 de VIDEO_QUALITY_ARGS --
+# las escalas no son identicas pero el resultado es visualmente
+# comparable. b:v 0 es obligatorio con -rc vbr -cq para que NVENC respete
+# el cq en vez de clampear a un bitrate promedio.
+VIDEO_QUALITY_ARGS_NVENC = [
+    "-preset", "p6", "-rc", "vbr", "-cq", "19", "-b:v", "0",
     "-maxrate", "18M", "-bufsize", "36M",
 ]
 
@@ -343,14 +390,20 @@ def build_focus_crop(focus):
 
 
 def build_filtergraph(layout, is_video=False, speed=1.0, deinterlace=False,
-                      tpl_idx=None, textures=None, focus=None):
+                      tpl_idx=None, textures=None, focus=None, output_size=None):
     """Arma el filter_complex completo: medio (des-entrelazado + velocidad +
     ajuste manual de encuadre + escala/recorte/bordes) -> texturas mezcladas
     encima (una sobre otra, en el orden de la lista) -> plantilla encima.
     Los clips de video salen a 30 fps constantes para que el loop por copia
     directa sea perfectamente uniforme (sin glitches).
 
-    textures: lista de (indice_de_entrada, modo_ffmpeg, opacidad_0_a_1)."""
+    textures: lista de (indice_de_entrada, modo_ffmpeg, opacidad_0_a_1).
+
+    output_size: (ancho, alto) opcional para la resolucion final del
+    export (ver OUTPUT_RESOLUTIONS) -- se aplica como un escalado extra
+    DESPUES de que el lienzo ya esta armado a MAX_WIDTH x MAX_HEIGHT, asi
+    que no afecta nada del recorte/posicionamiento de arriba (todos esos
+    calculos se quedan igual que siempre, a resolucion completa)."""
     inner_w, inner_h = layout["inner"]
     canvas_w, canvas_h = layout["canvas"]
 
@@ -417,12 +470,17 @@ def build_filtergraph(layout, is_video=False, speed=1.0, deinterlace=False,
         parts.append(f"[{last}][tplfit]overlay=0:0[tpld]")
         last = "tpld"
 
-    parts.append(f"[{last}]format=yuv420p[vout]")
+    if output_size and output_size != (canvas_w, canvas_h):
+        ow, oh = output_size
+        parts.append(f"[{last}]scale={ow}:{oh}:flags=lanczos,format=yuv420p[vout]")
+    else:
+        parts.append(f"[{last}]format=yuv420p[vout]")
     return ";".join(parts)
 
 
 def build_command(ffmpeg_exe, media_path, audio_path, output_path, duration, audio_args,
-                  layout, template_path=None, textures=None, focus=None):
+                  layout, template_path=None, textures=None, focus=None, output_size=None,
+                  encoder="libx264"):
     """Pasada unica para imagenes fijas (el video es barato a 10 fps)."""
     cmd = [ffmpeg_exe, "-y", "-loop", "1", "-framerate", "1", "-i", media_path, "-i", audio_path]
     idx = 2
@@ -438,12 +496,20 @@ def build_command(ffmpeg_exe, media_path, audio_path, output_path, duration, aud
         idx += 1
     fc = build_filtergraph(
         layout, is_video=False, tpl_idx=tpl_idx, textures=tex_layers, focus=focus,
+        output_size=output_size,
     )
+    # -tune stillimage es especifico de libx264 -- NVENC no lo reconoce
+    # (ffmpeg fallaria con "Unrecognized option"), asi que solo se agrega
+    # con ese encoder.
+    if encoder == "h264_nvenc":
+        video_args = ["-c:v", "h264_nvenc", *VIDEO_QUALITY_ARGS_NVENC]
+    else:
+        video_args = ["-c:v", "libx264", *VIDEO_QUALITY_ARGS, "-tune", "stillimage"]
     cmd += [
         "-filter_complex", fc, "-map", "[vout]", "-map", "1:a:0",
         "-r", "10",
-        "-c:v", "libx264", *VIDEO_QUALITY_ARGS,
-        "-pix_fmt", "yuv420p", "-tune", "stillimage",
+        *video_args,
+        "-pix_fmt", "yuv420p",
         *audio_args,
         "-shortest",
     ]
@@ -455,7 +521,7 @@ def build_command(ffmpeg_exe, media_path, audio_path, output_path, duration, aud
 
 def build_compose_command(ffmpeg_exe, media_path, temp_path, layout, trim=None, speed=1.0,
                           deinterlace=False, template_path=None, textures=None, fast=False,
-                          encoder="libx264"):
+                          encoder="libx264", output_size=None):
     """FASE 1 (solo clips de video): compone UNA sola vuelta del loop —
     recorte + velocidad + texturas + escala/bordes o plantilla — en un mp4
     corto sin audio, a 30 fps constantes y con GOP cerrado para que la
@@ -463,10 +529,11 @@ def build_compose_command(ffmpeg_exe, media_path, temp_path, layout, trim=None, 
 
     fast=True (preview del loop, ver request_loop_preview) usa
     PREVIEW_QUALITY_ARGS en vez de VIDEO_QUALITY_ARGS -- el resultado se ve
-    y se tira, no hace falta la calidad de la exportacion real. Con
-    fast=True, encoder="h264_nvenc" pide PREVIEW_QUALITY_ARGS_NVENC (GPU)
-    en vez del libx264 de siempre -- el caller (Api._loop_preview_job)
-    decide esto probando si la GPU responde, no hay deteccion aca."""
+    y se tira, no hace falta la calidad de la exportacion real.
+    encoder="h264_nvenc" (en cualquiera de los dos modos) pide el juego de
+    argumentos NVENC (GPU) correspondiente en vez de libx264 -- el caller
+    (Api._loop_preview_job / Api._run_ffmpeg_job) decide esto probando si
+    la GPU responde, no hay deteccion aca."""
     cmd = [ffmpeg_exe, "-y"]
     if trim:
         cmd += ["-ss", f"{trim[0]:.3f}", "-to", f"{trim[1]:.3f}"]
@@ -484,10 +551,12 @@ def build_compose_command(ffmpeg_exe, media_path, temp_path, layout, trim=None, 
         idx += 1
     fc = build_filtergraph(
         layout, is_video=True, speed=speed, deinterlace=deinterlace,
-        tpl_idx=tpl_idx, textures=tex_layers,
+        tpl_idx=tpl_idx, textures=tex_layers, output_size=output_size,
     )
     if fast:
         quality_args = PREVIEW_QUALITY_ARGS_NVENC if encoder == "h264_nvenc" else PREVIEW_QUALITY_ARGS
+    elif encoder == "h264_nvenc":
+        quality_args = ["-c:v", "h264_nvenc", *VIDEO_QUALITY_ARGS_NVENC]
     else:
         quality_args = ["-c:v", "libx264", *VIDEO_QUALITY_ARGS]
     cmd += [

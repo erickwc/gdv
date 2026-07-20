@@ -92,12 +92,9 @@ function fillStaticIcons() {
   $("#preview-expand").innerHTML = iconSvg("expand");
   $("#loop-preview-play").innerHTML = iconSvgFilled("playerPlay");
   $("#loop-preview-toggle").innerHTML = iconSvgFilled("playerPause");
-  // "Cambiar" (ruta de salida): antes un icono de descargar, que sugeria
-  // "bajar algo" -- una carpeta es mas directo para "elegir donde se
-  // guarda". "Guardar preset": tenia (por error) el mismo icono de
-  // carpeta que ahora usa la ruta de salida; un preset se GUARDA, asi que
-  // le toca un icono de guardar (disquete).
-  $("#output-browse").innerHTML = iconSvg("folderOpen");
+  // "Guardar preset": tenia (por error) el mismo icono de carpeta que
+  // antes usaba la ruta de salida; un preset se GUARDA, asi que le toca un
+  // icono de guardar (disquete).
   $$(".preset-dropdown-chevron").forEach((el) => (el.innerHTML = iconSvg("chevronDown")));
   $("#preset-save").innerHTML = iconSvg("deviceFloppy");
   $("#link-btn").innerHTML = iconSvg("cloudDownload");
@@ -105,6 +102,8 @@ function fillStaticIcons() {
   $("#preset-save-cancel").innerHTML = iconSvgFilled("close");
   $("#preset-save-choice-cancel").innerHTML = iconSvgFilled("close");
   $("#output-title-pencil").innerHTML = iconSvg("edit");
+  $("#generate-modal-close").innerHTML = iconSvgFilled("close");
+  $("#save-modal-close").innerHTML = iconSvgFilled("close");
   $$(".unit-percent").forEach((el) => (el.innerHTML = iconSvg("percentage", 12)));
 }
 
@@ -140,6 +139,7 @@ function render(state) {
   renderTextureGallery(state);
   LoopSlider.applyState(state);
   renderSpeedControl(state);
+  renderResolutionControl(state);
   renderScale(state);
   renderPresets(state);
   renderOutput(state);
@@ -218,16 +218,12 @@ function renderChips(state) {
   $("#speed-section").hidden = !videoReady;
   $("#scale-section").hidden = !state.show_scale;
 
-  $("#generate-btn").disabled = !state.ready;
+  $("#export-btn").disabled = !state.ready;
 }
 
 function handleResult(result) {
   if (result && result.state) {
     render(result.state);
-  }
-  if (result && result.ignored && result.ignored.length) {
-    $("#status-text").textContent =
-      "Ignorado (no es imagen, video ni audio): " + result.ignored.join(", ");
   }
 }
 
@@ -307,10 +303,7 @@ function renderTemplateInfo(state) {
 }
 
 function browseTemplate() {
-  pywebview.api.browse_template().then((result) => {
-    if (!result.ok && !result.cancelled) {
-      $("#status-text").textContent = result.error || "No se pudo usar esa plantilla.";
-    }
+  pywebview.api.browse_template().then(() => {
     refreshTemplates().then(refresh);
   });
 }
@@ -321,10 +314,7 @@ function toggleTemplate(path, active) {
     pywebview.api.clear_template().then(() => refresh());
     return;
   }
-  pywebview.api.set_template(path).then((result) => {
-    if (!result.ok) {
-      $("#status-text").textContent = result.error || "No se pudo usar esa plantilla.";
-    }
+  pywebview.api.set_template(path).then(() => {
     refreshTemplates().then(refresh);
   });
 }
@@ -390,10 +380,7 @@ function deleteTextureFile(path) {
   const name = path.split(/[\\/]/).pop();
   if (!confirm(`¿Quitar la textura "${name}" de la app y de las capas que la usan?`)) return;
   pywebview.api.delete_texture_file(path).then((r) => {
-    if (!r.ok) {
-      $("#status-text").textContent = r.error || "No se pudo eliminar la textura.";
-      return;
-    }
+    if (!r.ok) return;
     markPresetModified();
     if (selectedTexturePath === path) selectedTexturePath = null;
     refreshAvailableTextures().then(refresh);
@@ -488,6 +475,21 @@ function renderSpeedControl(state) {
   });
 }
 
+// -------------------------------------------------- calidad de salida
+//
+// Mismo componente .segmented que Velocidad, pero escopeado a
+// #resolution-control -- renderSpeedControl (arriba) recorre TODOS los
+// .segmented-item del documento sin filtrar, asi que sin escopear esto
+// ambos grupos se pisarian entre si (renderSpeedControl le apagaria el
+// estado activo a estos botones en cada render()). Se llama justo despues
+// de renderSpeedControl en render() para que esta reafirmacion sea
+// siempre la que gana.
+function renderResolutionControl(state) {
+  $$("#resolution-control .segmented-item").forEach((btn) => {
+    btn.classList.toggle("segmented-active", btn.dataset.value === state.output_resolution);
+  });
+}
+
 // -------------------------------------------------------------- presets
 //
 // Dropdown propio (no <select> nativo) para poder mostrar los iconos de
@@ -554,10 +556,7 @@ function buildPresetRow(name) {
         return;
       }
       pywebview.api.rename_preset(name, newName).then((r) => {
-        if (!r.ok) {
-          $("#status-text").textContent = r.error;
-          return;
-        }
+        if (!r.ok) return;
         if (currentPresetName === name) currentPresetName = newName;
         refresh();
       });
@@ -616,10 +615,7 @@ function buildPresetRow(name) {
 
 function applyPreset(name) {
   pywebview.api.apply_preset(name).then((r) => {
-    if (!r.ok) {
-      $("#status-text").textContent = r.error || "No se pudo aplicar el preset.";
-      return;
-    }
+    if (!r.ok) return;
     currentPresetName = name;
     clearPresetModified();
     closePresetDropdown();
@@ -641,10 +637,6 @@ function applyPreset(name) {
     // availableTextures todavia no incluia esa textura. Se veia como si la
     // textura hubiera desaparecido al aplicar el preset.
     refreshAvailableTextures().then(refresh);
-    $("#status-text").textContent = r.missing && r.missing.length
-      ? `Preset "${name}" aplicado — no se encontró la ${r.missing.join("/")} guardada`
-      : `Preset aplicado: ${name}`;
-    $("#status-text").style.color = r.missing && r.missing.length ? "var(--red)" : "var(--accent)";
   });
 }
 
@@ -754,13 +746,8 @@ function showSaveChoice() {
 function overwriteCurrentPreset() {
   const name = currentPresetName;
   pywebview.api.save_preset(name).then((r) => {
-    if (!r.ok) {
-      $("#status-text").textContent = r.error;
-      return;
-    }
+    if (!r.ok) return;
     clearPresetModified();
-    $("#status-text").textContent = `Preset actualizado: ${name}`;
-    $("#status-text").style.color = "var(--accent)";
     resetPresetSaveUI();
     refresh();
   });
@@ -800,16 +787,11 @@ function confirmSaveNewPreset() {
     return;
   }
   pywebview.api.save_preset(name).then((r) => {
-    if (!r.ok) {
-      $("#status-text").textContent = r.error;
-      return;
-    }
+    if (!r.ok) return;
     currentPresetName = name;
     // El preset se guarda con el estado ACTUAL (ver save_preset en
     // api.py) -- ya coincide con si mismo, asi que arranca sin asterisco.
     clearPresetModified();
-    $("#status-text").textContent = `Preset guardado: ${name}`;
-    $("#status-text").style.color = "var(--accent)";
     cancelSaveNewPreset();
     refresh();
   });
@@ -821,70 +803,234 @@ function renderOutput(state) {
   if (document.activeElement !== $("#project-title")) {
     $("#project-title").value = state.custom_output_name || "";
   }
-  $("#output-label").textContent = state.output_path || "Ruta donde se almacenará el video";
+  $("#output-label").textContent = state.output_path || "Seleccionar donde se almacenará el video";
+}
+
+// ------------------------------------------------- modal "Generar video"
+//
+// Reemplaza al viejo boton fijo de la barra de titulo -- se abre con
+// Ctrl/Cmd+S (listener registrado mas abajo, junto al resto de listeners
+// de pywebviewready) y trae nombre + ruta de salida (los mismos campos que
+// antes vivian en #output-block) mas el boton que dispara la generacion
+// real. Mismo patron de apertura/cierre (fade + scale) que
+// openGenerateModal/closeGenerateModal, de ahi abajo.
+// Sin overlay de fondo -- exactamente el mismo mecanismo que
+// #preset-list/#texture-blend-list (positionFloatingDropdown +
+// animateDropdown, motion.js): un panel suelto position:fixed que se
+// centra midiendose a si mismo YA VISIBLE, nada de "hidden" y animate()
+// en el mismo instante. Esa es la diferencia real con el viejo overlay +
+// panel adentro -- un ancestro position:fixed (aunque no tuviera fondo
+// propio) empujaba a Chromium a componerlo en su propia capa de GPU, y el
+// backdrop-filter del panel quedaba encerrado ahi sin poder "ver" el
+// contenido real de la app detras. Sin ese ancestro, el mismo blur que ya
+// andaba bien en los dropdowns anda igual de bien aca.
+function centerFixedPanel(panel) {
+  const rect = panel.getBoundingClientRect();
+  panel.style.left = `${Math.round((window.innerWidth - rect.width) / 2)}px`;
+  panel.style.top = `${Math.round((window.innerHeight - rect.height) / 2)}px`;
+}
+
+// Ancla el panel al boton que lo abre (#export-btn, esquina inferior
+// derecha) en vez de centrarlo -- mismo espiritu que
+// positionFloatingDropdown, pero sin achicarlo al ancho del trigger (este
+// panel necesita su propio ancho fijo) y alineado al borde DERECHO del
+// boton, no al izquierdo. Se abre hacia ARRIBA porque el boton vive pegado
+// abajo -- no hay lugar para desplegar hacia abajo.
+function positionNearTrigger(trigger, panel) {
+  const margin = 10;
+  const rect = trigger.getBoundingClientRect();
+  const panelRect = panel.getBoundingClientRect();
+  let left = rect.right - panelRect.width;
+  left = Math.max(margin, Math.min(left, window.innerWidth - panelRect.width - margin));
+  let top = rect.top - margin - panelRect.height;
+  if (top < margin) top = rect.bottom + margin; // sin lugar arriba -- cae abajo
+  panel.style.left = `${Math.round(left)}px`;
+  panel.style.top = `${Math.round(top)}px`;
+}
+
+function openSaveModal() {
+  const modal = $("#save-modal-overlay");
+  modal.hidden = false;
+  positionNearTrigger($("#export-btn"), modal);
+  animateDropdown(modal, true);
+  $("#project-title").focus();
+}
+
+function closeSaveModal() {
+  const modal = $("#save-modal-overlay");
+  if (modal.hidden) return;
+  animateDropdown(modal, false);
+}
+
+// Ctrl/Cmd+S -- ignora el atajo si todavia no hay nada listo para generar
+// (mismo chequeo que antes hacia el "disabled" del boton fijo) o si ya hay
+// una generacion en curso (progreso encima no tendria sentido).
+function requestSaveModal() {
+  if (!$("#generate-modal-overlay").hidden) return;
+  if (!lastState || !lastState.ready) return;
+  openSaveModal();
 }
 
 // ---------------------------------------------------------- generacion
+//
+// El progreso ya no vive dentro del boton "Generar video" -- una modal
+// chica y centrada (#generate-modal-overlay en index.html) se abre al
+// arrancar, con la barrita de carga + el estado (texto con cross-fade de
+// blur al cambiar, ver setGenerateLabel). Al terminar oculta la barra y
+// revela "Ver video"/"Abrir carpeta" (clase .chip). Error/cancelacion solo
+// cierran la modal, sin ningun otro aviso.
+
+// Evita que un cambio de texto viejo pise a uno mas nuevo si llegan
+// varios onStatus seguidos (el swap tiene 150ms de salida).
+let generateLabelToken = 0;
+
+function setGenerateLabel(text) {
+  const el = $("#generate-modal-status");
+  if (el.textContent === text) return;
+  const token = ++generateLabelToken;
+  el.animate(
+    [{ opacity: 1, filter: "blur(0px)" }, { opacity: 0, filter: "blur(5px)" }],
+    { duration: 140, easing: "ease", fill: "forwards" }
+  );
+  // setTimeout y no .finished -- si la ventana se minimiza a mitad de
+  // animacion, "finished" puede no resolver nunca (mismo motivo que el
+  // respaldo de animateDropdown en motion.js).
+  setTimeout(() => {
+    if (token !== generateLabelToken) return;
+    el.textContent = text;
+    el.animate(
+      [{ opacity: 0, filter: "blur(5px)" }, { opacity: 1, filter: "blur(0px)" }],
+      { duration: 420, easing: "cubic-bezier(0.16, 1, 0.3, 1)", fill: "forwards" }
+    );
+  }, 150);
+}
+
+// Timer de showGenerateResult() que oculta la barra 160ms despues de
+// desvanecerla -- guardado aparte para poder cancelarlo si una generacion
+// nueva arranca antes de que dispare (ver openGenerateModal). Sin esto, ese
+// setTimeout viejo podia disparar DESPUES de que la modal ya se hubiera
+// vuelto a abrir para la 2da generacion, ocultando la barra a mitad de esa
+// corrida nueva -- una carrera que solo se notaba a veces, segun el timing.
+let progressHideTimer = null;
+
+function openGenerateModal() {
+  const modal = $("#generate-modal-overlay");
+  const progress = $("#generate-modal-progress");
+  // Sin overlay de fondo detras -- pausar el fondo animado (WebGL) y sacar
+  // .app-shell del todo (galeria de plantillas/texturas, backdrop-filter de
+  // los paneles) sigue valiendo la pena igual: nadie los mira mientras esta
+  // modal ocupa la atencion, y asi se libera CPU/GPU real para el encode de
+  // ffmpeg, que corre en paralelo en un thread aparte. Se reanuda en
+  // showGenerateResult()/closeGenerateModal(), cuando el trabajo ya termino.
+  if (window.setAuroraPaused) window.setAuroraPaused(true);
+  document.body.classList.add("generating");
+  clearTimeout(progressHideTimer);
+  // La corrida anterior puede haber dejado la barra desvanecida -- su
+  // animate() de salida en showGenerateResult() usa fill:"forwards", que
+  // deja opacity:0 pegado PARA SIEMPRE hasta que algo lo cancele. Hay que
+  // sacarle "hidden" ANTES de cancelar: con display:none todavia puesto,
+  // getAnimations() no siempre encuentra esa animacion vieja para
+  // cancelarla (el elemento no esta "renderizado"), y el opacity:0 se
+  // volvia a pegar apenas se mostraba de nuevo -- la 2da generacion en
+  // adelante se veia con la modal abierta pero sin la barra.
+  progress.hidden = false;
+  progress.getAnimations().forEach((anim) => anim.cancel());
+  progress.style.opacity = "";
+  $("#generate-modal-progress-fill").style.width = "0%";
+  $("#generate-modal-actions").hidden = true;
+  $("#generate-modal-close").hidden = true;
+  $("#cancel-btn").hidden = false;
+  modal.hidden = false;
+  // Mismo mecanismo que openSaveModal -- panel suelto position:fixed,
+  // centrado y animado igual que #preset-list/#texture-blend-list (ver ese
+  // comentario para el detalle de por que esto arregla el backdrop-filter).
+  centerFixedPanel(modal);
+  animateDropdown(modal, true);
+}
+
+function closeGenerateModal() {
+  if (window.setAuroraPaused) window.setAuroraPaused(false);
+  document.body.classList.remove("generating");
+  const modal = $("#generate-modal-overlay");
+  if (modal.hidden) return;
+  animateDropdown(modal, false);
+}
+
+// Al terminar: la barra desaparece y aparecen "Ver video"/"Abrir carpeta"
+// -- la modal se queda abierta hasta que el usuario la cierra o usa una
+// de las dos acciones (que la cierran solas al terminar su trabajo).
+function showGenerateResult() {
+  // ffmpeg ya termino en este punto -- reanudar aca (no recien cuando el
+  // usuario cierre la modal) libera el fondo animado apenas deja de hacer
+  // falta ahorrar recursos, aunque la modal se quede abierta un rato mas
+  // mostrando "Ver video"/"Abrir carpeta".
+  if (window.setAuroraPaused) window.setAuroraPaused(false);
+  document.body.classList.remove("generating");
+  // Sin esto el texto se quedaba pegado en el ultimo "Generando..." que
+  // mando Python durante el progreso -- nada lo actualizaba a un mensaje
+  // de "listo" al terminar.
+  setGenerateLabel("¡Video generado!");
+  $("#cancel-btn").hidden = true;
+  const progress = $("#generate-modal-progress");
+  progress.animate(
+    [{ opacity: 1 }, { opacity: 0 }],
+    { duration: 160, easing: "ease", fill: "forwards" }
+  );
+  clearTimeout(progressHideTimer);
+  progressHideTimer = setTimeout(() => { progress.hidden = true; }, 160);
+  const actions = $("#generate-modal-actions");
+  actions.hidden = false;
+  actions.animate(
+    [{ opacity: 0, transform: "translateY(4px)" }, { opacity: 1, transform: "translateY(0)" }],
+    { duration: 280, delay: 100, easing: "cubic-bezier(0.16, 1, 0.3, 1)", fill: "both" }
+  );
+  $("#generate-modal-close").hidden = false;
+}
 
 function setGeneratingUI(active) {
-  $("#generate-btn").disabled = active || !(lastState && lastState.ready);
-  $("#output-browse").disabled = active;
-  $("#cancel-btn").hidden = !active;
-  if (active) {
-    $("#open-video-btn").hidden = true;
-    $("#open-folder-btn").hidden = true;
-    $("#progress-bar").hidden = false;
-    $("#progress-fill").style.width = "0%";
-  }
+  $("#export-btn").disabled = active || !(lastState && lastState.ready);
+  if (active) openGenerateModal();
 }
 
 function beginGeneration() {
   pywebview.api.start_generation().then((r) => {
-    if (!r.ok) {
-      $("#status-text").textContent = r.error || "No se pudo iniciar la generación.";
-      return;
-    }
+    if (!r.ok) return;
     setGeneratingUI(true);
-    $("#status-text").textContent = "Preparando...";
-    $("#status-text").style.color = "";
+    setGenerateLabel("Preparando...");
   });
 }
 
 window.onProgress = (frac) => {
-  $("#progress-fill").style.width = `${Math.round(frac * 100)}%`;
+  $("#generate-modal-progress-fill").style.width = `${Math.round(frac * 100)}%`;
 };
 
 window.onStatus = (payload) => {
-  $("#status-text").textContent = payload.text;
+  setGenerateLabel(payload.text);
 };
 
 // Progreso de la descarga por link (yt-dlp, ver _push_download_status en
 // api.py) -- evento aparte de onStatus, que es de la generacion real (la
-// barra de progreso de mas abajo).
+// barra de progreso de la modal).
 window.onDownloadStatus = (payload) => {
   $("#download-status").textContent = payload.text;
   $("#download-status").style.color = payload.color || "";
 };
 
+// El resultado final: exito muestra "Ver video"/"Abrir carpeta" adentro de
+// la propia modal (showGenerateResult); error/cancelacion solo cierran la
+// modal, sin ningun aviso aparte.
 window.onJobDone = (payload) => {
-  setGeneratingUI(false);
-  $("#status-text").textContent = payload.message;
-  $("#status-text").style.color = payload.ok ? "var(--accent)" : (payload.cancelled ? "" : "var(--red)");
+  $("#export-btn").disabled = !(lastState && lastState.ready);
   if (payload.ok) {
-    $("#open-video-btn").hidden = false;
-    $("#open-folder-btn").hidden = false;
-    $("#progress-fill").style.width = "100%";
+    showGenerateResult();
   } else {
-    $("#progress-bar").hidden = true;
+    closeGenerateModal();
   }
 };
 
 window.onJobError = (payload) => {
-  setGeneratingUI(false);
-  $("#progress-bar").hidden = true;
-  $("#status-text").textContent = "Error inesperado.";
-  $("#status-text").style.color = "var(--red)";
-  alert(payload.message);
+  $("#export-btn").disabled = !(lastState && lastState.ready);
+  closeGenerateModal();
 };
 
 // Python empuja el estado cuando termina un trabajo en segundo plano
@@ -992,6 +1138,7 @@ window.addEventListener("pywebviewready", () => {
   // hasMedia=false, que tarda lo que tarden refreshTemplates()/
   // refreshAvailableTextures() en resolver.
   if (window.setAdaptiveAccent) window.setAdaptiveAccent(null);
+
   FocusPicker.init();
   LoopSlider.init();
   Preview.init();
@@ -1010,7 +1157,7 @@ window.addEventListener("pywebviewready", () => {
   // ------------------------------------------------------- titulo
   $("#project-title").addEventListener("input", (e) => {
     pywebview.api.set_output_name(e.target.value).then((path) => {
-      $("#output-label").textContent = path || "Ruta donde se almacenará el video";
+      $("#output-label").textContent = path || "Seleccionar donde se almacenará el video";
     });
   });
   // El lapiz esta al costado del texto (no superpuesto) -- un click ahi
@@ -1039,14 +1186,8 @@ window.addEventListener("pywebviewready", () => {
       return;
     }
     pywebview.api.paste_from_clipboard().then((result) => {
-      if (result && result.empty) {
-        $("#status-text").textContent = "El portapapeles no tiene una imagen ni archivos.";
-        return;
-      }
-      if (result && !result.ok) {
-        $("#status-text").textContent = result.error || "No se pudo pegar.";
-        return;
-      }
+      if (result && result.empty) return;
+      if (result && !result.ok) return;
       handleResult(result);
     });
   });
@@ -1117,6 +1258,16 @@ window.addEventListener("pywebviewready", () => {
     scheduleLoopPreview();
   });
 
+  // ------------------------------------------------- calidad de salida
+  //
+  // No es parte del preset (igual que nombre/ruta de salida) -- es una
+  // preferencia de exportacion, no algo del "look" del video en si.
+  $("#resolution-control").addEventListener("click", (e) => {
+    const btn = e.target.closest(".segmented-item");
+    if (!btn) return;
+    pywebview.api.set_output_resolution(btn.dataset.value).then(() => refresh());
+  });
+
   // ---------------------------------------------------------- escala
   $("#scale-slider").addEventListener("input", (e) => commitScale(e.target.value));
   $("#scale-entry").addEventListener("change", (e) => commitScale(e.target.value));
@@ -1150,13 +1301,12 @@ window.addEventListener("pywebviewready", () => {
 
   // ------------------------------------------------- direccion de salida
   //
-  // Antes solo el botoncito (icono) abria el dialogo -- el texto de al
-  // lado, que ocupa casi todo el ancho de la fila y PARECE clickeable
-  // (mismo estilo que un campo), no hacia nada. Ahora los dos abren el
-  // mismo dialogo nativo.
-  const browseOutputPath = () => {
+  // Sin boton de carpeta aparte -- el texto en si ocupa toda la fila y
+  // PARECE clickeable (mismo estilo que un campo), asi que abre el mismo
+  // dialogo nativo con solo hacerle click.
+  $("#output-label").addEventListener("click", () => {
     pywebview.api.choose_output_path().then((path) => {
-      $("#output-label").textContent = path || "Ruta donde se almacenará el video";
+      $("#output-label").textContent = path || "Seleccionar donde se almacenará el video";
       // El dialogo nativo de "Guardar como" deja escribir el nombre del
       // archivo ahi mismo -- set_chosen_output (api.py) ya sincroniza
       // custom_output_name con eso, pero hace falta refresh() para que
@@ -1164,26 +1314,66 @@ window.addEventListener("pywebviewready", () => {
       // alcanza, la logica de que nombre corresponde vive en Python).
       refresh();
     });
-  };
-  $("#output-browse").addEventListener("click", browseOutputPath);
-  $("#output-label").addEventListener("click", browseOutputPath);
+  });
 
-  // --------------------------------------------------------- generacion
-  $("#generate-btn").addEventListener("click", () => {
+  // ---------------------------------------------- modal "Generar video"
+  document.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+      e.preventDefault();
+      requestSaveModal();
+      return;
+    }
+    if (e.key === "Escape" && !$("#save-modal-overlay").hidden) closeSaveModal();
+  });
+  $("#export-btn").addEventListener("click", requestSaveModal);
+  $("#save-modal-close").addEventListener("click", closeSaveModal);
+  // Click afuera de la modal la cierra -- mismo patron "closest()" que los
+  // dropdowns (ver el listener analogo de #generate-modal-overlay). Hay que
+  // excluir #export-btn aparte: es el mismo click que la abre, y sin esta
+  // exclusion este listener (que tambien ve ESE click al burbujear hasta
+  // document) la cerraba en el mismo instante que requestSaveModal() la
+  // abria.
+  document.addEventListener("click", (e) => {
+    if ($("#save-modal-overlay").hidden) return;
+    if (e.target.closest("#save-modal-overlay") || e.target.closest("#export-btn")) return;
+    closeSaveModal();
+  });
+  $("#save-modal-generate-btn").addEventListener("click", () => {
     pywebview.api.output_would_overwrite().then((wouldOverwrite) => {
       if (wouldOverwrite) {
         const name = $("#output-label").textContent;
         if (!confirm(`${name} ya existe. ¿Deseas reemplazarlo?`)) return;
       }
+      closeSaveModal();
       beginGeneration();
     });
   });
+
+  // --------------------------------------------------------- generacion
   $("#cancel-btn").addEventListener("click", () => {
     pywebview.api.cancel_generation();
-    $("#status-text").textContent = "Cancelando...";
+    setGenerateLabel("Cancelando...");
   });
-  $("#open-video-btn").addEventListener("click", () => pywebview.api.open_video());
-  $("#open-folder-btn").addEventListener("click", () => pywebview.api.open_output_folder());
+  $("#generate-modal-close").addEventListener("click", closeGenerateModal);
+  // Click afuera de la modal la cierra -- solo cuando ya hay resultado
+  // (#generate-modal-actions visible); mientras genera, no debe poder
+  // cerrarla asi (cancelar es una accion explicita, el boton de al lado).
+  // Mismo patron de "click afuera" que los dropdowns (closest(), en vez de
+  // e.target===e.currentTarget -- eso dependia de que la modal tuviera un
+  // fondo propio para clickear, y ya no lo tiene).
+  document.addEventListener("click", (e) => {
+    if ($("#generate-modal-overlay").hidden) return;
+    if (e.target.closest("#generate-modal-overlay")) return;
+    if (!$("#generate-modal-actions").hidden) closeGenerateModal();
+  });
+  $("#generate-modal-open-video").addEventListener("click", () => {
+    pywebview.api.open_video();
+    closeGenerateModal();
+  });
+  $("#generate-modal-open-folder").addEventListener("click", () => {
+    pywebview.api.open_output_folder();
+    closeGenerateModal();
+  });
 });
 
 // ---------------------------------------------------------- previsualizador

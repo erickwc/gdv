@@ -15,18 +15,24 @@
   </script>
 
   <!-- Fondo detras de todo -- position:fixed (no lo recorta el
-       overflow:hidden de .app-root) + z-index:-1. Imagen estatica
-       (background.png) con el mismo grano ya horneado en los pixeles
-       (exportada del mismo diseno de Figma que el SVG anterior) -- mas
-       simple que mantener los filtros SVG encadenados inline. Ver
-       .background en styles.css. -->
-  <div class="background"></div>
-  <!-- Fondo "Silk Aurora" (aurora abstracta retintada al color de la
-       imagen/video cargado, ver tintBackgroundFromImage en
-       silk-aurora-background.js) -- activo de nuevo. "Halftone CMYK"
-       (trama la imagen real, halftone-background.js) queda comentado; para
-       volver a ese, comentar la linea de abajo y descomentar la de
-       halftone-background.js. -->
+       overflow:hidden de .app-root) + z-index:-1. Gradiente ESTATICO (ver
+       .background en styles.css) en vez del shader WebGL que traia antes
+       (silk-aurora-background.js sigue cargado solo por el calculo de
+       color -- ver mas abajo -- el canvas animado quedo desactivado a
+       proposito). Los dos "bg-blob" son el unico movimiento: manchas de
+       color grandes y desenfocadas que solo animan su "transform" (la GPU
+       las compone sin volver a pintar nada en cada frame, muy distinto de
+       costo al shader por pixel de antes). -->
+  <div class="background">
+    <div class="bg-blob bg-blob-1"></div>
+    <div class="bg-blob bg-blob-2"></div>
+  </div>
+  <!-- Ya no dibuja el aurora animado (ver el archivo) -- se deja cargado
+       nada mas por extractImageHue/setAdaptiveAccent, que alimentan tanto
+       el acento de los botones como --bg-glow-color/--bg-glow-color-2 de
+       arriba. "Halftone CMYK" (trama la imagen real, halftone-background.js)
+       queda comentado; para volver a ese, comentar la linea de abajo y
+       descomentar la de halftone-background.js. -->
   <script src="silk-aurora-background.js"></script>
   <!-- <script type="module" src="halftone-background.js"></script> -->
 
@@ -36,8 +42,9 @@
          botones nativos de minimizar/cerrar (o los 3 semaforos en Mac),
          dibujados por el sistema ARRIBA de todo el contenido; esta barra
          les da un fondo propio (parte del mismo gradiente de toda la app)
-         para que no floten sueltos. El resto de la franja (a la izquierda
-         del toggle) es arrastrable. -->
+         para que no floten sueltos. Ya no lleva el boton "Generar video" --
+         la generacion se dispara con Ctrl/Cmd+S (ver la modal
+         #save-modal-overlay mas abajo y su listener de keydown en app.js). -->
     <div class="app-titlebar"></div>
 
     <div class="app-shell">
@@ -237,40 +244,88 @@
         <button class="preview-expand-btn" id="preview-expand" hidden title="Agrandar"></button>
       </div>
 
-      <div class="output-block">
-        <div class="output-field">
-          <label class="output-field-label" for="project-title">Nombre del video</label>
-          <div class="output-title-wrap" id="output-title-wrap">
-            <input type="text" id="project-title" class="text-input output-title-input" placeholder="Sin título">
-            <span class="output-title-pencil" id="output-title-pencil"></span>
-          </div>
-        </div>
-        <div class="output-field">
-          <span class="output-field-label">Ruta de almacenamiento</span>
-          <div class="link-row">
-            <span class="text-input" id="output-label">Ruta donde se almacenará el video</span>
-            <button class="btn btn-icon" id="output-browse" title="Cambiar"></button>
-          </div>
-        </div>
+      <!-- Boton visible de exportar -- reemplaza al toast de "todavia no se
+           puede generar" que se perdio al sacar sileo (ver conversacion):
+           el estado disabled/enabled de este chip ES el aviso ahora, no
+           hace falta un mensaje aparte. Dispara lo mismo que Ctrl/Cmd+S
+           (requestSaveModal en app.js), asi que un click con el chip
+           deshabilitado simplemente no hace nada -- comportamiento nativo
+           de <button disabled>, sin logica extra que mantener. -->
+      <div class="preview-actions">
+        <button type="button" class="chip export-btn" id="export-btn" disabled>Exportar</button>
       </div>
 
-      <button class="btn btn-primary btn-generate" id="generate-btn" disabled>Generar video</button>
-
-      <div class="progress-bar" id="progress-bar" hidden>
-        <div class="progress-fill" id="progress-fill"></div>
-      </div>
-
-      <div class="status-row">
-        <span class="status-text" id="status-text"></span>
-        <div class="status-actions">
-          <button class="btn btn-ghost" id="cancel-btn" hidden>Cancelar</button>
-          <button class="btn btn-ghost" id="open-video-btn" hidden>Abrir video</button>
-          <button class="btn btn-ghost" id="open-folder-btn" hidden>Abrir carpeta</button>
-        </div>
-      </div>
     </main>
 
     </div>
+  </div>
+
+  <!-- Modal de "Generar video" -- se abre con Ctrl/Cmd+S (ver el listener
+       de keydown en app.js) en vez del viejo boton fijo de la barra de
+       titulo. Nombre + ruta de salida son los mismos campos/ids de antes
+       (#project-title, #output-label -- app.js los sigue actualizando
+       igual, solo cambiaron de lugar en el HTML) mas el boton que dispara
+       la generacion real. -->
+  <!-- Sin overlay de fondo envolviendo -- position:fixed lo pone JS
+       (centerFixedPanel en app.js), exactamente igual que
+       #preset-list/#texture-blend-list (positionFloatingDropdown). Un
+       ancestro position:fixed de por medio (aunque no tuviera fondo
+       propio) le cortaba el paso al backdrop-filter de este panel -- ver
+       el comentario largo en app.js/openSaveModal. -->
+  <div class="generate-modal save-modal" id="save-modal-overlay" hidden>
+    <button class="generate-modal-close" id="save-modal-close" title="Cerrar"></button>
+    <h3 class="save-modal-title">Generar video</h3>
+    <div class="output-field">
+      <label class="output-field-label" for="project-title">Nombre del video</label>
+      <div class="output-title-wrap" id="output-title-wrap">
+        <input type="text" id="project-title" class="text-input output-title-input" placeholder="Sin título">
+        <span class="output-title-pencil" id="output-title-pencil"></span>
+      </div>
+    </div>
+    <div class="output-field">
+      <span class="output-field-label">Ruta de almacenamiento</span>
+      <!-- Sin boton de carpeta al lado -- el texto en si ya es clickeable
+           y abre el mismo dialogo nativo (ver el listener de
+           "#output-label" en app.js), el icono era redundante con esa
+           affordance. -->
+      <span class="text-input" id="output-label">Seleccionar donde se almacenará el video</span>
+    </div>
+    <!-- Calidad de salida -- el lienzo interno de composicion siempre es
+         1920x1080 (ver OUTPUT_RESOLUTIONS en engine.py); "720p" solo
+         agrega un escalado final al exportar, resoluciones intermedias
+         tipo 480p no tienen mucho sentido para este tipo de video.
+         "Original" es dinamica (resolve_output_size en engine.py): usa
+         la resolucion del medio cargado en vez de un preset fijo. -->
+    <div class="output-field">
+      <span class="output-field-label">Calidad</span>
+      <div class="segmented" id="resolution-control">
+        <button type="button" class="segmented-item" data-value="1080p">1080p</button>
+        <button type="button" class="segmented-item" data-value="720p">720p</button>
+        <button type="button" class="segmented-item" data-value="original">Original</button>
+      </div>
+    </div>
+    <button type="button" class="btn btn-primary" id="save-modal-generate-btn">Generar video</button>
+  </div>
+
+  <!-- Modal chica de generacion -- reemplaza al viejo progreso-dentro-del-
+       boton. Mientras genera muestra la barrita de carga + el estado (texto
+       con cross-fade de blur al cambiar, ver setGenerateLabel en app.js);
+       al terminar oculta la barra y revela "Ver video"/"Abrir carpeta"
+       (estilo .chip, igual que las tarjetas de "Contenido del video").
+       Errores/cancelacion solo cierran la modal, sin ningun otro aviso.
+       Sin overlay de fondo -- mismo motivo que #save-modal-overlay, ver
+       ese comentario. -->
+  <div class="generate-modal" id="generate-modal-overlay" hidden>
+    <button class="generate-modal-close" id="generate-modal-close" title="Cerrar" hidden></button>
+    <p class="generate-modal-status" id="generate-modal-status"></p>
+    <div class="generate-modal-progress" id="generate-modal-progress">
+      <div class="generate-modal-progress-fill" id="generate-modal-progress-fill"></div>
+    </div>
+    <div class="generate-modal-actions" id="generate-modal-actions" hidden>
+      <button class="chip generate-modal-action" id="generate-modal-open-video">Ver video</button>
+      <button class="chip generate-modal-action" id="generate-modal-open-folder">Abrir carpeta</button>
+    </div>
+    <button class="btn btn-text generate-modal-cancel" id="cancel-btn" hidden>Cancelar</button>
   </div>
 
   <script src="pywebview-shim.js"></script>

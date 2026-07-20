@@ -312,8 +312,21 @@ function initSilkAurora(container, settings) {
   };
   window.addEventListener("pointermove", onPointerMove);
 
+  // Pausa el loop de render (ver paused mas abajo) -- lo usa app.js mientras
+  // dura una generacion real: la modal de progreso tapa la pantalla entera
+  // esos segundos (overlay opaco, z-index encima de todo), asi que el
+  // shader queda invisible igual pero seguia gastando GPU/CPU en cada
+  // fotograma (uniforms + drawArrays) compitiendo con el encode de ffmpeg
+  // que corre en paralelo -- en una app liviana (Tk, sin esto) esos
+  // recursos quedaban libres enteros para ffmpeg.
+  let paused = false;
+
   const start = performance.now();
   const render = (now) => {
+    if (paused) {
+      requestAnimationFrame(render);
+      return;
+    }
     mouse.x += (targetMouse.x - mouse.x) * 0.045;
     mouse.y += (targetMouse.y - mouse.y) * 0.045;
     const elapsed = reducedMotion ? 8 : (now - start) / 1000;
@@ -351,6 +364,9 @@ function initSilkAurora(container, settings) {
       target.sheen = hexToRgb01(palette.sheenColor);
       target.accent = hexToRgb01(palette.accentColor);
     },
+    setPaused(value) {
+      paused = value;
+    },
   };
 }
 
@@ -375,8 +391,16 @@ const NEUTRAL_AURORA_PALETTE = {
 
 let auroraControl = null;
 
+// Reactivado (2026-07-19) -- la lentitud general resulto ser ~26 procesos
+// electron/node/python huerfanos de sesiones de prueba anteriores (2GB+ de
+// RAM de fondo), no el shader en si. Se prueba de nuevo con eso ya
+// limpio. Marca .background con "has-aurora" para que .bg-blob-1/2
+// (styles.css/index.html) se oculten mientras el aurora este activo --
+// ver ".background.has-aurora .bg-blob" mas abajo en styles.css -- asi no
+// se superponen los dos efectos en la comparacion.
 const mount = document.querySelector(".background");
 if (mount) {
+  mount.classList.add("has-aurora");
   auroraControl = initSilkAurora(mount, {
     ...NEUTRAL_AURORA_PALETTE,
     speed: 0.8,
@@ -387,6 +411,15 @@ if (mount) {
     interactive: true,
   });
 }
+
+// Llamado desde app.js al abrir/cerrar la modal de generacion real -- la
+// modal tapa la pantalla entera mientras dura (overlay opaco encima de
+// todo), asi que el shader queda invisible igual, pero sin esto seguia
+// consumiendo GPU/CPU en cada fotograma compitiendo con el encode de
+// ffmpeg que corre en paralelo.
+window.setAuroraPaused = function (value) {
+  if (auroraControl) auroraControl.setPaused(value);
+};
 
 // Llamado desde app.js (Preview.onReady) cada vez que llega un fotograma
 // nuevo del preview -- le saca el matiz dominante y retinta el fondo
@@ -404,10 +437,45 @@ window.tintBackgroundFromImage = function (img) {
 const NEUTRAL_UI_ACCENT = "#9a97a3";
 const NEUTRAL_UI_ACCENT_HOVER = "#88858f";
 const NEUTRAL_UI_ACCENT_GLOW = "rgba(154, 151, 163, 0.18)";
+// Mismo azul marino que traia el gradiente estatico de .background
+// (styles.css) antes de volverse adaptable -- valor de reposo sin
+// imagen/color manual. NEUTRAL_BG_GLOW_2 es el segundo blob (ver
+// .bg-blob-2 en styles.css) -- un violeta oscuro que combina con el
+// morado de marca (--accent por defecto), para que el fondo no se vea
+// vacio de un solo color cuando no hay nada cargado.
+const NEUTRAL_BG_GLOW = "#0d1a36";
+const NEUTRAL_BG_GLOW_2 = "#1a0d2e";
 
 function hexToRgbaString(hex, alpha) {
   const [r, g, b] = hexToRgb01(hex).map((v) => Math.round(v * 255));
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+// Satura/oscurece igual que el resto de la paleta derivada (deriveAuroraPalette
+// mas arriba) para que el resplandor de .background combine con la imagen
+// sin quedar demasiado brillante detras del contenido -- 0.5/0.14 se
+// calibro para landear cerca del mismo tono/luminosidad que tenia el navy
+// fijo de antes (#0d1a36), solo que ahora rotando el matiz real.
+function applyAccentFromHue(hue) {
+  const root = document.documentElement.style;
+  if (hue == null) {
+    root.setProperty("--accent", NEUTRAL_UI_ACCENT);
+    root.setProperty("--accent-hover", NEUTRAL_UI_ACCENT_HOVER);
+    root.setProperty("--accent-glow", NEUTRAL_UI_ACCENT_GLOW);
+    root.setProperty("--bg-glow-color", NEUTRAL_BG_GLOW);
+    root.setProperty("--bg-glow-color-2", NEUTRAL_BG_GLOW_2);
+    return;
+  }
+  const accent = hslToHex(hue, 0.4, 0.62);
+  const accentHover = hslToHex(hue, 0.4, 0.52);
+  root.setProperty("--accent", accent);
+  root.setProperty("--accent-hover", accentHover);
+  root.setProperty("--accent-glow", hexToRgbaString(accent, 0.22));
+  root.setProperty("--bg-glow-color", hslToHex(hue, 0.5, 0.14));
+  // +45 grados del matiz principal -- un segundo blob de un tono vecino
+  // (no opuesto/complementario, que se veria como dos colores en pugna)
+  // le da profundidad al fondo sin que compita con el primero.
+  root.setProperty("--bg-glow-color-2", hslToHex(hue + 45, 0.45, 0.13));
 }
 
 // Foco de inputs, borde de tarjeta activa, chip de velocidad seleccionado,
@@ -416,18 +484,11 @@ function hexToRgbaString(hex, alpha) {
 // :root en vez de uniforms de shader. Menos saturado/mas claro que el
 // accentColor del aurora (ese vive detras de todo, esto esta encima de
 // texto y necesita buen contraste en los dos temas).
+let lastKnownHue = null;
+
 window.setAdaptiveAccent = function (img) {
   const hue = img ? extractImageHue(img) : null;
-  const root = document.documentElement.style;
-  if (hue == null) {
-    root.setProperty("--accent", NEUTRAL_UI_ACCENT);
-    root.setProperty("--accent-hover", NEUTRAL_UI_ACCENT_HOVER);
-    root.setProperty("--accent-glow", NEUTRAL_UI_ACCENT_GLOW);
-    return;
-  }
-  const accent = hslToHex(hue, 0.4, 0.62);
-  const accentHover = hslToHex(hue, 0.4, 0.52);
-  root.setProperty("--accent", accent);
-  root.setProperty("--accent-hover", accentHover);
-  root.setProperty("--accent-glow", hexToRgbaString(accent, 0.22));
+  lastKnownHue = hue;
+  applyAccentFromHue(hue);
 };
+

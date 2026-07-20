@@ -48,16 +48,10 @@
     bind("#template-section", (e) => {
       const png = pathsFromDrop(e).find((p) => p.toLowerCase().endsWith(".png"));
       if (!png) return;
-      window.api.call("set_template", png).then((result) => {
-        // set_template rechaza cualquier PNG sin zona transparente (asi
-        // funciona una plantilla) -- sin esto, arrastrar una foto comun
-        // no hacia nada visible y parecia que el drop estaba roto.
-        if (result && !result.ok) {
-          const status = document.getElementById("status-text");
-          if (status) status.textContent = result.error || "No se pudo usar esa plantilla.";
-        }
-        refreshState();
-      });
+      // set_template rechaza cualquier PNG sin zona transparente (asi
+      // funciona una plantilla) -- una foto comun soltada aca no hace nada
+      // visible, no es un drop roto.
+      window.api.call("set_template", png).then(() => refreshState());
     });
 
     bind("#texture-section", (e) => {

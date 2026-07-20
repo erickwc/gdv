@@ -93,6 +93,16 @@ class Api:
         self.media_duration = None
         self.media_interlaced = False
         self.media_thumb = None       # data URI o None
+        # Token del ultimo _probe_video_job lanzado -- ver _set_video. No se
+        # puede usar "path != self.media_path" para detectar un cambio de
+        # medio a mitad del sondeo (como hacen _preview_job/
+        # _measure_peak_job) porque el link de YouTube/Pinterest siempre
+        # descarga al MISMO nombre fijo (genvideo_descarga.mp4, ver
+        # _download_video) -- dos descargas seguidas comparten el mismo
+        # "path", asi que el sondeo viejo (todavia leyendo el archivo justo
+        # cuando la descarga nueva lo estaba pisando) nunca se descartaba y
+        # podia pisar los datos del video nuevo con los del viejo.
+        self._media_probe_token = None
         self.media_kind_text = None   # texto descriptivo del chip
         self.media_display_name = None  # titulo de yt-dlp, si se descargo por link
         self.trim_range = None        # (start, end) calculado al generar, o None (clip completo)
@@ -133,6 +143,7 @@ class Api:
         self.scale_pct = 100
         self.speed = "1x"
         self.focus = None  # (zoom, focus_x, focus_y) o None = sin ajuste
+        self.output_resolution = engine.DEFAULT_OUTPUT_RESOLUTION  # "1080p"/"720p"/"original", ver resolve_output_size
 
         self.process = None
         self.cancel_requested = False
@@ -149,11 +160,13 @@ class Api:
         self._loop_preview_token = None
         self._loop_preview_counter = 0
         self._loop_preview_path = None
-        # None = todavia no se probo: _loop_preview_job intenta NVENC (GPU)
-        # primero y cae a libx264 si falla, y recuerda el resultado aca para
-        # no volver a perder tiempo probando NVENC en cada preview si esta
-        # PC no tiene una GPU que lo soporte.
-        self._loop_preview_nvenc_available = None
+        # None = todavia no se probo: tanto _loop_preview_job (preview) como
+        # _run_ffmpeg_job (exportacion real) intentan NVENC (GPU) primero y
+        # caen a libx264 si falla, compartiendo este mismo resultado -- no
+        # hace falta probar dos veces si esta PC tiene o no una GPU que lo
+        # soporte, cualquiera de los dos que corra primero lo deja resuelto
+        # para el otro.
+        self._nvenc_available = None
 
         # Miniaturas de galeria (Plantilla/Texturas) -- cache en memoria
         # para no releer/reescalar el archivo en cada list_templates()/
@@ -207,6 +220,8 @@ class Api:
             "presets": [p["name"] for p in self.presets],
             "scale_pct": self.scale_pct,
             "speed": self.speed,
+            "output_resolution": self.output_resolution,
+            "output_resolutions": list(engine.OUTPUT_RESOLUTIONS.keys()) + ["original"],
             "trim_start": self.trim_start,
             "trim_end": self.trim_end,
             # banderas derivadas -- equivalente a _refresh_ready_state()
@@ -635,14 +650,16 @@ class Api:
         self.media_kind_text = "Video · analizando..."
         self.media_display_name = None
         self._update_default_output()
-        threading.Thread(target=self._probe_video_job, args=(path,), daemon=True).start()
+        token = object()
+        self._media_probe_token = token
+        threading.Thread(target=self._probe_video_job, args=(token, path), daemon=True).start()
 
-    def _probe_video_job(self, path):
+    def _probe_video_job(self, token, path):
         info = engine.probe_media(self.ffmpeg_exe, path)
         thumb_img = engine.extract_video_thumb(self.ffmpeg_exe, path)
         interlaced = engine.detect_interlaced(self.ffmpeg_exe, path)
-        if path != self.media_path or not self.media_is_video:
-            return  # el usuario ya cambio de medio
+        if token is not self._media_probe_token or not self.media_is_video:
+            return  # el usuario ya cambio de medio (o cargo otro con el mismo path)
         self.media_size = info["video_size"]
         self.media_duration = info["duration"]
         self.media_interlaced = interlaced
@@ -767,6 +784,11 @@ class Api:
 
     def set_scale_pct(self, value):
         self.scale_pct = int(round(float(value)))
+        return {"ok": True}
+
+    def set_output_resolution(self, value):
+        if value in engine.OUTPUT_RESOLUTIONS or value == "original":
+            self.output_resolution = value
         return {"ok": True}
 
     # -------------------------------------------------- pegar del portapapeles
@@ -1031,14 +1053,14 @@ class Api:
         # se intenta, directo a CPU -- reintentar NVENC en cada preview
         # cuando ya se sabe que esta PC no lo tiene solo suma un fallo mas
         # lento antes de caer al fallback, sin ningun beneficio.
-        try_nvenc = self._loop_preview_nvenc_available is not False
+        try_nvenc = self._nvenc_available is not False
         cmd = self._build_loop_preview_cmd(layout, temp_path, speed, try_nvenc)
         proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True,
                                creationflags=engine.CREATE_NO_WINDOW)
         ok = proc.returncode == 0 and os.path.exists(temp_path)
 
         if try_nvenc:
-            self._loop_preview_nvenc_available = ok
+            self._nvenc_available = ok
             if not ok:
                 # Sin GPU NVIDIA (o sin el driver que trae NVENC) -- se
                 # reintenta esta misma vuelta con libx264 para que el
@@ -1122,6 +1144,15 @@ class Api:
                 self.media_size, self.media_is_video,
                 self.scale_pct, template_box if template_path else None,
             )
+            # El lienzo de composicion (layout/width/height de arriba) se
+            # queda SIEMPRE a resolucion completa -- output_size solo agrega
+            # un escalado final en build_filtergraph (ver engine.py). Se
+            # pisan width/height nada mas para que el status de abajo
+            # ("Componiendo el loop a...") muestre la resolucion real de
+            # salida en vez de la del lienzo interno.
+            output_size = engine.resolve_output_size(self.output_resolution, self.media_size)
+            if output_size != (width, height):
+                width, height = output_size
 
             textures = self._current_textures(*layout["canvas"])
 
@@ -1132,6 +1163,14 @@ class Api:
                 strategies = ["copy"] + encoders
             else:
                 strategies = encoders
+
+            # NVENC (GPU) para la exportacion real si esta disponible --
+            # bastante mas rapido que libx264 en CPU. Se prueba con el
+            # comando real (misma logica que _loop_preview_job: si falla se
+            # reintenta esa misma fase con libx264 antes de rendirse) y el
+            # resultado se recuerda en self._nvenc_available para no volver
+            # a probar en la proxima exportacion o preview del loop.
+            try_nvenc = self._nvenc_available is not False
 
             if self.media_is_video:
                 # FASE 1: componer una sola vuelta del loop (corta y rapida)
@@ -1144,16 +1183,24 @@ class Api:
                     unit_src = None
                 unit_duration = unit_src / speed if unit_src else None
 
+                def compose(encoder):
+                    return self._run_ffmpeg(
+                        engine.build_compose_command(
+                            self.ffmpeg_exe, self.media_path, temp_unit, layout,
+                            trim=trim, speed=speed, deinterlace=self.media_interlaced,
+                            template_path=template_path, textures=textures,
+                            output_size=output_size, encoder=encoder,
+                        ),
+                        unit_duration,
+                    )
+
                 temp_unit = os.path.join(tempfile.gettempdir(), "genvideo_loop.mp4")
                 self._push_status(f"Componiendo el loop a {width}x{height}{tpl_note}{speed_note}...")
-                returncode = self._run_ffmpeg(
-                    engine.build_compose_command(
-                        self.ffmpeg_exe, self.media_path, temp_unit, layout,
-                        trim=trim, speed=speed, deinterlace=self.media_interlaced,
-                        template_path=template_path, textures=textures,
-                    ),
-                    unit_duration,
-                )
+                returncode = compose("h264_nvenc" if try_nvenc else "libx264")
+                if try_nvenc:
+                    self._nvenc_available = returncode == 0
+                    if returncode != 0 and not self.cancel_requested:
+                        returncode = compose("libx264")
                 if self.cancel_requested or returncode != 0:
                     self._on_job_done(returncode)
                     return
@@ -1181,19 +1228,27 @@ class Api:
                         break
             else:
                 # Imagenes: una sola pasada (ya es rapida a 10 fps)
+                def run_image_pass(encoder):
+                    result = -1
+                    for strategy in strategies:
+                        audio_args = engine.audio_strategy_args(strategy, info["sample_rate"], self.audio_peak_db)
+                        cmd = engine.build_command(
+                            self.ffmpeg_exe, self.media_path,
+                            self.audio_path, self.output_path, duration, audio_args,
+                            layout, template_path=template_path, textures=textures,
+                            focus=self.current_focus(), output_size=output_size, encoder=encoder,
+                        )
+                        result = self._run_ffmpeg(cmd, duration)
+                        if result == 0 or self.cancel_requested:
+                            break
+                    return result
+
                 self._push_status(f"Generando video a {width}x{height}{tpl_note}...")
-                returncode = -1
-                for strategy in strategies:
-                    audio_args = engine.audio_strategy_args(strategy, info["sample_rate"], self.audio_peak_db)
-                    cmd = engine.build_command(
-                        self.ffmpeg_exe, self.media_path,
-                        self.audio_path, self.output_path, duration, audio_args,
-                        layout, template_path=template_path, textures=textures,
-                        focus=self.current_focus(),
-                    )
-                    returncode = self._run_ffmpeg(cmd, duration)
-                    if returncode == 0 or self.cancel_requested:
-                        break
+                returncode = run_image_pass("h264_nvenc" if try_nvenc else "libx264")
+                if try_nvenc:
+                    self._nvenc_available = returncode == 0
+                    if returncode != 0 and not self.cancel_requested:
+                        returncode = run_image_pass("libx264")
 
             self._on_job_done(returncode)
         except Exception as exc:
@@ -1252,10 +1307,23 @@ class Api:
         self.process = None
         if returncode == 0:
             payload = {"ok": True, "message": f"Listo: {os.path.basename(self.output_path)}"}
-        elif self.cancel_requested:
-            payload = {"ok": False, "cancelled": True, "message": "Generación cancelada."}
         else:
-            payload = {"ok": False, "message": f"Error al generar el video (código {returncode})."}
+            # ffmpeg escribe con "-y" DIRECTO sobre output_path (sin archivo
+            # temporal de por medio) -- si no termino bien (cancelado o con
+            # error real), lo que haya quedado ahi es un archivo a medio
+            # escribir, nunca algo que valga la pena conservar. Sin este
+            # borrado, la proxima generacion al mismo nombre preguntaba
+            # "ya existe, ¿reemplazar?" por un archivo que en realidad
+            # nunca se termino de generar.
+            if self.output_path and os.path.exists(self.output_path):
+                try:
+                    os.remove(self.output_path)
+                except OSError:
+                    pass
+            if self.cancel_requested:
+                payload = {"ok": False, "cancelled": True, "message": "Generación cancelada."}
+            else:
+                payload = {"ok": False, "message": f"Error al generar el video (código {returncode})."}
         self._emit("onJobDone", payload)
 
     def _on_job_error(self, message):
@@ -1341,8 +1409,18 @@ class Api:
 
         def hook(d):
             if d.get("status") == "downloading":
-                pct = (d.get("_percent_str") or "").strip()
-                self._push_download_status(f"Descargando video... {pct}")
+                # "_percent_str" (lo que se uso antes) solo lo llena el
+                # reportero de consola de yt-dlp -- con "quiet": True (mas
+                # abajo) ese reportero nunca corre, asi que esa clave
+                # nunca estaba presente y el texto se quedaba en
+                # "Descargando video..." sin numero. downloaded_bytes/
+                # total_bytes (o total_bytes_estimate para descargas por
+                # fragmentos DASH, ver concurrent_fragment_downloads) los
+                # llena el downloader en si, siempre.
+                downloaded = d.get("downloaded_bytes") or 0
+                total = d.get("total_bytes") or d.get("total_bytes_estimate")
+                pct = f" {downloaded / total * 100:.0f}%" if total else ""
+                self._push_download_status(f"Descargando video...{pct}")
             elif d.get("status") == "finished":
                 self._push_download_status("Procesando la descarga...")
 
@@ -1365,6 +1443,11 @@ class Api:
             "progress_hooks": [hook],
             "ffmpeg_location": self.ffmpeg_exe,
             "merge_output_format": "mp4",
+            # YouTube sirve el video en fragmentos (DASH) -- por defecto
+            # yt-dlp los baja de a uno; pedirle varios en paralelo acorta
+            # bastante la descarga cuando el cuello de botella es la
+            # cantidad de conexiones y no el ancho de banda total.
+            "concurrent_fragment_downloads": 8,
         }
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)

@@ -14,7 +14,27 @@
   font-weight: 500;
 }
 
+/* Registra --bg-glow-color como <color> (Houdini @property) -- sin esto
+   un cambio de custom property "salta" de golpe, no se puede animar con
+   transition normal. Con el tipo declarado, el navegador SI interpola su
+   valor (ver "transition: --bg-glow-color" en :root) y cualquier var()
+   que lo use (el gradiente de .background) se recalcula en cada paso --
+   una transicion de 0.8s que corre UNA vez por cambio de foto, no un
+   loop continuo como el shader que reemplazo. */
+@property --bg-glow-color {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #0d1a36;
+}
+
+@property --bg-glow-color-2 {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #1a0d2e;
+}
+
 :root {
+  transition: --bg-glow-color 0.8s ease, --bg-glow-color-2 0.8s ease;
   /* Se abandono el fondo Mica/Acrylic nativo (backgroundMaterial +
      transparent:true, ver main.js) -- solo existia en Windows, y perdia el
      redondeo automatico de esquinas sin que CSS ni SetWindowRgn lo
@@ -51,6 +71,12 @@
      variables juntas cuando cambia el color dominante de la foto/video
      cargado. */
   --accent-glow: rgba(139, 92, 246, 0.18);
+  /* Color del resplandor de .background (mas abajo) -- misma idea que
+     --accent-glow: JS (applyAccentFromHue en silk-aurora-background.js) lo
+     actualiza junto con el resto cada vez que cambia el color dominante de
+     la foto/video cargado. */
+  --bg-glow-color: #0d1a36;
+  --bg-glow-color-2: #1a0d2e;
   --red: #e35b4e;
   --radius: 10px;
   --radius-sm: 6px;
@@ -88,10 +114,16 @@ body {
 }
 
 /* ---------------------------------------------------------------- fondo */
-/* Imagen estatica (background.png, exportada de Figma con el grano ya
-   horneado en los pixeles) -- reemplaza el intento anterior con el SVG
-   inline (que tambien funcionaba, pero esto es mas simple de mantener: un
-   solo archivo de imagen, sin filtros SVG encadenados en el HTML).
+/* Prueba de rendimiento (2026-07-19): gradiente ESTATICO en vez del aurora
+   animado (silk-aurora-background.js, ahora desactivado a proposito, ver
+   ese archivo) -- para descartar si el fondo en movimiento era la causa
+   de la lentitud general que se sentia navegando la app, no solo al
+   exportar. "Dark Horizon Glow": resplandor oscuro que sube desde abajo,
+   sin absolutamente nada animandose. El color del resplandor SI sigue
+   adaptandose al color dominante de la foto/video cargado -- solo que
+   ahora es un cambio puntual de --bg-glow-color (applyAccentFromHue en
+   silk-aurora-background.js) en vez de un shader redibujandose 60
+   veces por segundo.
    position:fixed: no lo recorta el overflow:hidden de .app-root ni afecta
    el layout. z-index:-1: queda detras del contenido de .app-root. */
 .background {
@@ -99,34 +131,65 @@ body {
   inset: 0;
   z-index: -1;
   overflow: hidden;
-  background: url("background.png") center / cover no-repeat, #050309;
+  background: radial-gradient(125% 125% at 50% 90%, #000000 40%, var(--bg-glow-color, #0d1a36) 100%);
 }
 
-/* Desatura el aurora (silk-aurora-background.js) ademas de oscurecerlo
-   (::after, mas abajo) -- entre esto y el overlay, el efecto queda de
-   fondo ambiente en vez de competir con el texto. 0 = blanco y negro,
-   1 = colores originales del shader, >1 = mas saturado. */
+/* Manchas de color grandes y desenfocadas, cada una a la deriva en su
+   propio ciclo lento (26s/34s, sin sincronizarse entre si -- eso es lo que
+   lo hace ver organico en vez de mecanico) -- unico movimiento del fondo.
+   SOLO animan "transform": eso corre entero en el compositor de la GPU, la
+   pagina no vuelve a pintar nada en cada frame (nada de main thread/JS/
+   layout de por medio) -- muy distinto de costo al shader por pixel que
+   reemplazaron. El blur se calcula UNA vez (la mancha en si no cambia,
+   nada mas se reposiciona), no se recalcula en cada frame tampoco. */
+.bg-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(90px);
+  opacity: 0.6;
+  will-change: transform;
+  pointer-events: none;
+}
+
+.bg-blob-1 {
+  width: 900px;
+  height: 900px;
+  left: -250px;
+  bottom: -350px;
+  background: radial-gradient(circle, var(--bg-glow-color, #0d1a36) 0%, transparent 70%);
+  animation: bg-drift-1 26s ease-in-out infinite;
+}
+
+.bg-blob-2 {
+  width: 700px;
+  height: 700px;
+  right: -180px;
+  bottom: -280px;
+  background: radial-gradient(circle, var(--bg-glow-color-2, #1a0d2e) 0%, transparent 70%);
+  animation: bg-drift-2 34s ease-in-out infinite;
+}
+
+@keyframes bg-drift-1 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(90px, -50px) scale(1.1); }
+}
+
+@keyframes bg-drift-2 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(-70px, 40px) scale(1.06); }
+}
+
+/* silk-aurora-background.js le agrega esta clase a .background si logra
+   inicializar el canvas WebGL -- mientras este activo, se ocultan los
+   blobs para no superponer los dos efectos (prueba A/B: comparar el
+   aurora solo contra los blobs solos, ver ese archivo). */
+.background.has-aurora .bg-blob {
+  display: none;
+}
+
 .background canvas {
-    filter: contrast(1.3) brightness(.45) saturate(2.5) ;
+  filter: contrast(1.3) brightness(0.45) saturate(2.5);
 }
-
-.background::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    opacity: .02;
-    background: repeating-radial-gradient(#000 0 0.0001%, #fff 0 0.0002%) 50% 0 / 2500px 2500px, repeating-conic-gradient(#000 0 0.0001%, #fff 0 0.0002%) 60% 60% / 2500px 2500px;
-    background-blend-mode: difference;
-    animation: noise .2s infinite alternate;
-}
-
-@keyframes noise {
-    100% {
-        background-position: 50% 0, 60% 50%;
-    }
-}
-
 
 /* ------------------------------------------------------- layout general */
 
@@ -162,6 +225,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 8px;
   padding: 0 112px 0 16px;
   border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
@@ -176,6 +240,17 @@ body {
   align-items: stretch;
   flex: 1;
   min-height: 0;
+}
+
+/* Mientras dura una generacion real nadie mira el panel de controles (la
+   modal de progreso ocupa toda la atencion) -- sacar .app-shell del todo
+   (no solo pausar el fondo animado, ver silk-aurora-background.js) libera
+   tambien el backdrop-filter de .control-panel/.preview-surface/chips/
+   inputs y el layout/paint de toda esa galeria de plantillas/texturas, que
+   seguian corriendo sin que nadie los viera. Clase que prende/apaga app.js
+   junto con setAuroraPaused. */
+body.generating .app-shell {
+  display: none;
 }
 
 /* Vidrio esmerilado -- --glass-panel-bg + backdrop-filter propio (mismo
@@ -219,19 +294,59 @@ body {
 }
 
 .preview-panel {
+  position: relative;
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  /* Sin padding abajo -- "Generar video" (o la barra de progreso/estado
-     cuando esta generando) queda pegado al borde inferior de la ventana.
-     El gap de arriba ya separa cada seccion entre si, no hace falta
-     tambien un margin-bottom por elemento (eso duplicaba el espacio, y
-     encima le pegaba al boton aunque las secciones ocultas de despues
-     -- progress-bar/status-row -- no se estuvieran mostrando, porque
-     :not(:last-child) no distingue [hidden] de visible). */
-  padding: 20px 20px 8px;
+  /* Centrado vertical -- este panel no tiene mas contenido que el propio
+     preview (nombre/ruta se movieron a la modal "Generar video"), asi que
+     sin esto se pegaba arriba con un hueco vacio abajo en vez de quedar
+     centrado. */
+  justify-content: center;
+  gap: 24px;
+  padding: 24px;
+}
+
+/* position:absolute anclado al panel (no un flex row mas) -- pegado de
+   verdad a la esquina inferior derecha sin importar el tamano real del
+   preview (que se centra con su propio padding, ver .preview-panel), en
+   vez de solo alinearse a la derecha DENTRO del flujo normal. */
+.preview-actions {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+}
+
+/* Mismo vidrio que .chip, pero clickeable -- de ahi que haga falta rearmar
+   a mano lo que .btn le daba (cursor, feedback de hover/active, estado
+   disabled): .chip es una tarjeta informativa, no pensada para clicks. */
+.export-btn {
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: 400;
+  font-size: 12.5px;
+  color: var(--text);
+  transition: filter 120ms ease, border-color 120ms ease, transform 100ms ease;
+}
+
+/* filter:brightness en vez de pisar "background" -- .chip usa un gradiente
+   de varios stops (linear-gradient 190deg), no un color solido; cambiar
+   "background" a var(--hover-bg) en el hover borraba ese degradado entero
+   y dejaba una superficie plana de golpe. brightness() ilumina el mismo
+   degradado tal cual esta, sin aplanarlo. */
+.export-btn:hover:not(:disabled) {
+  filter: brightness(1.25);
+  border-color: var(--glass-border);
+}
+
+.export-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.export-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 /* --------------------------------------------------- encabezado panel */
@@ -482,7 +597,7 @@ body.drag-active .dropzone {
 .btn {
   font-family: inherit;
   font-size: 12px;
-  font-weight: 300;
+  font-weight: 500;
   border: none;
   border-radius: var(--radius-sm);
   cursor: pointer;
@@ -499,14 +614,22 @@ body.drag-active .dropzone {
   cursor: default;
 }
 
+/* Mismo vidrio degradado que .chip (antes era un flat --chip-bg, se veia
+   mas plano que el resto de los botones/tarjetas de la app). */
 .btn-ghost {
-  background: var(--chip-bg);
+  background: linear-gradient(
+    190deg,
+    rgba(255, 255, 255, 0.1) 0%,
+    rgba(255, 255, 255, 0.04) 40%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   color: var(--text);
-  border: 1px solid var(--border);
+  border: 1px solid rgb(255 255 255 / 8%);
   padding: 4px 14px;
-  border-radius:6px;
+  border-radius: 6px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
 }
 
 .btn-ghost:hover:not(:disabled) {
@@ -546,7 +669,7 @@ body.drag-active .dropzone {
 }
 
 .btn-icon:hover:not(:disabled) {
-  background: var(--hover-bg);
+  background: linear-gradient(190deg, rgb(255 255 255 / 19%) 0%, rgba(255, 255, 255, 0.04) 40%, rgba(255, 255, 255, 0.04) 100%);
   color: var(--text);
   border-color: var(--glass-border);
 }
@@ -560,7 +683,7 @@ body.drag-active .dropzone {
   background: var(--text);
   border: 1px solid rgba(255, 255, 255, 0.2);
   color: var(--bg);
-  padding: 10px;
+  padding: 8px;
   border-radius: 8px;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
   /* Sin transform en la transition de hover -- se saco el "se mueve" al
@@ -585,10 +708,6 @@ body.drag-active .dropzone {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.btn-generate {
-  font-size: 14px;
 }
 
 /* ---- selects / dropdowns ---- */
@@ -1343,6 +1462,7 @@ body.drag-active .dropzone {
      de atras -- con fondo solido detras de la imagen/video, esa franja (si
      existe) se ve negra opaca, no transparente. */
   background: #000;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
 }
 
 .preview-expand-btn {
@@ -1504,23 +1624,11 @@ body.drag-active .dropzone {
   transform: scale(1.4);
 }
 
-/* ---- salida (titulo editable + ruta) ---- */
-
-/* Tarjeta de vidrio, mismo criterio que .control-panel/.preview-surface --
-   antes "Nombre del proyecto"/"Ruta" flotaban sueltos sobre el fondo
-   animado, sin nada que los agrupe como una sola seccion. */
-.output-block {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px 12px;
-  margin-top: auto;
-  padding: 16px;
-  background: var(--glass-panel-bg);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius);
-}
+/* ---- salida (titulo editable + ruta) ----
+   Los campos viven ahora dentro de la modal "Generar video" (.save-modal,
+   mas abajo en este archivo) en vez de una tarjeta propia en el panel de
+   preview -- .output-field/.output-title-* siguen igual, solo cambio el
+   contenedor que los agrupa. */
 
 /* Nombre del proyecto / Ruta de almacenamiento -- una columna cada uno,
    con su propio label arriba (antes era una sola columna sin separar,
@@ -1577,9 +1685,9 @@ body.drag-active .dropzone {
   opacity: 1;
 }
 
-/* Ruta de almacenamiento: mismo patron que .link-row (input/valor + boton
-   AL LADO, no metido adentro) -- el markup reusa la clase .link-row
-   directamente en vez de duplicar el mismo layout con otro nombre. */
+/* Ruta de almacenamiento: un solo campo (.text-input) que ocupa toda la
+   fila, sin boton de carpeta al lado -- el texto en si ya es clickeable
+   (ver el listener en app.js). */
 #output-label {
   white-space: nowrap;
   overflow: hidden;
@@ -1587,36 +1695,157 @@ body.drag-active .dropzone {
   cursor: pointer;
 }
 
-/* ---- progreso / estado ---- */
+/* ---- modal de generacion ---- */
+/* Reemplaza al viejo .status-panel (una tarjeta de vidrio siempre visible,
+   aun vacia, que chocaba con el resto) Y al progreso-dentro-del-boton: una
+   modal chica centrada que solo existe mientras hace falta. Mientras
+   genera muestra la barrita de carga + el estado (texto con cross-fade de
+   blur al cambiar); al terminar la barra se desvanece y aparecen "Ver
+   video"/"Abrir carpeta" con el mismo estilo de vidrio que los chips de
+   "Contenido del video" (clase .chip reusada directamente, sin duplicar el
+   degradado). */
 
-.progress-bar {
+/* Sin overlay de fondo (2026-07-19) -- despues de dos intentos fallidos
+   (bajar la opacidad del overlay, despues mover el oscurecido a un
+   box-shadow en el panel), la causa real resulto ser mas simple: CUALQUIER
+   ancestro position:fixed encima del panel -- tuviera fondo propio o no --
+   empujaba a Chromium a componerlo en su propia capa de GPU, encerrando ahi
+   adentro el backdrop-filter del panel sin poder "ver" el contenido real de
+   la app detras. La prueba fue el propio dropdown de presets
+   (#preset-list): NUNCA tuvo un overlay envolvente y su blur siempre
+   funciono. Se copia ese mismo mecanismo aca -- .generate-modal es ahora
+   el UNICO position:fixed (sin wrapper), centrado a mano (centerFixedPanel
+   en app.js) y animado con la misma animateDropdown() de motion.js que ya
+   usan los dropdowns. Sin oscurecido de "todo lo demas": el select
+   tampoco lo tiene, el propio panel (blur + sombra) alcanza para separarse
+   del contenido de atras. */
+.generate-modal {
+  position: fixed;
+  z-index: 400;
+  width: 280px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  background: linear-gradient(
+    190deg,
+    rgba(255, 255, 255, 0.1) 0%,
+    rgba(255, 255, 255, 0.04) 40%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(24px);
+  will-change: backdrop-filter;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 14px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+
+.generate-modal-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.generate-modal-close svg {
+  width: 13px;
+  height: 13px;
+}
+
+.generate-modal-close:hover {
+  background: var(--hover-bg);
+  color: var(--text);
+}
+
+.generate-modal-status {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+  text-align: center;
+}
+
+.generate-modal-progress {
+  width: 100%;
   height: 4px;
   border-radius: 2px;
   background: var(--chip-bg);
   overflow: hidden;
 }
 
-.progress-fill {
+.generate-modal-progress-fill {
   height: 100%;
   width: 0%;
   background: var(--accent);
   transition: width 150ms ease;
 }
 
-.status-row {
+.generate-modal-actions {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.status-text {
-  font-size: 12px;
-  color: var(--text-faint);
-  flex: 1;
-}
-
-.status-actions {
-  display: flex;
+  flex-direction: column;
   gap: 8px;
+  width: 100%;
+}
+
+/* Las acciones reusan .chip (mismo vidrio que "Contenido del video") pero
+   como <button>, centradas y clickeables en vez de una fila informativa. */
+.generate-modal-action {
+  justify-content: center;
+  width: 100%;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, transform 100ms ease;
+}
+
+.generate-modal-action:hover {
+  background: var(--hover-bg);
+  border-color: var(--glass-border);
+}
+
+.generate-modal-action:active {
+  transform: scale(0.98);
+}
+
+.generate-modal-cancel {
+  color: var(--text-faint);
+}
+
+/* ---- modal de "Generar video" (Ctrl/Cmd+S) ----
+   Mismo panel de vidrio que .generate-modal (fondo/blur/borde/sombra
+   reusados tal cual), solo mas ancha y con align-items:stretch en vez de
+   center -- adentro van los campos de nombre/ruta (.output-field, mismo
+   estilo que cuando vivian en el extinto #output-block) y el boton de
+   generar, todos a lo ancho completo. */
+.save-modal {
+  width: 320px;
+  align-items: stretch;
+  gap: 16px;
+  /* positionNearTrigger (app.js) lo ancla al borde derecho de #export-btn
+     y lo abre hacia arriba -- el origen de la animacion de escala
+     (animateDropdown, motion.js) va a esa misma esquina para que de
+     verdad se sienta como que "sale" del boton, no que aparece centrado
+     en si mismo. */
+  transform-origin: bottom right;
+}
+
+.save-modal-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text);
+  text-align: center;
 }
