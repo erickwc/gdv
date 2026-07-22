@@ -105,6 +105,7 @@ function fillStaticIcons() {
   $("#preset-save-cancel").innerHTML = iconSvgFilled("close");
   $("#preset-save-choice-cancel").innerHTML = iconSvgFilled("close");
   $("#output-title-pencil").innerHTML = iconSvg("edit");
+  $("#save-cover-btn").innerHTML = iconSvg("download");
   $$(".unit-percent").forEach((el) => (el.innerHTML = iconSvg("percentage", 12)));
 }
 
@@ -185,6 +186,10 @@ function titleCase(text) {
 
 function renderChips(state) {
   $("#content-section").hidden = !state.media_path && !state.audio_path;
+  // cover_available se apaga solo (ver _set_image/_set_video/remove_media
+  // en api.py) en cuanto se carga un medio nuevo -- se refleja aca en
+  // cada render(), no solo justo despues de exportar (ver onJobDone).
+  $("#save-cover-btn").hidden = !state.cover_available;
 
   const mediaChip = $("#media-chip");
   if (state.media_path) {
@@ -833,6 +838,7 @@ function setGeneratingUI(active) {
   if (active) {
     $("#open-video-btn").hidden = true;
     $("#open-folder-btn").hidden = true;
+    $("#save-cover-btn").hidden = true; // la portada del export anterior ya no aplica
     $("#progress-bar").hidden = false;
     $("#progress-fill").style.width = "0%";
   }
@@ -873,6 +879,7 @@ window.onJobDone = (payload) => {
   if (payload.ok) {
     $("#open-video-btn").hidden = false;
     $("#open-folder-btn").hidden = false;
+    $("#save-cover-btn").hidden = !payload.cover_available;
     $("#progress-fill").style.width = "100%";
   } else {
     $("#progress-bar").hidden = true;
@@ -1184,6 +1191,11 @@ window.addEventListener("pywebviewready", () => {
   });
   $("#open-video-btn").addEventListener("click", () => pywebview.api.open_video());
   $("#open-folder-btn").addEventListener("click", () => pywebview.api.open_output_folder());
+  $("#save-cover-btn").addEventListener("click", () => {
+    pywebview.api.save_cover().then((r) => {
+      if (!r.ok) $("#status-text").textContent = r.error || "No se pudo guardar la portada.";
+    });
+  });
 });
 
 // ---------------------------------------------------------- previsualizador

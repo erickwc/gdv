@@ -138,6 +138,14 @@ class Api:
         self.cancel_requested = False
         self._last_progress_emit_ts = 0.0
 
+        # Portada: aparece SOLO justo despues de exportar un video con
+        # exito (se pone en True en _on_job_done) y se apaga en cuanto se
+        # carga una imagen/video nueva (_set_image/_set_video/remove_media)
+        # -- asi el boton de al lado de "Generar video" no se queda
+        # ofreciendo la portada de un video que ya no corresponde a lo que
+        # esta cargado ahora.
+        self.cover_available = False
+
         # Previsualizador en vivo (fotograma real de ffmpeg)
         self._preview_token = None
         self._preview_counter = 0
@@ -209,6 +217,7 @@ class Api:
             "speed": self.speed,
             "trim_start": self.trim_start,
             "trim_end": self.trim_end,
+            "cover_available": self.cover_available,
             # banderas derivadas -- equivalente a _refresh_ready_state()
             "ready": bool(self.media_path and self.audio_path),
             "show_focus": bool(self.media_path) and not self.media_is_video,
@@ -622,6 +631,7 @@ class Api:
         self.focus_zoom_pct = 100
         self.focus_x = 0.5
         self.focus_y = 0.5
+        self.cover_available = False
         self._update_default_output()
         return True
 
@@ -634,6 +644,7 @@ class Api:
         self.media_thumb = None
         self.media_kind_text = "Video · analizando..."
         self.media_display_name = None
+        self.cover_available = False
         self._update_default_output()
         threading.Thread(target=self._probe_video_job, args=(path,), daemon=True).start()
 
@@ -702,6 +713,7 @@ class Api:
         self.focus_y = 0.5
         self.trim_start = 0.0
         self.trim_end = 1.0
+        self.cover_available = False
         return {"ok": True, "state": self.get_state()}
 
     # -------------------------------------------------------- ajustar imagen
@@ -954,6 +966,66 @@ class Api:
         if token is not self._preview_token:
             return  # el usuario siguio cambiando cosas -- este resultado ya no aplica
         self._emit("onPreviewReady", {"data_uri": data_uri, "content_width_frac": content_width_frac})
+
+    def save_cover(self):
+        """Guarda un PNG con el mismo fotograma compuesto que ya se ve en
+        el previsualizador (plantilla + medio + texturas) -- misma logica
+        de composicion que request_preview, pero escrito directo a un
+        archivo en vez de un data URI. Va SIEMPRE junto al video recien
+        exportado, sin preguntar donde -- solo esta disponible justo
+        despues de exportar (ver cover_available en _on_job_done)."""
+        if not self.cover_available or not self.output_path or not self.media_path:
+            return {"ok": False, "error": "No hay portada disponible."}
+        if self.media_is_video and not self.media_size:
+            return {"ok": False, "error": "Todavía se está analizando el video."}
+
+        template_box = self.template_box if self.template_path else None
+        layout, _, _ = engine.build_layout(
+            self.media_size, self.media_is_video, self.scale_pct, template_box,
+        )
+        textures = self._current_textures(*layout["canvas"])
+
+        cmd = [self.ffmpeg_exe, "-y"]
+        if self.media_is_video:
+            start = self.trim_start
+            if self.media_duration:
+                start = min(start, max(0.0, self.media_duration - 0.5))
+            if start > 0:
+                cmd += ["-ss", f"{start:.3f}"]
+        cmd += ["-i", self.media_path]
+        idx = 1
+        tpl_idx = None
+        if self.template_path:
+            cmd += ["-i", self.template_path]
+            tpl_idx = idx
+            idx += 1
+        tex_layers = []
+        for path, mode, opacity in textures:
+            cmd += ["-i", path]
+            tex_layers.append((idx, mode, opacity))
+            idx += 1
+        fc = engine.build_filtergraph(
+            layout, is_video=False, tpl_idx=tpl_idx, textures=tex_layers,
+            focus=self.current_focus(),
+        )
+        folder = os.path.dirname(self.output_path)
+        base = os.path.splitext(os.path.basename(self.output_path))[0]
+        cover_path = engine.unique_output_path(folder, f"{base} portada", ext=".png")
+        cmd += ["-filter_complex", fc, "-map", "[vout]", "-frames:v", "1", cover_path]
+
+        threading.Thread(target=self._save_cover_job, args=(cmd, cover_path), daemon=True).start()
+        return {"ok": True}
+
+    def _save_cover_job(self, cmd, cover_path):
+        # stdin=DEVNULL: mismo motivo que en _preview_job -- sin esto ffmpeg
+        # hereda el stdin del sidecar (la tuberia JSON-RPC viva hacia
+        # Electron) y se traba.
+        proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True,
+                               creationflags=engine.CREATE_NO_WINDOW)
+        if proc.returncode == 0 and os.path.exists(cover_path):
+            self._push_status(f"Portada guardada: {os.path.basename(cover_path)}")
+        else:
+            self._push_status("No se pudo guardar la portada.")
 
     @staticmethod
     def _scaled_layout(layout, factor):
@@ -1251,7 +1323,12 @@ class Api:
     def _on_job_done(self, returncode):
         self.process = None
         if returncode == 0:
-            payload = {"ok": True, "message": f"Listo: {os.path.basename(self.output_path)}"}
+            self.cover_available = True
+            payload = {
+                "ok": True,
+                "message": f"Listo: {os.path.basename(self.output_path)}",
+                "cover_available": True,
+            }
         elif self.cancel_requested:
             payload = {"ok": False, "cancelled": True, "message": "Generación cancelada."}
         else:

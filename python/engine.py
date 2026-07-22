@@ -529,12 +529,12 @@ def build_mux_command(ffmpeg_exe, list_path, audio_path, output_path, duration, 
     return cmd
 
 
-def unique_output_path(folder, base):
-    """Devuelve una ruta .mp4 que no exista todavia (agrega _2, _3, ...)."""
-    candidate = os.path.join(folder, f"{base}.mp4")
+def unique_output_path(folder, base, ext=".mp4"):
+    """Devuelve una ruta que no exista todavia (agrega _2, _3, ...)."""
+    candidate = os.path.join(folder, f"{base}{ext}")
     counter = 2
     while os.path.exists(candidate):
-        candidate = os.path.join(folder, f"{base}_{counter}.mp4")
+        candidate = os.path.join(folder, f"{base}_{counter}{ext}")
         counter += 1
     return candidate
 

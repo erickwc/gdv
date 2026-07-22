@@ -591,6 +591,18 @@ body.drag-active .dropzone {
   font-size: 14px;
 }
 
+/* "Generar video" + el boton de portada (aparece justo al lado, solo
+   despues de exportar) -- el boton crece para llenar el ancho como
+   siempre hacia solo, el icono se queda a su tamano fijo. */
+.generate-row {
+  display: flex;
+  gap: 8px;
+}
+
+.generate-row .btn-generate {
+  flex: 1;
+}
+
 /* ---- selects / dropdowns ---- */
 
 .select {

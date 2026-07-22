@@ -254,7 +254,15 @@
         </div>
       </div>
 
-      <button class="btn btn-primary btn-generate" id="generate-btn" disabled>Generar video</button>
+      <div class="generate-row">
+        <button class="btn btn-primary btn-generate" id="generate-btn" disabled>Generar video</button>
+        <!-- Solo aparece justo despues de exportar con exito (ver
+             cover_available en api.py) -- guarda un PNG con el mismo
+             fotograma compuesto (plantilla + medio + texturas) junto al
+             video recien exportado, sin preguntar donde. Desaparece en
+             cuanto se carga una imagen/video nuevo. -->
+        <button class="btn btn-icon" id="save-cover-btn" hidden title="Guardar portada"></button>
+      </div>
 
       <div class="progress-bar" id="progress-bar" hidden>
         <div class="progress-fill" id="progress-fill"></div>
