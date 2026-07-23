@@ -106,6 +106,7 @@ function fillStaticIcons() {
   $("#preset-save-choice-cancel").innerHTML = iconSvgFilled("close");
   $("#output-title-pencil").innerHTML = iconSvg("edit");
   $("#save-cover-btn").innerHTML = iconSvg("download");
+  $("#cover-modal-close").innerHTML = iconSvgFilled("close");
   $$(".unit-percent").forEach((el) => (el.innerHTML = iconSvg("percentage", 12)));
 }
 
@@ -1191,10 +1192,45 @@ window.addEventListener("pywebviewready", () => {
   });
   $("#open-video-btn").addEventListener("click", () => pywebview.api.open_video());
   $("#open-folder-btn").addEventListener("click", () => pywebview.api.open_output_folder());
+  // Se abre al pasar el cursor (sin click) y se queda abierto mientras el
+  // cursor este sobre el boton o sobre el panel -- click sigue funcionando
+  // como atajo instantaneo. Ver cancelCoverModalTimers/scheduleCoverModal*.
+  $("#save-cover-btn").addEventListener("mouseenter", scheduleCoverModalOpen);
+  $("#save-cover-btn").addEventListener("mouseleave", scheduleCoverModalClose);
   $("#save-cover-btn").addEventListener("click", () => {
-    pywebview.api.save_cover().then((r) => {
-      if (!r.ok) $("#status-text").textContent = r.error || "No se pudo guardar la portada.";
-    });
+    cancelCoverModalTimers();
+    openCoverModal();
+  });
+  $("#cover-modal").addEventListener("mouseenter", cancelCoverModalTimers);
+  $("#cover-modal").addEventListener("mouseleave", scheduleCoverModalClose);
+
+  // ------------------------------------------------- modal "Guardar portada"
+  $("#cover-frame-seek").addEventListener("input", (e) => {
+    const video = $("#cover-frame-video");
+    if (video.duration) video.currentTime = (e.target.value / 1000) * video.duration;
+  });
+  $("#cover-mode-control").addEventListener("click", (e) => {
+    const btn = e.target.closest(".segmented-item");
+    if (!btn) return;
+    $$("#cover-mode-control .segmented-item").forEach((b) => b.classList.toggle("segmented-active", b === btn));
+  });
+  $("#cover-modal-save").addEventListener("click", () => {
+    const isVideo = !$("#cover-frame-picker").hidden;
+    const loopTime = isVideo ? $("#cover-frame-video").currentTime : null;
+    const modeBtn = $("#cover-mode-control .segmented-active");
+    const mode = modeBtn ? modeBtn.dataset.value : "full";
+    closeCoverModal();
+    saveCoverNow(loopTime, mode);
+  });
+  $("#cover-modal-cancel").addEventListener("click", closeCoverModal);
+  $("#cover-modal-close").addEventListener("click", closeCoverModal);
+  document.addEventListener("click", (e) => {
+    if ($("#cover-modal").hidden) return;
+    if (e.target.closest("#cover-modal") || e.target.closest("#save-cover-btn")) return;
+    closeCoverModal();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("#cover-modal").hidden) closeCoverModal();
   });
 });
 
@@ -1352,6 +1388,23 @@ function scheduleLoopPreview(delay = 400) {
 
 window.onLoopPreviewReady = function (payload) {
   const path = payload && payload.path;
+  if (coverModalWaitingForPreview) {
+    coverModalWaitingForPreview = false;
+    if (path) {
+      const coverVideo = $("#cover-frame-video");
+      coverVideo.src = buildFileUrl(path);
+      coverVideo.addEventListener(
+        "loadedmetadata",
+        () => {
+          $("#cover-frame-seek").disabled = false;
+          $("#cover-frame-loading").hidden = true;
+        },
+        { once: true }
+      );
+    } else {
+      $("#cover-frame-loading").textContent = "No se pudo generar la vista previa.";
+    }
+  }
   if (!path) {
     if (payload && payload.error) console.error("[loop preview] ffmpeg:", payload.error);
     return;
@@ -1405,6 +1458,137 @@ function initLoopPreviewControls() {
   seek.addEventListener("change", () => {
     scrubbing = false;
   });
+}
+
+// --------------------------------------------------- modal "Guardar portada"
+// Se abre desde #save-cover-btn (solo visible justo despues de exportar con
+// exito, ver cover_available en api.py). Si no hay nada que elegir (foto
+// suelta sin plantilla: ni momento del loop ni "parte vacia" tienen
+// sentido) se salta el modal y guarda directo, igual que antes.
+
+let coverModalWaitingForPreview = false;
+
+// Ancla el panel al boton que lo abre en vez de centrarlo -- pegado al
+// borde DERECHO del boton, desplegado hacia ARRIBA (el boton vive abajo
+// del todo, pegado al de "Generar video"). Misma logica que uso la rama de
+// erick para su panel "Generar video" antes de revertirla.
+function positionNearTrigger(trigger, panel) {
+  const margin = 10;
+  const rect = trigger.getBoundingClientRect();
+  const panelRect = panel.getBoundingClientRect();
+  let left = rect.right - panelRect.width;
+  left = Math.max(margin, Math.min(left, window.innerWidth - panelRect.width - margin));
+  let top = rect.top - margin - panelRect.height;
+  if (top < margin) top = rect.bottom + margin; // sin lugar arriba -- cae abajo
+  panel.style.left = `${Math.round(left)}px`;
+  panel.style.top = `${Math.round(top)}px`;
+}
+
+function saveCoverNow(loopTime, mode) {
+  pywebview.api.save_cover(loopTime, mode).then((r) => {
+    if (!r.ok) $("#status-text").textContent = r.error || "No se pudo guardar la portada.";
+  });
+}
+
+function closeCoverModal() {
+  const modal = $("#cover-modal");
+  if (modal.hidden) return;
+  animateDropdown(modal, false); // pone [hidden] solo al terminar la animacion
+  coverModalWaitingForPreview = false;
+  const video = $("#cover-frame-video");
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+}
+
+function setupCoverFramePicker() {
+  const video = $("#cover-frame-video");
+  const seek = $("#cover-frame-seek");
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+  seek.disabled = true;
+  seek.value = 0;
+  $("#cover-frame-loading").hidden = false;
+  $("#cover-frame-loading").textContent = "Cargando vista previa del loop...";
+  coverModalWaitingForPreview = true;
+  // Se pide un fragmento nuevo (no se reusa el que ya estuviera cargado en
+  // el previsualizador principal) para que siempre refleje el recorte y la
+  // velocidad ACTUALES -- ver onLoopPreviewReady mas abajo, que lo entrega
+  // por el mismo evento de siempre.
+  pywebview.api.request_loop_preview().then((r) => {
+    if (!r || !r.ok) {
+      coverModalWaitingForPreview = false;
+      $("#cover-frame-loading").textContent = "No se pudo generar la vista previa.";
+    }
+  });
+}
+
+function openCoverModal() {
+  const isVideo = !!(lastState && lastState.media_is_video);
+  const hasTemplate = !!(lastState && lastState.template_path);
+  if (!isVideo && !hasTemplate) {
+    // Nada que elegir (foto sin plantilla) -- se guarda directo, sin panel.
+    saveCoverNow(null, "full");
+    return;
+  }
+  const modal = $("#cover-modal");
+  if (!modal.hidden) return; // ya esta abierto (el mouse volvio a entrar)
+  $$("#cover-mode-control .segmented-item").forEach((b) => {
+    b.classList.toggle("segmented-active", b.dataset.value === "full");
+  });
+  $("#cover-frame-picker").hidden = !isVideo;
+  $("#cover-mode-picker").hidden = !hasTemplate;
+  modal.hidden = false;
+  positionNearTrigger($("#save-cover-btn"), modal);
+  animateDropdown(modal, true);
+  if (isVideo) setupCoverFramePicker();
+}
+
+// ---- abre al pasar el cursor, no al hacer click ----
+// Pequeno retraso (hoverIntent) para no disparar request_loop_preview() en
+// cada pasada accidental del mouse; se cancela si el cursor sigue de largo
+// antes de que venza. Una vez abierto, se queda mientras el cursor este
+// sobre el boton O sobre el panel -- sin esto, cruzar el hueco entre
+// ambos (positionNearTrigger los separa un margen) lo cerraria a mitad de
+// camino. El click sigue funcionando como atajo instantaneo (teclado/mouse
+// de precision), sin esperar el retraso.
+let coverModalHoverTimer = null;
+let coverModalCloseTimer = null;
+
+function cancelCoverModalTimers() {
+  if (coverModalHoverTimer) {
+    clearTimeout(coverModalHoverTimer);
+    coverModalHoverTimer = null;
+  }
+  if (coverModalCloseTimer) {
+    clearTimeout(coverModalCloseTimer);
+    coverModalCloseTimer = null;
+  }
+}
+
+function scheduleCoverModalOpen() {
+  if (coverModalCloseTimer) {
+    clearTimeout(coverModalCloseTimer);
+    coverModalCloseTimer = null;
+  }
+  if (!$("#cover-modal").hidden || coverModalHoverTimer) return;
+  coverModalHoverTimer = setTimeout(() => {
+    coverModalHoverTimer = null;
+    openCoverModal();
+  }, 150);
+}
+
+function scheduleCoverModalClose() {
+  if (coverModalHoverTimer) {
+    clearTimeout(coverModalHoverTimer);
+    coverModalHoverTimer = null;
+  }
+  if (coverModalCloseTimer) clearTimeout(coverModalCloseTimer);
+  coverModalCloseTimer = setTimeout(() => {
+    coverModalCloseTimer = null;
+    closeCoverModal();
+  }, 220);
 }
 
 window.onPreviewReady = Preview.onReady;

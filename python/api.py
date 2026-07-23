@@ -967,19 +967,34 @@ class Api:
             return  # el usuario siguio cambiando cosas -- este resultado ya no aplica
         self._emit("onPreviewReady", {"data_uri": data_uri, "content_width_frac": content_width_frac})
 
-    def save_cover(self):
-        """Guarda un PNG con el mismo fotograma compuesto que ya se ve en
-        el previsualizador (plantilla + medio + texturas) -- misma logica
-        de composicion que request_preview, pero escrito directo a un
-        archivo en vez de un data URI. Va SIEMPRE junto al video recien
-        exportado, sin preguntar donde -- solo esta disponible justo
-        despues de exportar (ver cover_available en _on_job_done)."""
+    def save_cover(self, loop_time=None, mode="full"):
+        """Guarda uno o dos PNG con el fotograma compuesto (plantilla +
+        medio + texturas) -- misma logica de composicion que
+        request_preview. Va SIEMPRE junto al video recien exportado, sin
+        preguntar donde -- solo esta disponible justo despues de exportar
+        (ver cover_available en _on_job_done).
+
+        loop_time: segundos DENTRO del loop, tal como lo ve el usuario en
+        el previsualizador del loop (0 = trim_start) -- None usa
+        trim_start (comportamiento de antes: fotos, o si no se eligio
+        momento). Se pasa a tiempo real del archivo fuente multiplicando
+        por la velocidad -- el loop preview ya sale mas corto/largo segun
+        speed, asi que un segundo de loop no es un segundo de fuente.
+
+        mode: "full" (lienzo 1920x1080 completo, con la plantilla encima),
+        "empty" (solo el recuadro de la plantilla -- ahi la plantilla ya
+        es transparente, asi que recortar el mismo frame compuesto da el
+        mismo resultado sin rearmar el filtro) o "both". Cae a "full" si
+        no hay plantilla cargada (no existe "parte vacia" sin plantilla)."""
         if not self.cover_available or not self.output_path or not self.media_path:
             return {"ok": False, "error": "No hay portada disponible."}
         if self.media_is_video and not self.media_size:
             return {"ok": False, "error": "Todavía se está analizando el video."}
 
         template_box = self.template_box if self.template_path else None
+        if mode not in ("full", "empty", "both") or not template_box:
+            mode = "full"
+
         layout, _, _ = engine.build_layout(
             self.media_size, self.media_is_video, self.scale_pct, template_box,
         )
@@ -988,6 +1003,13 @@ class Api:
         cmd = [self.ffmpeg_exe, "-y"]
         if self.media_is_video:
             start = self.trim_start
+            if loop_time is not None:
+                try:
+                    speed = float(self.speed.rstrip("x"))
+                except ValueError:
+                    speed = 1.0
+                start = self.trim_start + max(0.0, loop_time) * speed
+                start = min(start, max(self.trim_start, self.trim_end - 0.05))
             if self.media_duration:
                 start = min(start, max(0.0, self.media_duration - 0.5))
             if start > 0:
@@ -1000,30 +1022,53 @@ class Api:
             tpl_idx = idx
             idx += 1
         tex_layers = []
-        for path, mode, opacity in textures:
+        for path, tex_mode, opacity in textures:
             cmd += ["-i", path]
-            tex_layers.append((idx, mode, opacity))
+            tex_layers.append((idx, tex_mode, opacity))
             idx += 1
         fc = engine.build_filtergraph(
             layout, is_video=False, tpl_idx=tpl_idx, textures=tex_layers,
             focus=self.current_focus(),
         )
+
         folder = os.path.dirname(self.output_path)
         base = os.path.splitext(os.path.basename(self.output_path))[0]
-        cover_path = engine.unique_output_path(folder, f"{base} portada", ext=".png")
-        cmd += ["-filter_complex", fc, "-map", "[vout]", "-frames:v", "1", cover_path]
+        outputs = []  # (etiqueta del filtro, ruta de salida)
+        vout_label = "[vout]"
+        if mode == "both":
+            # [vout] no se puede mapear directo Y alimentar otro filtro a
+            # la vez -- split lo duplica en dos salidas independientes.
+            fc += ";[vout]split=2[voutfull][voutraw]"
+            vout_label = "[voutfull]"
+        if mode in ("full", "both"):
+            full_path = engine.unique_output_path(folder, f"{base} portada", ext=".png")
+            outputs.append((vout_label, full_path))
+        if mode in ("empty", "both"):
+            x, y, w, h = template_box
+            crop_src = "[voutraw]" if mode == "both" else "[vout]"
+            fc += f";{crop_src}crop={w}:{h}:{x}:{y}[voutc]"
+            empty_path = engine.unique_output_path(folder, f"{base} portada (vacia)", ext=".png")
+            outputs.append(("[voutc]", empty_path))
 
-        threading.Thread(target=self._save_cover_job, args=(cmd, cover_path), daemon=True).start()
+        cmd += ["-filter_complex", fc]
+        for label, path in outputs:
+            cmd += ["-map", label, "-frames:v", "1", path]
+
+        threading.Thread(
+            target=self._save_cover_job, args=(cmd, [p for _, p in outputs]), daemon=True
+        ).start()
         return {"ok": True}
 
-    def _save_cover_job(self, cmd, cover_path):
+    def _save_cover_job(self, cmd, cover_paths):
         # stdin=DEVNULL: mismo motivo que en _preview_job -- sin esto ffmpeg
         # hereda el stdin del sidecar (la tuberia JSON-RPC viva hacia
         # Electron) y se traba.
         proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True,
                                creationflags=engine.CREATE_NO_WINDOW)
-        if proc.returncode == 0 and os.path.exists(cover_path):
-            self._push_status(f"Portada guardada: {os.path.basename(cover_path)}")
+        saved = [p for p in cover_paths if os.path.exists(p)]
+        if proc.returncode == 0 and saved:
+            names = ", ".join(os.path.basename(p) for p in saved)
+            self._push_status(f"Portada guardada: {names}")
         else:
             self._push_status("No se pudo guardar la portada.")
 
@@ -1424,17 +1469,21 @@ class Api:
                 self._push_download_status("Procesando la descarga...")
 
         opts = {
-            # Sin audio cuando se puede (el beat lo pone la app) y max 1080p.
-            # vcodec^=avc1 (H.264) primero: YouTube por default ofrece AV1
-            # para 1080p, que decodifica por software varias veces mas
-            # lento que H.264 -- eso alentaba tanto el preview del loop
-            # como la generacion real (ambos vuelven a decodificar este
-            # archivo cada vez). Con H.264 disponible se usa ese; AV1/VP9
-            # quedan como respaldo si el video no trae H.264 en 1080p.
+            # Sin audio cuando se puede (el beat lo pone la app) y max 1440p.
+            # Se excluye AV1 (vcodec!*=av01): decodifica por software en esta
+            # Mac (sin aceleracion por hardware salvo chips M3+) y resulto
+            # ~2.5x mas lento que VP9 a la MISMA resolucion en pruebas reales
+            # -- YouTube casi siempre ofrece VP9 tambien, asi que evitarlo no
+            # cuesta calidad. Sin filtro de ext=mp4 en el primer intento:
+            # arriba de 1080p YouTube casi nunca da mp4 (vp9/av1 vienen en
+            # webm), y forzarlo ahi bloqueaba por completo llegar a 1440p.
+            # format_sort "res" prioriza resolucion real primero; H.264 como
+            # desempate si compite en la misma resolucion (rara vez pasa de
+            # 1080p, pero decodifica mas rapido cuando esta disponible).
             "format": (
-                "bv*[vcodec^=avc1][height<=1080][ext=mp4]/"
-                "bv*[height<=1080][ext=mp4]/bv*[height<=1080]/b[height<=1080]/b"
+                "bv*[vcodec!*=av01][height<=1440]/b[height<=1440]/b"
             ),
+            "format_sort": ["res", "vcodec:h264"],
             "outtmpl": os.path.join(tmpdir, "genvideo_descarga.%(ext)s"),
             "noplaylist": True,
             "quiet": True,
@@ -1442,6 +1491,12 @@ class Api:
             "progress_hooks": [hook],
             "ffmpeg_location": self.ffmpeg_exe,
             "merge_output_format": "mp4",
+            # Este video en particular (probado varias veces) corta la
+            # conexion o tira 403 a mitad de la descarga -- mas reintentos
+            # le dan chance de recuperarse solo en vez de dejar un archivo
+            # a medio bajar.
+            "retries": 10,
+            "fragment_retries": 10,
         }
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -1453,6 +1508,17 @@ class Api:
                 path = requested[0].get("filepath")
             if not path:
                 path = ydl.prepare_filename(info)
+        # yt-dlp no siempre lanza una excepcion cuando el rename final
+        # (.part -> nombre real) o el merge fallan a mitad de camino (ver
+        # "ERROR: Unable to rename file" en el log -- eso lo imprime yt-dlp
+        # y sigue de largo, no frena la ejecucion) -- sin este chequeo la
+        # app se quedaba con self.media_path apuntando a un archivo que
+        # nunca se termino de escribir, y cualquier ffmpeg despues (loop
+        # preview, generar) fallaba en silencio con "No such file or
+        # directory" -- se veia como que la app se rompio, no como que la
+        # descarga fallo.
+        if not path or not os.path.exists(path) or os.path.getsize(path) == 0:
+            raise RuntimeError("La descarga se cortó a la mitad, probá de nuevo.")
         title = info.get("title") or "Video descargado"
 
         self._set_video(path)

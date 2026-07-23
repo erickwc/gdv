@@ -1632,3 +1632,120 @@ body.drag-active .dropzone {
   display: flex;
   gap: 8px;
 }
+
+/* ---- ventanas flotantes "de vidrio" ancladas a un boton ----
+   Base reusable para cualquier panel que deba "salir" de un boton en vez
+   de aparecer centrado con overlay -- mismo criterio (y mismo problema
+   evitado) que el panel "Generar video" que existio brevemente en la rama
+   de erick: CUALQUIER ancestro position:fixed con fondo propio ENCIMA de
+   un panel con backdrop-filter hace que Chromium lo componga en su propia
+   capa de GPU y deje de "ver" lo de atras -- por eso NO hay un overlay
+   oscuro envolvente (igual que #preset-list, que nunca lo tuvo). El panel
+   se posiciona a mano (positionNearTrigger en app.js, pegado al boton que
+   lo abre) y se anima con animateDropdown() (motion.js) -- mismo mecanismo
+   que ya usan los desplegables de toda la app. */
+.glass-window {
+  position: fixed;
+  z-index: 400;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  background: linear-gradient(
+    190deg,
+    rgba(255, 255, 255, 0.1) 0%,
+    rgba(255, 255, 255, 0.04) 40%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(24px);
+  will-change: backdrop-filter;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 14px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+
+.glass-window-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.glass-window-close:hover {
+  background: var(--hover-bg);
+  color: var(--text);
+}
+
+.glass-window-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text);
+  text-align: center;
+}
+
+/* ---- "Guardar portada" -- ancho fijo + esquina de origen de la animacion
+   (transform-origin) pegada al boton (esquina inferior derecha del
+   preview), para que de verdad se sienta como que "sale" de ahi. */
+.cover-modal {
+  width: 320px;
+  transform-origin: bottom right;
+}
+
+.cover-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.cover-frame-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cover-frame-preview {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cover-frame-preview video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.cover-frame-loading {
+  position: absolute;
+}
+
+.cover-frame-seek {
+  width: 100%;
+}
+
+.cover-mode-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cover-modal-footer .btn-primary {
+  padding: 8px 16px;
+}

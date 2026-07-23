@@ -261,7 +261,7 @@
              fotograma compuesto (plantilla + medio + texturas) junto al
              video recien exportado, sin preguntar donde. Desaparece en
              cuanto se carga una imagen/video nuevo. -->
-        <button class="btn btn-icon" id="save-cover-btn" hidden title="Guardar portada"></button>
+        <button class="btn btn-icon" id="save-cover-btn" hidden></button>
       </div>
 
       <div class="progress-bar" id="progress-bar" hidden>
@@ -278,6 +278,45 @@
       </div>
     </main>
 
+    </div>
+  </div>
+
+  <!-- Ventana "Guardar portada" -- fuera de .app-root (mismo motivo que
+       .background: position:fixed escapa mejor del overflow:hidden del
+       shell estando afuera). Vidrio SIN overlay oscuro: cualquier ancestro
+       position:fixed con fondo propio ENCIMA del panel encierra su
+       backdrop-filter en la capa de GPU de Chromium y deja de "ver" lo de
+       atras -- mismo problema (y misma solucion) que ya se habia resuelto
+       para #preset-list y para el panel "Generar video" de la rama de
+       erick antes de revertirla. Se posiciona a mano pegada a
+       #save-cover-btn (positionNearTrigger en app.js) y se anima con
+       animateDropdown() (motion.js), igual que los demas desplegables. Se
+       abre al pasar el cursor por #save-cover-btn, sin click (ver
+       openCoverModal). JS decide que secciones mostrar: el selector de
+       momento del loop solo aplica a video, el de "que guardar" solo si
+       hay plantilla cargada. -->
+  <div class="glass-window cover-modal" id="cover-modal" hidden>
+    <button class="glass-window-close" id="cover-modal-close" title="Cerrar"></button>
+    <h3 class="glass-window-title">Guardar portada</h3>
+    <div class="cover-frame-picker" id="cover-frame-picker" hidden>
+      <p class="hint">Elige el momento del loop que quieres usar como portada</p>
+      <div class="cover-frame-preview">
+        <video id="cover-frame-video" muted playsinline></video>
+        <p class="hint cover-frame-loading" id="cover-frame-loading">Cargando vista previa del loop...</p>
+      </div>
+      <input type="range" class="loop-preview-seek cover-frame-seek" id="cover-frame-seek" min="0" max="1000" value="0" step="1" disabled>
+    </div>
+    <div class="cover-mode-picker" id="cover-mode-picker" hidden>
+      <p class="control-label">¿Qué parte guardar?</p>
+      <div class="segmented" id="cover-mode-control">
+        <button type="button" class="segmented-item segmented-active" data-value="full">Completa</button>
+        <button type="button" class="segmented-item" data-value="empty">Solo la parte vacía</button>
+        <button type="button" class="segmented-item" data-value="both">Las dos</button>
+      </div>
+    </div>
+    <div class="cover-modal-footer">
+      <button class="btn btn-ghost" id="cover-modal-cancel">Cancelar</button>
+      <button class="btn btn-primary" id="cover-modal-save">Guardar portada</button>
     </div>
   </div>
 

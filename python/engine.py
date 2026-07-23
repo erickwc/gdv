@@ -443,6 +443,10 @@ def build_command(ffmpeg_exe, media_path, audio_path, output_path, duration, aud
         "-filter_complex", fc, "-map", "[vout]", "-map", "1:a:0",
         "-r", "10",
         "-c:v", "libx264", *VIDEO_QUALITY_ARGS,
+        # Keyframe cada 2s (20 frames a 10 fps) -- ver el comentario igual
+        # en build_compose_command sobre por que hace falta esto para
+        # YouTube, aunque aca la imagen no cambie entre keyframes.
+        "-g", "20", "-keyint_min", "20",
         "-pix_fmt", "yuv420p", "-tune", "stillimage",
         *audio_args,
         "-shortest",
@@ -488,12 +492,23 @@ def build_compose_command(ffmpeg_exe, media_path, temp_path, layout, trim=None, 
     )
     if fast:
         quality_args = PREVIEW_QUALITY_ARGS_NVENC if encoder == "h264_nvenc" else PREVIEW_QUALITY_ARGS
+        gop_args = []
     else:
         quality_args = ["-c:v", "libx264", *VIDEO_QUALITY_ARGS]
+        # Keyframe cada 2s (60 frames a los 30 fps fijos de salida, ver
+        # fps=30 en build_filtergraph) -- sin esto libx264 solo mete
+        # keyframes por cambio de escena, que en un clip sin cortes puede
+        # dejar 7-8s de por medio. YouTube reencodea TODO lo que subis (no
+        # sirve tu bitrate/CRF tal cual), y su propia guia de subida pide
+        # un keyframe cada 2s -- un GOP mas largo que eso le sale peor
+        # incluso partiendo de un archivo local que ya se ve bien. Como la
+        # fase 2 solo repite esta unidad por copia directa, el GOP de aca
+        # es el del video final entero.
+        gop_args = ["-g", "60", "-keyint_min", "60"]
     cmd += [
         "-filter_complex", fc, "-map", "[vout]",
         "-an",
-        *quality_args, "-pix_fmt", "yuv420p",
+        *quality_args, *gop_args, "-pix_fmt", "yuv420p",
         "-flags", "+cgop",
         "-video_track_timescale", "15360",
         "-progress", "pipe:1", "-nostats",
