@@ -1463,8 +1463,15 @@ class Api:
 
         def hook(d):
             if d.get("status") == "downloading":
-                pct = (d.get("_percent_str") or "").strip()
-                self._push_download_status(f"Descargando video... {pct}")
+                # _percent_str viene como "  45.2%" (con espacios de relleno
+                # para alinear en terminal) -- se redondea a entero para un
+                # texto mas simple en la UI ("Descargando 45%").
+                raw = (d.get("_percent_str") or "").strip().rstrip("%")
+                try:
+                    pct = f"{round(float(raw))}%"
+                except ValueError:
+                    pct = ""
+                self._push_download_status(f"Descargando {pct}".rstrip())
             elif d.get("status") == "finished":
                 self._push_download_status("Procesando la descarga...")
 
@@ -1488,6 +1495,16 @@ class Api:
             "noplaylist": True,
             "quiet": True,
             "no_warnings": True,
+            # quiet=True NO alcanza para apagar la barra de progreso propia
+            # de yt-dlp -- esa se imprime aparte, con \r (sin salto de
+            # linea real) para reescribir la misma linea de terminal. El
+            # sidecar habla JSON por linea con Electron (una linea = un
+            # mensaje); sin esto, esa barra se pegaba a la MISMA linea que
+            # nuestro propio evento onDownloadStatus (json.dumps + print),
+            # el parser de pythonBridge.js fallaba al leerla como JSON, y
+            # tiraba la linea entera -- por eso el porcentaje nunca llegaba
+            # a la UI aunque este hook ya lo calculaba bien.
+            "noprogress": True,
             "progress_hooks": [hook],
             "ffmpeg_location": self.ffmpeg_exe,
             "merge_output_format": "mp4",

@@ -13,6 +13,7 @@
     "onJobError",
     "onTextureAdded",
     "onDownloadDone",
+    "onDownloadStatus",
     "onPreviewReady",
     "onLoopPreviewReady",
   ];
