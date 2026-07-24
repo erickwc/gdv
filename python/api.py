@@ -136,7 +136,10 @@ class Api:
 
         self.process = None
         self.cancel_requested = False
+        self._generating = False  # ver start_generation -- evita clics repetidos disparando 2 generaciones a la vez
+        self._generation_counter = 0  # sufijo unico para los temporales de _run_ffmpeg_job (ver ahi)
         self._last_progress_emit_ts = 0.0
+        self._last_ffmpeg_error = None  # tail de stderr del ultimo fallo real (ver _run_ffmpeg)
 
         # Portada: aparece SOLO justo despues de exportar un video con
         # exito (se pone en True en _on_job_done) y se apaga en cuanto se
@@ -1202,6 +1205,22 @@ class Api:
         return bool(self.output_path and os.path.exists(self.output_path))
 
     def start_generation(self):
+        if self._generating:
+            # self.process todavia no existe reciennacido a esta altura
+            # (_run_ffmpeg_job hace trabajo previo -- probar el audio,
+            # armar el layout -- antes de lanzar el primer subprocess), asi
+            # que chequear eso dejaba pasar clics repetidos durante ese
+            # hueco. Esta bandera se prende ACA MISMO, sincronico, antes de
+            # devolver la respuesta -- sin ventana de carrera posible. Sin
+            # esto, clics repetidos en "Generar video" (el boton solo se
+            # deshabilita del lado de JS DESPUES de que esta llamada
+            # responde) disparaban 2-3 generaciones a la vez, todas usando
+            # los MISMOS nombres de archivo temporal
+            # (genvideo_loop.mp4/genvideo_concat.txt) -- se pisaban entre
+            # si a mitad de escritura/lectura y fallaban con codigos de
+            # salida raros (ffmpeg leyendo un archivo que otro hilo ya
+            # habia borrado o seguia escribiendo).
+            return {"ok": False, "error": "Ya hay una generación en curso."}
         if not self.media_path or not self.audio_path:
             return {"ok": False, "error": "Falta imagen/video o audio"}
         if self.media_is_video and not self.media_size:
@@ -1213,12 +1232,15 @@ class Api:
             self._update_default_output()
 
         self.cancel_requested = False
+        self._generating = True
         threading.Thread(target=self._run_ffmpeg_job, daemon=True).start()
         return {"ok": True}
 
     def _run_ffmpeg_job(self):
         temp_unit = None
         temp_list = None
+        self._generation_counter += 1
+        gen_id = self._generation_counter
         try:
             info = engine.probe_media(self.ffmpeg_exe, self.audio_path)
             duration = info["duration"]
@@ -1261,7 +1283,7 @@ class Api:
                     unit_src = None
                 unit_duration = unit_src / speed if unit_src else None
 
-                temp_unit = os.path.join(tempfile.gettempdir(), "genvideo_loop.mp4")
+                temp_unit = os.path.join(tempfile.gettempdir(), f"genvideo_loop_{gen_id}.mp4")
                 self._push_status(f"Componiendo el loop a {width}x{height}{tpl_note}{speed_note}...")
                 returncode = self._run_ffmpeg(
                     engine.build_compose_command(
@@ -1282,7 +1304,7 @@ class Api:
                     repeats = max(1, math.ceil(duration / real_unit) + 1)
                 else:
                     repeats = 1
-                temp_list = os.path.join(tempfile.gettempdir(), "genvideo_concat.txt")
+                temp_list = os.path.join(tempfile.gettempdir(), f"genvideo_concat_{gen_id}.txt")
                 engine.write_concat_list(temp_unit, repeats, temp_list)
 
                 self._push_status("Generando video (loop + beat)...")
@@ -1332,6 +1354,13 @@ class Api:
             text=True,
             creationflags=engine.CREATE_NO_WINDOW,
         )
+        # -progress pipe:1 manda muchas lineas "clave=valor" (frame=,
+        # fps=, out_time=, speed=, etc.) ademas del stderr real de ffmpeg
+        # (mezclado por stderr=STDOUT) -- se descartan esas para quedarse
+        # solo con las lineas de diagnostico real. Antes no se guardaba
+        # nada de esto: un fallo solo dejaba el codigo de salida, sin
+        # forma de saber la causa real (ver _on_job_done).
+        tail = []
         for line in self.process.stdout:
             line = line.strip()
             if line.startswith("out_time=") and duration:
@@ -1339,7 +1368,12 @@ class Api:
                 if seconds is not None:
                     frac = max(0.0, min(1.0, seconds / duration))
                     self._push_progress(frac)
-        return self.process.wait()
+            elif line and not re.match(r"^[a-z_]+=", line):
+                tail.append(line)
+                del tail[:-12]
+        returncode = self.process.wait()
+        self._last_ffmpeg_error = "\n".join(tail) if returncode != 0 else None
+        return returncode
 
     def _push_status(self, text, color=None):
         self._emit("onStatus", {"text": text, "color": color})
@@ -1367,6 +1401,7 @@ class Api:
 
     def _on_job_done(self, returncode):
         self.process = None
+        self._generating = False
         if returncode == 0:
             self.cover_available = True
             payload = {
@@ -1377,11 +1412,18 @@ class Api:
         elif self.cancel_requested:
             payload = {"ok": False, "cancelled": True, "message": "Generación cancelada."}
         else:
-            payload = {"ok": False, "message": f"Error al generar el video (código {returncode})."}
+            detail = ""
+            if self._last_ffmpeg_error:
+                # Ultimas 2 lineas alcanzan para el mensaje corto de la UI --
+                # el resto del tail queda en _last_ffmpeg_error por si hace
+                # falta mirarlo con mas detalle (consola/logs).
+                detail = ": " + " / ".join(self._last_ffmpeg_error.splitlines()[-2:])
+            payload = {"ok": False, "message": f"Error al generar el video (código {returncode}){detail}."}
         self._emit("onJobDone", payload)
 
     def _on_job_error(self, message):
         self.process = None
+        self._generating = False
         self._emit("onJobError", {"message": message})
 
     def cancel_generation(self):

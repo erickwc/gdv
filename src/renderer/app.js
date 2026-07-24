@@ -848,6 +848,9 @@ function setGeneratingUI(active) {
 function beginGeneration() {
   pywebview.api.start_generation().then((r) => {
     if (!r.ok) {
+      // Se re-habilita: quedo deshabilitado desde el click (ver arriba),
+      // pero esta generacion en particular no arranco de verdad.
+      $("#generate-btn").disabled = !(lastState && lastState.ready);
       $("#status-text").textContent = r.error || "No se pudo iniciar la generación.";
       return;
     }
@@ -1178,10 +1181,22 @@ window.addEventListener("pywebviewready", () => {
 
   // --------------------------------------------------------- generacion
   $("#generate-btn").addEventListener("click", () => {
+    const btn = $("#generate-btn");
+    // Se deshabilita ACA, sincronico, antes de cualquier await -- todo lo
+    // de abajo (output_would_overwrite, el confirm(), start_generation) es
+    // asincronico, y setGeneratingUI(true) recien llega DESPUES de que
+    // start_generation responde. Sin este disabled inmediato, clics
+    // repetidos mientras tanto disparaban 2-3 generaciones a la vez (ver
+    // el guard/_generating en start_generation, api.py).
+    if (btn.disabled) return;
+    btn.disabled = true;
     pywebview.api.output_would_overwrite().then((wouldOverwrite) => {
       if (wouldOverwrite) {
         const name = $("#output-label").textContent;
-        if (!confirm(`${name} ya existe. ¿Deseas reemplazarlo?`)) return;
+        if (!confirm(`${name} ya existe. ¿Deseas reemplazarlo?`)) {
+          btn.disabled = !(lastState && lastState.ready);
+          return;
+        }
       }
       beginGeneration();
     });
