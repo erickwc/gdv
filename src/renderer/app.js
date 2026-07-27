@@ -1903,6 +1903,14 @@ function scheduleLoopPreview(delay = 400) {
 
 window.onLoopPreviewReady = function (payload) {
   setPreviewJob("loop", false);
+  // Fragmento de OTRO medio: se descarta. Pasaba al pegar una foto encima de
+  // un video -- el trabajo del video seguia corriendo, terminaba despues, y
+  // esta funcion volvia a mostrar (y reproducir) ese loop encima de la foto
+  // recien cargada. Python ya lo corta de su lado (_invalidate_loop_preview);
+  // esto es el segundo cerrojo, por si algun camino nuevo se lo saltea.
+  const suMedio = payload && payload.media_path;
+  const medioActual = lastState && lastState.media_path;
+  if (suMedio && medioActual && suMedio !== medioActual) return;
   const path = payload && payload.path;
   if (coverModalWaitingForPreview) {
     coverModalWaitingForPreview = false;
@@ -2110,7 +2118,6 @@ function saveCoverNow(loopTime, mode, sourceImage, compose, imageFocus) {
 // openCoverModal y los listeners, y se contradecian.
 function renderCoverModal() {
   const isVideo = !!(lastState && lastState.media_is_video);
-  const hasTemplate = !!(lastState && lastState.template_path);
   const usingImage = coverSource === "image";
   const compose = $("#cover-compose").checked;
 
@@ -2136,11 +2143,16 @@ function renderCoverModal() {
   $("#cover-frame-loading").hidden = usingImage || !isVideo || !coverModalWaitingForPreview;
   $("#cover-compose-row").hidden = !usingImage;
 
-  // Sin plantilla no hay "cuadro" que recortar. Sin componer SI sigue
-  // habiendolo: el recorte es el mismo, lo que se va es la plantilla encima.
-  $("#cover-mode-picker").hidden = !hasTemplate;
-  const box = lastState && lastState.template_box;
+  // Las dos opciones valen SIEMPRE, con plantilla o sin ella: el "cuadro"
+  // existe igual (sin plantilla es el que dejan los bordes negros, centrado
+  // -- ver content_box en engine.py). Antes esto se escondia con
+  // !hasTemplate porque el recorte se sacaba de template_box, que sin
+  // plantilla es null; ahora el recuadro lo manda Python en content_box.
+  $("#cover-mode-picker").hidden = false;
+  const box = lastState && lastState.content_box;
   if (box) $("#cover-size-empty").textContent = `${box[2]} × ${box[3]}`;
+  const lienzo = lastState && lastState.canvas_size;
+  if (lienzo) $("#cover-size-full").textContent = `${lienzo[0]} × ${lienzo[1]}`;
   $$(".cover-option").forEach((b) => {
     b.classList.toggle("cover-option-active", !!coverWant[b.dataset.value]);
   });

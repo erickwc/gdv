@@ -203,6 +203,17 @@ class Api:
 
     # ------------------------------------------------------ estado hacia JS
 
+    def _content_box(self):
+        """(x, y, ancho, alto) del recuadro donde cae el medio, para get_state.
+        None mientras no haya medio (todavia no hay layout que calcular)."""
+        if not self.media_size:
+            return None
+        template_box = self.template_box if self.template_path else None
+        layout, _, _ = engine.build_layout(
+            self.media_size, self.media_is_video, self.scale_pct, template_box,
+        )
+        return list(engine.content_box(layout))
+
     def get_state(self):
         return {
             "media_path": self.media_path,
@@ -230,6 +241,11 @@ class Api:
             # tenerlo escrito a mano (ver renderTemplateInfo en app.js): estaba
             # fijo en "1920x1080" y quedo mintiendo al pasar el lienzo a 1440p.
             "canvas_size": [engine.MAX_WIDTH, engine.MAX_HEIGHT],
+            # Recuadro donde cae el medio (ver engine.content_box). Con
+            # plantilla coincide con template_box; sin plantilla es el cuadro
+            # centrado que dejan los bordes -- por eso la UI puede ofrecer
+            # "solo el cuadro" siempre, no solo con plantilla.
+            "content_box": self._content_box(),
             "texture_layers": list(self.texture_layers),
             "textures_collapsed": bool(self.config_data.get("textures_collapsed", False)),
             "presets": [p["name"] for p in self.presets],
@@ -659,6 +675,7 @@ class Api:
         # ajuste (352x200) que usaba el widget de Tk, para que el
         # arrastre/zoom en JS reproduzca exactamente la misma geometria.
         focus_src.thumbnail((FOCUS_PICKER_W, FOCUS_PICKER_H), Image.LANCZOS)
+        self._invalidate_loop_preview()
         self.media_path = path
         self.media_is_video = False
         self.media_size = (width, height)
@@ -674,7 +691,29 @@ class Api:
         self._update_default_output()
         return True
 
+    def _invalidate_loop_preview(self):
+        """Tira el fragmento del loop y cualquier trabajo en vuelo. Se llama al
+        CAMBIAR DE MEDIO.
+
+        _loop_preview_job descarta su resultado comparando contra
+        _loop_preview_token, pero ese token solo cambiaba al pedir OTRO
+        preview -- y cargar una IMAGEN no pide ninguno (request_loop_preview
+        se va de largo si el medio no es video). Entonces, al pegar una foto
+        encima de un video, el trabajo del video anterior terminaba, se daba
+        por bueno, y la UI volvia a mostrar y REPRODUCIR ese loop encima del
+        medio nuevo. Pasa igual entre dos videos si el primero no llego a
+        terminar."""
+        self._loop_preview_token = None
+        viejo = self._loop_preview_path
+        self._loop_preview_path = None
+        if viejo:
+            try:
+                os.remove(viejo)
+            except OSError:
+                pass  # el <video> del renderer puede tenerlo abierto todavia
+
     def _set_video(self, path):
+        self._invalidate_loop_preview()
         self.media_path = path
         self.media_is_video = True
         self.media_size = None
@@ -746,6 +785,7 @@ class Api:
         self._notify_state_changed()
 
     def remove_media(self):
+        self._invalidate_loop_preview()
         self.media_path = None
         self.media_is_video = False
         self.media_size = None
@@ -1141,7 +1181,10 @@ class Api:
         base = os.path.splitext(os.path.basename(self.output_path))[0]
 
         template_box = self.template_box if self.template_path else None
-        if mode not in ("full", "empty", "both") or not template_box:
+        # Ya NO cae a "full" cuando no hay plantilla: el cuadro existe igual
+        # (los bordes negros lo dejan centrado, ver engine.content_box), asi
+        # que "solo el cuadro" vale para cualquier combinacion.
+        if mode not in ("full", "empty", "both"):
             mode = "full"
 
         layout, _, _ = engine.build_layout(
@@ -1219,7 +1262,7 @@ class Api:
             full_path = engine.unique_output_path(folder, f"{base} portada", ext=".png")
             outputs.append((vout_label, full_path))
         if mode in ("empty", "both"):
-            x, y, w, h = template_box
+            x, y, w, h = engine.content_box(layout)
             crop_src = "[voutraw]" if mode == "both" else "[vout]"
             fc += f";{crop_src}crop={w}:{h}:{x}:{y}[voutc]"
             empty_path = engine.unique_output_path(folder, f"{base} portada (vacia)", ext=".png")
@@ -1295,7 +1338,11 @@ class Api:
         self._loop_preview_token = token
         threading.Thread(
             target=self._loop_preview_job,
-            args=(token, layout, temp_path, content_width_frac, speed), daemon=True
+            # El medio viaja con el trabajo (no se lee al final) para que el
+            # evento diga a QUE medio pertenece este fragmento -- ver la
+            # comprobacion en onLoopPreviewReady (app.js).
+            args=(token, layout, temp_path, content_width_frac, speed, self.media_path),
+            daemon=True,
         ).start()
         return {"ok": True}
 
@@ -1317,7 +1364,8 @@ class Api:
             encoder="h264_nvenc" if use_nvenc else "libx264",
         )
 
-    def _loop_preview_job(self, token, layout, temp_path, content_width_frac, speed):
+    def _loop_preview_job(self, token, layout, temp_path, content_width_frac, speed,
+                          media_path=None):
         # None (todavia no se sabe) o True (ya funciono antes) -> se
         # prueba GPU primero. False (ya fallo antes en esta sesion) -> ni
         # se intenta, directo a CPU -- reintentar NVENC en cada preview
@@ -1369,6 +1417,10 @@ class Api:
             "path": temp_path if ok else None,
             "error": error,
             "content_width_frac": content_width_frac,
+            # De que medio salio este fragmento: la UI lo compara con el que
+            # tiene cargado y descarta el que llegue tarde (ver
+            # _invalidate_loop_preview, que ya lo corta de este lado).
+            "media_path": media_path,
         })
 
     # ---------------------------------------------------------- generacion
@@ -1490,9 +1542,11 @@ class Api:
                     returncode = self._run_ffmpeg(cmd, duration)
                     if returncode == 0 or self.cancel_requested:
                         break
-            else:
-                # Imagenes: una sola pasada (ya es rapida a 10 fps -- o a 30
-                # si hay una textura de VIDEO encima, ver build_command).
+            elif any(t[3] is not None for t in textures):
+                # Imagen fija pero con una textura de VIDEO encima: el
+                # fotograma cambia todo el tiempo, asi que NO se puede repetir
+                # por copia -- se encodea de punta a punta, a 30 fps (ver
+                # build_command). Es el unico caso de imagen que sigue lento.
                 self._push_status(f"Generando video a {width}x{height}{tpl_note}...")
                 returncode = -1
                 for strategy in strategies:
@@ -1502,6 +1556,47 @@ class Api:
                         self.audio_path, self.output_path, duration, audio_args,
                         layout, template_path=template_path, textures=textures,
                         focus=self.current_focus(),
+                    )
+                    returncode = self._run_ffmpeg(cmd, duration)
+                    if returncode == 0 or self.cancel_requested:
+                        break
+            else:
+                # Imagen quieta: mismo truco que un clip de video -- se compone
+                # UNA unidad corta y la fase 2 la repite por copia directa.
+                # Encodear los 1460 fotogramas del beat era pasar el filtro por
+                # cada uno para obtener siempre lo mismo (ver STILL_UNIT_SECONDS
+                # en engine.py: medido 13.4s -> 2.8s y 100 MB -> 9.6 MB).
+                unit_seconds = min(engine.STILL_UNIT_SECONDS, duration or engine.STILL_UNIT_SECONDS)
+                temp_unit = os.path.join(tempfile.gettempdir(), f"genvideo_still_{gen_id}.mp4")
+                self._push_status(f"Componiendo la imagen a {width}x{height}{tpl_note}...")
+                returncode = self._run_ffmpeg(
+                    engine.build_still_unit_command(
+                        self.ffmpeg_exe, self.media_path, temp_unit, layout, unit_seconds,
+                        template_path=template_path, textures=textures,
+                        focus=self.current_focus(),
+                    ),
+                    unit_seconds,
+                )
+                if self.cancel_requested or returncode != 0:
+                    self._on_job_done(returncode)
+                    return
+
+                unit_info = engine.probe_media(self.ffmpeg_exe, temp_unit)
+                real_unit = unit_info["duration"] or unit_seconds
+                if duration and real_unit:
+                    repeats = max(1, math.ceil(duration / real_unit) + 1)
+                else:
+                    repeats = 1
+                temp_list = os.path.join(tempfile.gettempdir(), f"genvideo_concat_{gen_id}.txt")
+                engine.write_concat_list(temp_unit, repeats, temp_list)
+
+                self._push_status("Generando video (imagen + beat)...")
+                returncode = -1
+                for strategy in strategies:
+                    audio_args = engine.audio_strategy_args(strategy, info["sample_rate"], self.audio_peak_db)
+                    cmd = engine.build_mux_command(
+                        self.ffmpeg_exe, temp_list, self.audio_path,
+                        self.output_path, duration, audio_args,
                     )
                     returncode = self._run_ffmpeg(cmd, duration)
                     if returncode == 0 or self.cancel_requested:

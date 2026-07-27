@@ -386,7 +386,7 @@ select,
   font-family: "Open Sauce Sans", sans-serif;
   font-size: 12px;
   font-weight: 300;
-  line-height: 1.4;
+  line-height: 1.3;
   padding: 4px 8px;
   border-radius: 8px;
   background: var(--field-bg);
@@ -1185,8 +1185,14 @@ input[type="text"].preset-inline-input {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  width: 100%;
-  height: 100%;
+  /* Mide lo que el TEXTO, no el hueco entero. Antes iba con width/height al
+     100% y cualquier click en el previsualizador abria el explorador de
+     archivos sin querer. .preview-surface ya centra por flex, asi que
+     encogerlo no lo corre de lugar; y soltar archivos no depende de esto
+     (lo escucha el body, ver drop-handler.js). */
+  width: fit-content;
+  max-width: 100%;
+  padding: 12px 20px;
   border-radius: 16px;
   /* Sin recuadro punteado a la vista: el borde se queda declarado en
      transparente (no "none") para que aparezca SOLO mientras se arrastra un
@@ -1194,9 +1200,15 @@ input[type="text"].preset-inline-input {
   border: 1px dashed transparent;
   cursor: pointer;
 }
-.dropzone.drag-active,
-.preview-surface.drag-active .dropzone {
+
+/* El resaltado de arrastre va sobre TODO el hueco y no sobre el bloque de
+   texto: es lo que dice donde va a caer el archivo, y achicarlo a la pastilla
+   de texto se perdia. Antes salia gratis porque .dropzone ocupaba el hueco
+   entero. El :has() lo limita a cuando el bloque esta visible -- o sea sin
+   medio cargado, que es el unico caso en que se resaltaba antes. */
+.preview-surface.drag-active:has(.dropzone:not([hidden])) {
   background: var(--accent-glow);
+  border-radius: 16px;
 }
 
 /* Arrastrando un archivo sobre Plantillas/Texturas se ilumina la SECCION
@@ -1209,6 +1221,16 @@ input[type="text"].preset-inline-input {
 #texture-section.drag-active {
   background: var(--accent-glow);
   box-shadow: inset 0 0 0 0.1px var(--accent);
+}
+
+/* El sobre de arriba, a 48px como en el diseno. Va como emoji del sistema
+   (Segoe UI Emoji en Windows), asi que trae su propio color y no hereda el de
+   la UI. line-height 1 para que no arrastre el interlineado de la pagina y
+   deje aire de mas debajo. */
+.dropzone-art {
+  font-size: 38px;
+  line-height: 1;
+  margin-bottom: 4px;
 }
 
 .dropzone-title {

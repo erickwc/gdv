@@ -364,6 +364,27 @@ def build_focus_crop(focus):
     return f"crop={side}:{side}:{crop_x}:{crop_y},"
 
 
+def content_box(layout):
+    """Rectangulo (x, y, ancho, alto) del lienzo donde cae el MEDIO, haya
+    plantilla o no.
+
+    Con plantilla es su ventana transparente (layout["pos"]). SIN plantilla el
+    cuadro igual existe: es el que dejan los bordes negros, centrado -- el
+    mismo centrado que hace el pad de build_filtergraph, de ahi la cuenta
+    repetida. Antes esto solo se sabia para el caso con plantilla
+    (template_box), y por eso guardar "solo el cuadro" no se podia ofrecer sin
+    una: no habia de donde sacar el recorte. Lo usan save_cover para recortar
+    y get_state para rotular la opcion en la UI."""
+    inner_w, inner_h = layout["inner"]
+    canvas_w, canvas_h = layout["canvas"]
+    if layout["pos"]:
+        x, y = layout["pos"]
+    else:
+        x = (canvas_w - inner_w) // 2
+        y = (canvas_h - inner_h) // 2
+    return x, y, inner_w, inner_h
+
+
 def build_filtergraph(layout, is_video=False, speed=1.0, deinterlace=False,
                       tpl_idx=None, textures=None, focus=None):
     """Arma el filter_complex completo: medio (des-entrelazado + velocidad +
@@ -519,6 +540,77 @@ def build_command(ffmpeg_exe, media_path, audio_path, output_path, duration, aud
     if duration:
         cmd += ["-t", f"{duration:.3f}"]
     cmd += ["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", output_path]
+    return cmd
+
+
+# Una imagen quieta se exporta como una unidad corta repetida por COPIA
+# directa (fase 1 + fase 2, igual que un clip de video) en vez de encodear el
+# video entero. Medido sobre un beat de 2:26 a 2560x1440, con el mismo
+# veryfast crf 18 en todos los casos:
+#
+#   una pasada, keyframe cada 2s (lo de antes): 13.4 s | 100.2 MB | 73 keyframes
+#   una pasada, keyframe cada 25s:              10.3 s |  10.5 MB |  6 keyframes
+#   unidad de 25s + copia, keyframe cada 25s:    2.8 s |   9.6 MB |  6 keyframes
+#
+# Son DOS palancas distintas y conviene no confundirlas (se confundieron una
+# vez ya):
+#
+# 1. EL TIEMPO lo decide la unidad repetida, no el keyframe. Los 13 s se iban
+#    en pasar el filtergraph -- escalar, recortar, plantilla, texturas -- por
+#    los 1460 fotogramas de a uno. Procesando 250 y clonando el resto: 4.8x.
+#    Bajar solo el keyframe, sin la unidad, apenas ahorraba 3 s.
+# 2. EL PESO lo decide cada cuanto va un fotograma clave. Un keyframe es la
+#    imagen entera comprimida; los del medio, con la foto quieta, son todos
+#    "no cambio nada" y no ocupan practicamente nada. Los 73 keyframes de
+#    1440p eran los 100 MB.
+#
+# El GOP largo no cambia NADA de lo que se ve: entre keyframes no hay nada que
+# pueda cambiar, y decodificar fotogramas vacios es instantaneo. La guia de
+# subida de YouTube pide uno cada 2s, pero eso apunta a material CON
+# movimiento -- aca es plata tirada, y es decision explicita del usuario
+# despues de ver estos numeros. Los clips de VIDEO no se tocan: siguen con su
+# keyframe cada 2s en build_compose_command.
+STILL_UNIT_SECONDS = 25.0
+STILL_FPS = 10
+
+
+def build_still_unit_command(ffmpeg_exe, media_path, temp_path, layout, seconds,
+                             template_path=None, textures=None, focus=None):
+    """FASE 1 para imagenes fijas: compone una unidad corta
+    (STILL_UNIT_SECONDS) en un mp4 sin audio, con GOP cerrado y un solo
+    fotograma-clave, lista para que la fase 2 la repita por copia directa
+    hasta cubrir el beat."""
+    cmd = [ffmpeg_exe, "-y", "-loop", "1", "-framerate", "1", "-i", media_path]
+    idx = 1
+    tpl_idx = None
+    if template_path:
+        cmd += ["-i", template_path]
+        tpl_idx = idx
+        idx += 1
+    tex_layers = []
+    for path, mode, opacity, video_scale in (textures or []):
+        cmd += ["-i", path]
+        tex_layers.append((idx, mode, opacity, video_scale))
+        idx += 1
+    fc = build_filtergraph(
+        layout, is_video=False, tpl_idx=tpl_idx, textures=tex_layers, focus=focus,
+    )
+    # Un unico fotograma-clave por unidad: el GOP acompana a la unidad, asi
+    # que el video final termina con uno cada STILL_UNIT_SECONDS.
+    gop = str(max(1, int(round(seconds * STILL_FPS))))
+    cmd += [
+        "-filter_complex", fc, "-map", "[vout]", "-an",
+        "-t", f"{seconds:.3f}", "-r", str(STILL_FPS),
+        "-c:v", "libx264", *VIDEO_QUALITY_ARGS,
+        "-g", gop, "-keyint_min", gop,
+        "-pix_fmt", "yuv420p", "-tune", "stillimage",
+        # GOP cerrado y misma escala de tiempos que build_compose_command,
+        # para que el concat de la fase 2 no deje saltos entre repeticiones.
+        "-flags", "+cgop",
+        "-video_track_timescale", "15360",
+        "-progress", "pipe:1", "-nostats",
+        temp_path,
+    ]
     return cmd
 
 

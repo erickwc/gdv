@@ -337,7 +337,12 @@
     <!-- ---------------------------------------------------- previsualizador -->
     <main class="preview-panel">
       <div class="preview-surface" id="preview-surface">
+        <!-- El bloque mide lo que el TEXTO, no el hueco entero: un click en
+             cualquier parte del previsualizador abria el explorador de
+             archivos sin querer. Soltar archivos sigue valiendo en toda la
+             ventana (lo escucha el body, ver drop-handler.js). -->
         <div class="dropzone" id="preview-dropzone">
+          <span class="dropzone-art" aria-hidden="true">📂</span>
           <p class="dropzone-title">Suelta aquí tus dos archivos</p>
           <p class="dropzone-sub">o haz clic para buscarlos, o pega una imagen con Ctrl+V</p>
         </div>
@@ -471,7 +476,7 @@
             </svg>
           </span>
           <span class="cover-option-title">Completa</span>
-          <span class="cover-option-sub">1920 × 1080</span>
+          <span class="cover-option-sub" id="cover-size-full">1920 × 1080</span>
         </button>
         <button type="button" class="cover-option" data-value="empty"
                 title="Solo el recuadro de la plantilla, sin el marco">
