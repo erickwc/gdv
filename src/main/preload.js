@@ -13,6 +13,14 @@ contextBridge.exposeInMainWorld("api", {
   // Ruta real de un archivo soltado (drag&drop) -- reemplaza el
   // pywebviewFullPath que pywebview inyectaba en cada File.
   getPathForFile: (file) => webUtils.getPathForFile(file),
+  // Angosta la ventana al ancho del panel (o la devuelve a su ancho de
+  // antes con null) cuando se cierra/abre el previsualizador -- el renderer
+  // no puede cambiar el tamano de su propia ventana.
+  collapsePreviewWindow: (width) => ipcRenderer.invoke("window-collapse-preview", width),
+  // La ventana es resizable:false y en Windows eso tambien le prohibe la
+  // pantalla completa -- hay que destrabarla justo antes de pedirla (ver
+  // toggleExpand en app.js).
+  setWindowResizable: (resizable) => ipcRenderer.invoke("window-set-resizable", resizable),
   showPreviewWindow: (dataUri) => ipcRenderer.invoke("preview-show", dataUri),
   showPreviewVideo: (src) => ipcRenderer.invoke("preview-show-video", src),
   hidePreviewWindow: () => ipcRenderer.invoke("preview-hide"),

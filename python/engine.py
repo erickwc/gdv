@@ -15,8 +15,24 @@ import tempfile
 
 from PIL import Image
 
-MAX_WIDTH = 1920
-MAX_HEIGHT = 1080
+# Lienzo de salida. 1440p y no 1080p por como reencodea YouTube, que es el
+# unico destino de estos videos: hasta 1080p te da AVC a ~5 Mbps; de 1440p
+# para arriba pasa a VP9/AV1 y reparte MUCHO mas bitrate. Medido sobre el caso
+# real (clip descargado por link + textura de grano + fondo oscuro saturado),
+# el archivo local ya se veia bien a 1080p y aun asi subido se veia sucio: el
+# cuello de botella no era el encode de aca sino el codec que elige YouTube.
+#
+# Ademas los clips que baja el descargador vienen a 1440p (ver el format de
+# yt-dlp en api.py, height<=1440): a 1080p se estaba tirando resolucion que ya
+# se tenia -- el recorte cuadrado pasaba de 1440x1440 a 1080x1080 antes de
+# encodear.
+#
+# Costo: una plantilla de 1920x1080 se amplia al lienzo (template_canvas_box
+# ya la escala y centra), asi que su texto ablanda un poco. Se arregla
+# exportando la plantilla a 2560x1440 desde el editor, no hace falta tocar
+# nada de codigo.
+MAX_WIDTH = 2560
+MAX_HEIGHT = 1440
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".gif"}
@@ -68,9 +84,15 @@ BLEND_MODES = {
 # CRF, no por el tope). El peso final tambien escala con la duracion de la
 # cancion (el video hace loop hasta el final del beat) -- eso no lo controla
 # ningun ajuste de codificacion.
+# El tope se escala junto con el lienzo (ver MAX_WIDTH): a 1080p este crf daba
+# ~11 Mbps, muy por debajo de los 18 permitidos -- o sea el tope no llegaba a
+# actuar, que es justo su papel (frenar un archivo desbocado, no recortar
+# contenido normal). A 1440p son 1.78x los pixeles y el MISMO material pide
+# ~20 Mbps: dejando 18M el tope pasaria a morder siempre, metiendo a x264 en
+# modo VBV y ahogandolo. 32M/64M mantiene el mismo margen relativo que habia.
 VIDEO_QUALITY_ARGS = [
     "-preset", "veryfast", "-crf", "18",
-    "-maxrate", "18M", "-bufsize", "36M",
+    "-maxrate", "32M", "-bufsize", "64M",
 ]
 
 # Para el preview del loop (request_loop_preview): se descarta apenas se ve,
@@ -350,7 +372,12 @@ def build_filtergraph(layout, is_video=False, speed=1.0, deinterlace=False,
     Los clips de video salen a 30 fps constantes para que el loop por copia
     directa sea perfectamente uniforme (sin glitches).
 
-    textures: lista de (indice_de_entrada, modo_ffmpeg, opacidad_0_a_1)."""
+    textures: lista de (indice_de_entrada, modo_ffmpeg, opacidad_0_a_1,
+    escala_si_es_video). El ultimo campo es None cuando la textura es una
+    imagen: ahi la escala ya viene horneada en el mosaico que arma
+    Api._prepare_texture. Cuando la textura es un VIDEO no hay mosaico
+    posible (PIL no lo abre), asi que llega la ruta cruda y la escala se
+    aplica aca como zoom sobre el fotograma."""
     inner_w, inner_h = layout["inner"]
     canvas_w, canvas_h = layout["canvas"]
 
@@ -387,17 +414,42 @@ def build_filtergraph(layout, is_video=False, speed=1.0, deinterlace=False,
     # Cada textura se mezcla en RGB plano (gbrp), igual que Photoshop,
     # escalada al mismo tamano de la foto (no del lienzo completo), encima
     # del resultado de la capa anterior -- asi se pueden apilar varias.
-    for i, (tex_idx, tex_mode, tex_opacity) in enumerate(textures or []):
+    for i, (tex_idx, tex_mode, tex_opacity, tex_video_scale) in enumerate(textures or []):
         texs_label = f"texs{i}"
         basef_label = f"basef{i}"
         out_label = f"textured{i}"
-        parts.append(
-            f"[{tex_idx}:v]scale={inner_w}:{inner_h}:force_original_aspect_ratio=increase,"
-            f"crop={inner_w}:{inner_h},format=gbrp[{texs_label}]"
-        )
+        if tex_video_scale is None:
+            # Imagen: ya viene tileada al tamano del lienzo.
+            tex_chain = (
+                f"scale={inner_w}:{inner_h}:force_original_aspect_ratio=increase,"
+                f"crop={inner_w}:{inner_h}"
+            )
+            # blend por defecto repite el ultimo fotograma del segundo
+            # stream (repeatlast) -- por eso una imagen de un solo frame
+            # alcanza para todo el clip.
+            blend_extra = ""
+        else:
+            # Video: la escala es un zoom sobre el fotograma (no un mosaico),
+            # y nunca por debajo del 100% -- mas chico que el lienzo dejaria
+            # huecos, y repetir un video en mosaico no se puede con un solo
+            # filtro. El fps fijo evita que un clip de 24 o 60 tenga que
+            # ajustarlo framesync a mitad de la mezcla.
+            zoom = max(100, int(round(tex_video_scale))) / 100.0
+            zw, zh = int(round(inner_w * zoom)), int(round(inner_h * zoom))
+            fps_part = "fps=30," if is_video else ""
+            tex_chain = (
+                f"{fps_part}scale={zw}:{zh}:force_original_aspect_ratio=increase,"
+                f"crop={inner_w}:{inner_h}"
+            )
+            # La entrada viene con -stream_loop -1 (ver build_command /
+            # build_compose_command): sin shortest la mezcla esperaria a que
+            # termine un stream infinito y el encode no cerraria nunca.
+            blend_extra = ":shortest=1"
+        parts.append(f"[{tex_idx}:v]{tex_chain},format=gbrp[{texs_label}]")
         parts.append(f"[{last}]format=gbrp[{basef_label}]")
         parts.append(
-            f"[{basef_label}][{texs_label}]blend=all_mode={tex_mode}:all_opacity={tex_opacity:.3f}[{out_label}]"
+            f"[{basef_label}][{texs_label}]"
+            f"blend=all_mode={tex_mode}:all_opacity={tex_opacity:.3f}{blend_extra}[{out_label}]"
         )
         last = out_label
 
@@ -424,7 +476,16 @@ def build_filtergraph(layout, is_video=False, speed=1.0, deinterlace=False,
 def build_command(ffmpeg_exe, media_path, audio_path, output_path, duration, audio_args,
                   layout, template_path=None, textures=None, focus=None):
     """Pasada unica para imagenes fijas (el video es barato a 10 fps)."""
-    cmd = [ffmpeg_exe, "-y", "-loop", "1", "-framerate", "1", "-i", media_path, "-i", audio_path]
+    # Con una textura de VIDEO encima, la imagen deja de ser un fotograma
+    # quieto: el conjunto tiene que correr a 30 fps o la textura avanzaria un
+    # frame por segundo (se veria a tirones). Cuesta mas encodear, pero es lo
+    # que hay: sin movimiento no tiene sentido usar un video de textura.
+    has_video_texture = any(t[3] is not None for t in (textures or []))
+    base_fps = "30" if has_video_texture else "1"
+    out_fps = "30" if has_video_texture else "10"
+    gop = "60" if has_video_texture else "20"
+    cmd = [ffmpeg_exe, "-y", "-loop", "1", "-framerate", base_fps, "-i", media_path,
+           "-i", audio_path]
     idx = 2
     tpl_idx = None
     if template_path:
@@ -432,21 +493,25 @@ def build_command(ffmpeg_exe, media_path, audio_path, output_path, duration, aud
         tpl_idx = idx
         idx += 1
     tex_layers = []
-    for path, mode, opacity in (textures or []):
+    for path, mode, opacity, video_scale in (textures or []):
+        # -stream_loop -1 va ANTES de su -i: repite la textura todo lo que
+        # dure el video (los clips de textura suelen ser de pocos segundos).
+        if video_scale is not None:
+            cmd += ["-stream_loop", "-1"]
         cmd += ["-i", path]
-        tex_layers.append((idx, mode, opacity))
+        tex_layers.append((idx, mode, opacity, video_scale))
         idx += 1
     fc = build_filtergraph(
         layout, is_video=False, tpl_idx=tpl_idx, textures=tex_layers, focus=focus,
     )
     cmd += [
         "-filter_complex", fc, "-map", "[vout]", "-map", "1:a:0",
-        "-r", "10",
+        "-r", out_fps,
         "-c:v", "libx264", *VIDEO_QUALITY_ARGS,
-        # Keyframe cada 2s (20 frames a 10 fps) -- ver el comentario igual
-        # en build_compose_command sobre por que hace falta esto para
-        # YouTube, aunque aca la imagen no cambie entre keyframes.
-        "-g", "20", "-keyint_min", "20",
+        # Keyframe cada 2s -- ver el comentario igual en
+        # build_compose_command sobre por que hace falta esto para YouTube,
+        # aunque aca la imagen no cambie entre keyframes.
+        "-g", gop, "-keyint_min", gop,
         "-pix_fmt", "yuv420p", "-tune", "stillimage",
         *audio_args,
         "-shortest",
@@ -482,9 +547,13 @@ def build_compose_command(ffmpeg_exe, media_path, temp_path, layout, trim=None, 
         tpl_idx = idx
         idx += 1
     tex_layers = []
-    for path, mode, opacity in (textures or []):
+    for path, mode, opacity, video_scale in (textures or []):
+        # Ver el comentario en build_command: -stream_loop -1 antes del -i
+        # para que una textura de 3 segundos cubra un loop de 20.
+        if video_scale is not None:
+            cmd += ["-stream_loop", "-1"]
         cmd += ["-i", path]
-        tex_layers.append((idx, mode, opacity))
+        tex_layers.append((idx, mode, opacity, video_scale))
         idx += 1
     fc = build_filtergraph(
         layout, is_video=True, speed=speed, deinterlace=deinterlace,

@@ -58,19 +58,28 @@ def _image_to_data_uri(img, fmt="PNG"):
     return f"data:{mime};base64,{encoded}"
 
 
-def _thumb_for(path, cache):
+def _thumb_for(path, cache, ffmpeg_exe=None):
     """Miniatura chica (data URI) para una tarjeta de galeria, con cache en
     memoria por ruta -- list_templates()/list_available_textures() se
     llaman seguido (cada refresh) y releer+reescalar el archivo cada vez
-    seria trabajo de disco de sobra."""
+    seria trabajo de disco de sobra.
+
+    Una textura puede ser un video (ver add_texture_layer): PIL no los abre,
+    asi que con ffmpeg_exe se saca el primer fotograma como miniatura."""
     cached = cache.get(path)
     if cached is not None:
         return cached
+    uri = None
     try:
-        with Image.open(path) as img:
-            thumb = img.convert("RGB").copy()
-        thumb.thumbnail((96, 96))
-        uri = _image_to_data_uri(thumb)
+        if ffmpeg_exe and os.path.splitext(path)[1].lower() in engine.VIDEO_EXTS:
+            frame = engine.extract_video_thumb(ffmpeg_exe, path, max_px=96)
+            if frame is not None:
+                uri = _image_to_data_uri(frame)
+        else:
+            with Image.open(path) as img:
+                thumb = img.convert("RGB").copy()
+            thumb.thumbnail((96, 96))
+            uri = _image_to_data_uri(thumb)
     except Exception:
         uri = None
     cache[path] = uri
@@ -114,6 +123,9 @@ class Api:
         self.output_path = None
         self.user_chose_output = False
         self.custom_output_name = ""
+        # True mientras el nombre de salida lo ponga la app (sale del beat, ver
+        # _set_audio); pasa a False en cuanto el usuario escribe uno propio.
+        self._output_name_is_auto = True
 
         self._template_paths = {}
         self._template_lock = threading.Lock()
@@ -137,6 +149,7 @@ class Api:
         self.process = None
         self.cancel_requested = False
         self._generating = False  # ver start_generation -- evita clics repetidos disparando 2 generaciones a la vez
+        self._downloading = False  # ver download_from_link -- mismo caso, con la descarga por link
         self._generation_counter = 0  # sufijo unico para los temporales de _run_ffmpeg_job (ver ahi)
         self._last_progress_emit_ts = 0.0
         self._last_ffmpeg_error = None  # tail de stderr del ultimo fallo real (ver _run_ffmpeg)
@@ -213,6 +226,10 @@ class Api:
             "custom_output_name": self.custom_output_name,
             "template_path": self.template_path,
             "template_box": self.template_box,
+            # Tamano del lienzo de salida, para que la UI lo muestre en vez de
+            # tenerlo escrito a mano (ver renderTemplateInfo en app.js): estaba
+            # fijo en "1920x1080" y quedo mintiendo al pasar el lienzo a 1440p.
+            "canvas_size": [engine.MAX_WIDTH, engine.MAX_HEIGHT],
             "texture_layers": list(self.texture_layers),
             "textures_collapsed": bool(self.config_data.get("textures_collapsed", False)),
             "presets": [p["name"] for p in self.presets],
@@ -247,6 +264,9 @@ class Api:
     def set_output_name(self, name):
         """Se llama cada vez que el usuario escribe en 'Nombre del archivo'."""
         self.custom_output_name = name or ""
+        # Escribio algo a mano: de aca en adelante ese nombre es suyo y cargar
+        # otro beat no lo pisa. Si lo borra, vuelve a ser automatico.
+        self._output_name_is_auto = not self.custom_output_name.strip()
         if self.user_chose_output and self.output_path:
             # Ya eligio carpeta con "Guardar como" -- esa carpeta se
             # respeta, pero el nombre se sigue actualizando con lo que
@@ -376,27 +396,46 @@ class Api:
         }
         if os.path.isdir(engine.TEXTURES_DIR):
             for name in sorted(os.listdir(engine.TEXTURES_DIR)):
-                if os.path.splitext(name)[1].lower() in engine.IMAGE_EXTS:
+                # Imagenes Y videos: hay texturas que son clips (grano de
+                # pelicula, fugas de luz) -- ver _texture_is_video.
+                if os.path.splitext(name)[1].lower() in (engine.IMAGE_EXTS | engine.VIDEO_EXTS):
                     display = os.path.splitext(name)[0]
                     self._texture_paths[display] = os.path.join(engine.TEXTURES_DIR, name)
 
     def list_available_textures(self):
         self._refresh_available_textures()
         return [
-            {"name": d, "path": p, "thumb": _thumb_for(p, self._texture_thumb_cache)}
+            {"name": d, "path": p,
+             "thumb": _thumb_for(p, self._texture_thumb_cache, self.ffmpeg_exe)}
             for d, p in sorted(self._texture_paths.items())
         ]
 
-    def register_texture_path(self, path):
-        """Valida un archivo de imagen elegido en el dialogo nativo de
-        Electron y lo registra como textura disponible -- equivalente a lo
-        que hacia browse_texture_file() en la version pywebview antes de
-        abrir el dialogo (que aca ya abrio Electron). Devuelve la ruta o
-        None si no es una imagen valida."""
+    @staticmethod
+    def _texture_is_video(path):
+        return os.path.splitext(path)[1].lower() in engine.VIDEO_EXTS
+
+    def _texture_is_readable(self, path):
+        """True si el archivo sirve como textura: cualquier imagen que abra
+        PIL (con transparencia o sin ella -- a diferencia de la PLANTILLA,
+        que si necesita zona transparente, ver set_template) o cualquier
+        video que ffmpeg pueda leer."""
+        if self._texture_is_video(path):
+            info = engine.probe_media(self.ffmpeg_exe, path)
+            return bool(info.get("video_size"))
         try:
             with Image.open(path):
                 pass
         except Exception:
+            return False
+        return True
+
+    def register_texture_path(self, path):
+        """Valida un archivo elegido en el dialogo nativo de Electron y lo
+        registra como textura disponible -- equivalente a lo que hacia
+        browse_texture_file() en la version pywebview antes de abrir el
+        dialogo (que aca ya abrio Electron). Devuelve la ruta, o None si no
+        es una imagen ni un video legible."""
+        if not self._texture_is_readable(path):
             return None
         display = os.path.splitext(os.path.basename(path))[0]
         self._texture_paths[display] = path
@@ -443,11 +482,8 @@ class Api:
         engine.save_config(self.config_data)
 
     def add_texture_layer(self, path):
-        try:
-            with Image.open(path):
-                pass
-        except Exception as exc:
-            return {"ok": False, "error": f"No se pudo leer la textura: {exc}"}
+        if not self._texture_is_readable(path):
+            return {"ok": False, "error": "No se pudo leer esa textura (¿imagen o video válido?)."}
         display = os.path.splitext(os.path.basename(path))[0]
         self._texture_paths[display] = path
         layer = {"path": path, "blend": "Aclarar", "opacity": 47, "scale": 100}
@@ -681,6 +717,14 @@ class Api:
         self.audio_kind_text = "Audio · analizando..."
         self.audio_clip_warning = None
         self.audio_peak_db = None
+        # El nombre del beat pasa al campo "Nombre" de la UI, no solo a la ruta
+        # de salida por dentro: el usuario casi nunca lo escribia (se generaba
+        # solo y el campo se veia vacio con su "Sin titulo"), asi que ahora lo
+        # ve escrito y puede corregirlo si quiere. Solo se pisa si el nombre
+        # todavia es automatico -- si el usuario escribio algo a mano, cambiar
+        # de beat no se lo borra (ver _output_name_is_auto en set_output_name).
+        if self._output_name_is_auto:
+            self.custom_output_name = os.path.splitext(os.path.basename(path))[0]
         self._update_default_output()
         threading.Thread(target=self._measure_peak_job, args=(path,), daemon=True).start()
 
@@ -839,22 +883,64 @@ class Api:
         self.media_kind_text = f"Imagen pegada ({self.media_size[0]}x{self.media_size[1]})"
         return {"ok": True, "pasted_image": True, "state": self.get_state()}
 
+    def clipboard_image_path(self):
+        """Deja la imagen del portapapeles en un PNG temporal y devuelve su
+        ruta, SIN tocar el medio cargado -- para pegar una portada propia en el
+        modal de "Guardar portada" (ver setCoverImage en app.js).
+        paste_from_clipboard hace algo parecido pero ademas la carga como medio
+        de la app, que aca seria justo lo que no se quiere."""
+        if engine.IS_MAC:
+            for path in self._mac_clipboard_files():
+                if os.path.splitext(path)[1].lower() in engine.IMAGE_EXTS:
+                    return {"ok": True, "path": path}
+        try:
+            from PIL import ImageGrab
+            data = ImageGrab.grabclipboard()
+        except Exception as exc:
+            return {"ok": False, "error": f"No se pudo leer el portapapeles: {exc}"}
+        if data is None:
+            return {"ok": False, "empty": True}
+        if isinstance(data, list):
+            # El portapapeles trae RUTAS (se copio el archivo en el explorador,
+            # no la imagen en si): sirve la primera que sea una imagen.
+            for path in data:
+                if isinstance(path, str) and os.path.splitext(path)[1].lower() in engine.IMAGE_EXTS:
+                    return {"ok": True, "path": path}
+            return {"ok": False, "empty": True}
+        path = os.path.join(tempfile.gettempdir(), "genvideo_portada_pegada.png")
+        try:
+            data.convert("RGB").save(path, "PNG")
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "path": path}
+
     # -------------------------------------------------- preparar texturas
 
     def _current_textures(self, canvas_w, canvas_h):
         """Prepara (con cache) cada capa activa y devuelve la lista lista
-        para build_command/build_compose_command: [(ruta, modo, opacidad)]."""
+        para build_command/build_compose_command:
+        [(ruta, modo, opacidad, escala_si_es_video)].
+
+        El ultimo campo va en None para las imagenes: su escala ya quedo
+        horneada en el mosaico de _prepare_texture. Una textura de VIDEO no
+        se puede tilear con PIL, asi que va la ruta cruda y la escala viaja
+        aparte para que ffmpeg la aplique como zoom (ver build_filtergraph)."""
         textures = []
         for state in self.texture_layers:
             path = state.get("path")
             if not path:
                 continue
+            scale = state.get("scale", 100)
+            mode = engine.BLEND_MODES.get(state.get("blend", "Aclarar"), "lighten")
+            opacity = state.get("opacity", 47) / 100.0
+            if self._texture_is_video(path):
+                textures.append((path, mode, opacity, scale))
+                continue
             try:
-                prepared = self._prepare_texture(path, state.get("scale", 100), canvas_w, canvas_h)
+                prepared = self._prepare_texture(path, scale, canvas_w, canvas_h)
             except Exception:
                 prepared = path
-            mode = engine.BLEND_MODES.get(state.get("blend", "Aclarar"), "lighten")
-            textures.append((prepared, mode, state.get("opacity", 47) / 100.0))
+            textures.append((prepared, mode, opacity, None))
         return textures
 
     def _prepare_texture(self, texture_path, scale_pct, canvas_w, canvas_h):
@@ -927,9 +1013,11 @@ class Api:
             tpl_idx = idx
             idx += 1
         tex_layers = []
-        for path, mode, opacity in textures:
+        # Sin -stream_loop aca (a diferencia de build_command): esto saca UN
+        # fotograma, asi que del video de textura alcanza con su primer frame.
+        for path, mode, opacity, video_scale in textures:
             cmd += ["-i", path]
-            tex_layers.append((idx, mode, opacity))
+            tex_layers.append((idx, mode, opacity, video_scale))
             idx += 1
         fc = engine.build_filtergraph(
             layout, is_video=False, tpl_idx=tpl_idx, textures=tex_layers,
@@ -970,7 +1058,41 @@ class Api:
             return  # el usuario siguio cambiando cosas -- este resultado ya no aplica
         self._emit("onPreviewReady", {"data_uri": data_uri, "content_width_frac": content_width_frac})
 
-    def save_cover(self, loop_time=None, mode="full"):
+    def _frame_cover_image(self, source_image, hole_w, hole_h, focus):
+        """Deja la imagen propia del tamano EXACTO del hueco donde va (la
+        ventana de la plantilla, o el cuadro que dejan los bordes), aplicando el
+        encuadre que se eligio a mano en el modal:
+
+          zoom = 1  -> justo cubre el hueco (se recorta lo que sobra)
+          zoom > 1  -> mas cerca
+          zoom < 1  -> la imagen se ve COMPLETA y aparecen bordes negros, que es
+                       la salida para cuando el recorte cuadrado corta los pies
+
+        Se hace con PIL y no con filtros de ffmpeg a proposito: asi el encuadre
+        tiene UNA sola implementacion (la misma cuenta que dibuja el preview,
+        ver layoutCoverComposePreview en app.js) y el resto del pipeline no se
+        entera de nada -- la imagen ya llega con la medida justa, asi que el
+        scale/crop de build_filtergraph no la toca."""
+        zoom, fx, fy = float(focus[0]), float(focus[1]), float(focus[2])
+        with Image.open(source_image) as src:
+            img = src.convert("RGB")
+        # "Cubrir el hueco" es la referencia (zoom = 1).
+        cubrir = max(hole_w / img.width, hole_h / img.height)
+        k = cubrir * max(0.05, zoom)
+        nueva = (max(1, round(img.width * k)), max(1, round(img.height * k)))
+        img = img.resize(nueva, Image.LANCZOS)
+        lienzo = Image.new("RGB", (hole_w, hole_h), (0, 0, 0))
+        # Lo que sobra se reparte segun el foco; lo que falta queda centrado
+        # (con bordes no hay nada que pasear).
+        x = round((hole_w - nueva[0]) * (fx if nueva[0] > hole_w else 0.5))
+        y = round((hole_h - nueva[1]) * (fy if nueva[1] > hole_h else 0.5))
+        lienzo.paste(img, (x, y))
+        out = os.path.join(tempfile.gettempdir(), "genvideo_portada_encuadrada.png")
+        lienzo.save(out, "PNG")
+        return out
+
+    def save_cover(self, loop_time=None, mode="full", source_image=None, compose=True,
+                   image_focus=None):
         """Guarda uno o dos PNG con el fotograma compuesto (plantilla +
         medio + texturas) -- misma logica de composicion que
         request_preview. Va SIEMPRE junto al video recien exportado, sin
@@ -988,11 +1110,35 @@ class Api:
         "empty" (solo el recuadro de la plantilla -- ahi la plantilla ya
         es transparente, asi que recortar el mismo frame compuesto da el
         mismo resultado sin rearmar el filtro) o "both". Cae a "full" si
-        no hay plantilla cargada (no existe "parte vacia" sin plantilla)."""
-        if not self.cover_available or not self.output_path or not self.media_path:
+        no hay plantilla cargada (no existe "parte vacia" sin plantilla).
+
+        source_image: ruta de una imagen propia (la que se arrastra al modal)
+        para usarla EN VEZ de un fotograma del video -- para cuando ningun
+        momento del loop sirve como portada. compose=False NO significa
+        "copiar el archivo": significa la misma composicion pero SIN la
+        plantilla encima ni las texturas -- el recorte al cuadro de la portada
+        se mantiene igual, que es lo que se quiere ver.
+
+        image_focus: (zoom, x, y) del encuadre que el usuario eligio a mano
+        arrastrando la imagen en el modal (ver build_focus_crop en engine.py y
+        layoutCoverComposePreview en app.js, que dibuja exactamente el mismo
+        recorte)."""
+        if not self.cover_available or not self.output_path:
             return {"ok": False, "error": "No hay portada disponible."}
-        if self.media_is_video and not self.media_size:
-            return {"ok": False, "error": "Todavía se está analizando el video."}
+        if source_image:
+            try:
+                with Image.open(source_image):
+                    pass
+            except Exception:
+                return {"ok": False, "error": "Esa imagen no se pudo leer."}
+        else:
+            if not self.media_path:
+                return {"ok": False, "error": "No hay portada disponible."}
+            if self.media_is_video and not self.media_size:
+                return {"ok": False, "error": "Todavía se está analizando el video."}
+
+        folder = os.path.dirname(self.output_path)
+        base = os.path.splitext(os.path.basename(self.output_path))[0]
 
         template_box = self.template_box if self.template_path else None
         if mode not in ("full", "empty", "both") or not template_box:
@@ -1003,39 +1149,65 @@ class Api:
         )
         textures = self._current_textures(*layout["canvas"])
 
+        # "Sin componer" (compose=False, solo con imagen propia): se queda la
+        # geometria -- el mismo recorte al cuadro de la portada -- y se van la
+        # plantilla y las texturas.
+        overlay_template = self.template_path if (compose or not source_image) else None
+        if source_image and not compose:
+            textures = []
+
         cmd = [self.ffmpeg_exe, "-y"]
-        if self.media_is_video:
-            start = self.trim_start
-            if loop_time is not None:
+        if source_image:
+            # El encuadre viene del propio modal (arrastrar + pinza sobre la
+            # imagen), no del "Ajustar imagen" del panel, que es del medio
+            # cargado. Se aplica ANTES, con PIL, dejando la imagen del tamano
+            # del hueco -- asi tambien se puede encoger para que se vea
+            # completa, que con el crop de ffmpeg no se podia (ver
+            # _frame_cover_image). Sin encuadre elegido, el filtro la centra y
+            # recorta para cubrir el hueco, igual que a una foto cualquiera.
+            focus = None
+            if image_focus:
                 try:
-                    speed = float(self.speed.rstrip("x"))
-                except ValueError:
-                    speed = 1.0
-                start = self.trim_start + max(0.0, loop_time) * speed
-                start = min(start, max(self.trim_start, self.trim_end - 0.05))
-            if self.media_duration:
-                start = min(start, max(0.0, self.media_duration - 0.5))
-            if start > 0:
-                cmd += ["-ss", f"{start:.3f}"]
-        cmd += ["-i", self.media_path]
+                    source_image = self._frame_cover_image(
+                        source_image, layout["inner"][0], layout["inner"][1], image_focus,
+                    )
+                except Exception:
+                    pass  # si algo falla, sigue con la imagen cruda y el recorte de siempre
+            cmd += ["-i", source_image]
+        else:
+            focus = self.current_focus()
+            if self.media_is_video:
+                start = self.trim_start
+                if loop_time is not None:
+                    try:
+                        speed = float(self.speed.rstrip("x"))
+                    except ValueError:
+                        speed = 1.0
+                    start = self.trim_start + max(0.0, loop_time) * speed
+                    start = min(start, max(self.trim_start, self.trim_end - 0.05))
+                if self.media_duration:
+                    start = min(start, max(0.0, self.media_duration - 0.5))
+                if start > 0:
+                    cmd += ["-ss", f"{start:.3f}"]
+            cmd += ["-i", self.media_path]
         idx = 1
         tpl_idx = None
-        if self.template_path:
-            cmd += ["-i", self.template_path]
+        if overlay_template:
+            cmd += ["-i", overlay_template]
             tpl_idx = idx
             idx += 1
         tex_layers = []
-        for path, tex_mode, opacity in textures:
+        # Igual que en request_preview: una portada es un fotograma, el
+        # primero del video de textura sirve y no hace falta repetirlo.
+        for path, tex_mode, opacity, video_scale in textures:
             cmd += ["-i", path]
-            tex_layers.append((idx, tex_mode, opacity))
+            tex_layers.append((idx, tex_mode, opacity, video_scale))
             idx += 1
         fc = engine.build_filtergraph(
             layout, is_video=False, tpl_idx=tpl_idx, textures=tex_layers,
-            focus=self.current_focus(),
+            focus=focus,
         )
 
-        folder = os.path.dirname(self.output_path)
-        base = os.path.splitext(os.path.basename(self.output_path))[0]
         outputs = []  # (etiqueta del filtro, ruta de salida)
         vout_label = "[vout]"
         if mode == "both":
@@ -1319,7 +1491,8 @@ class Api:
                     if returncode == 0 or self.cancel_requested:
                         break
             else:
-                # Imagenes: una sola pasada (ya es rapida a 10 fps)
+                # Imagenes: una sola pasada (ya es rapida a 10 fps -- o a 30
+                # si hay una textura de VIDEO encima, ver build_command).
                 self._push_status(f"Generando video a {width}x{height}{tpl_note}...")
                 returncode = -1
                 for strategy in strategies:
@@ -1407,6 +1580,10 @@ class Api:
             payload = {
                 "ok": True,
                 "message": f"Listo: {os.path.basename(self.output_path)}",
+                # El nombre suelto, sin el "Listo:" de adelante: la tarjeta de
+                # resultado del pie lo muestra tal cual (ver showResultCard en
+                # app.js) en vez de tener que recortarle el prefijo al mensaje.
+                "filename": os.path.basename(self.output_path),
                 "cover_available": True,
             }
         elif self.cancel_requested:
@@ -1454,10 +1631,33 @@ class Api:
         url = (url or "").strip()
         if not re.match(r"https?://", url):
             return {"ok": False, "error": "Pega un link válido (que empiece con https://)."}
+        if self._downloading:
+            # Mismo caso que start_generation, con la descarga: el campo del
+            # link se deshabilita del lado de JS DESPUES de que esta llamada
+            # responde, y con el campo deshabilitado el foco se va al body
+            # -- ahi el Ctrl+V global de app.js deja de abstenerse y un
+            # segundo pegado arranca OTRA descarga. Las dos escriben el
+            # mismo archivo temporal (genvideo_descarga.*) y encima cada
+            # trabajo borra los parciales que encuentra al arrancar, asi que
+            # se cortaban la descarga entre ellas; en la UI se veia como que
+            # el porcentaje iba y venia (5% -> 3% -> 6%...), porque los dos
+            # hilos empujaban su propio avance al mismo cartel. La bandera
+            # se prende ACA MISMO, sincronico, antes de responder.
+            return {"ok": False, "error": "Ya hay una descarga en curso."}
+        self._downloading = True
         threading.Thread(target=self._download_job, args=(url,), daemon=True).start()
         return {"ok": True}
 
     def _download_job(self, url):
+        try:
+            self._download_job_inner(url)
+        finally:
+            # Pase lo que pase (incluso un error inesperado que no llegue a
+            # avisar a la UI): sin esto la bandera se quedaba prendida y no
+            # se podia descargar mas nada hasta reiniciar la app.
+            self._downloading = False
+
+    def _download_job_inner(self, url):
         tmpdir = tempfile.gettempdir()
         for name in os.listdir(tmpdir):
             if name.startswith("genvideo_descarga."):
@@ -1503,18 +1703,51 @@ class Api:
     def _download_video(self, url, tmpdir):
         from yt_dlp import YoutubeDL
 
+        # El porcentaje que reportaba yt-dlp RETROCEDIA a mitad de la
+        # descarga (se veia 5% y volvia a 3%, y asi todo el rato): los
+        # formatos de YouTube arriba de 720p vienen en fragmentos (DASH) y
+        # ahi no hay tamano total real, solo total_bytes_estimate, que
+        # yt-dlp recalcula con cada fragmento -- si el estimado crece, los
+        # mismos bytes bajados valen menos por ciento. Si encima un
+        # fragmento se reintenta (retries/fragment_retries mas abajo),
+        # downloaded_bytes puede arrancar de cero otra vez.
+        # Solucion, en dos partes:
+        #   1. contar por FRAGMENTOS cuando se sabe cuantos son -- ese
+        #      indice solo avanza, no depende de ninguna estimacion;
+        #   2. nunca mostrar un numero menor al ya mostrado (shown), que
+        #      cubre el resto de los casos.
+        shown = {"pct": -1}
+
+        def percent_of(d):
+            total = d.get("total_bytes")
+            frag_count = d.get("fragment_count")
+            if not total and frag_count:
+                return (d.get("fragment_index") or 0) * 100.0 / frag_count
+            total = total or d.get("total_bytes_estimate")
+            if not total:
+                return None
+            return (d.get("downloaded_bytes") or 0) * 100.0 / total
+
         def hook(d):
             if d.get("status") == "downloading":
-                # _percent_str viene como "  45.2%" (con espacios de relleno
-                # para alinear en terminal) -- se redondea a entero para un
-                # texto mas simple en la UI ("Descargando 45%").
-                raw = (d.get("_percent_str") or "").strip().rstrip("%")
-                try:
-                    pct = f"{round(float(raw))}%"
-                except ValueError:
-                    pct = ""
-                self._push_download_status(f"Descargando {pct}".rstrip())
+                pct = percent_of(d)
+                if pct is None:
+                    # Ni total ni fragmentos (streams sin tamano declarado):
+                    # al menos avisar que algo esta pasando, una sola vez.
+                    if shown["pct"] < 0:
+                        shown["pct"] = 0
+                        self._push_download_status("Descargando...")
+                    return
+                # El 100% queda reservado para el "finished" de abajo: llegar
+                # a 100 y quedarse ahi un rato mientras yt-dlp cierra el
+                # archivo se lee como que se colgo.
+                pct = max(shown["pct"], min(99, int(pct)))
+                if pct == shown["pct"]:
+                    return  # mismo entero que la ultima vez: nada nuevo que mostrar
+                shown["pct"] = pct
+                self._push_download_status(f"Descargando {pct}%")
             elif d.get("status") == "finished":
+                shown["pct"] = 100
                 self._push_download_status("Procesando la descarga...")
 
         opts = {
@@ -1548,6 +1781,16 @@ class Api:
             # a la UI aunque este hook ya lo calculaba bien.
             "noprogress": True,
             "progress_hooks": [hook],
+            # yt-dlp necesita un motor de JavaScript para resolver las firmas
+            # de YouTube (los "sig"/"n challenge" que la pagina calcula en
+            # JS). Sin ninguno descarta casi todos los formatos y el
+            # extractor acaba pidiendo cookies -- el error que salia era
+            # "Sign in to confirm you're not a bot", que despistaba porque el
+            # problema no era la sesion sino el motor faltante (con -v se ve
+            # el verdadero: "JS runtimes: none"). yt-dlp solo habilita deno
+            # por defecto: se declaran los tres que soporta y usa el que este
+            # instalado (aca node, que ya viene con el entorno de Electron).
+            "js_runtimes": {"deno": {}, "node": {}, "bun": {}},
             "ffmpeg_location": self.ffmpeg_exe,
             "merge_output_format": "mp4",
             # Este video en particular (probado varias veces) corta la

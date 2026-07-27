@@ -8,7 +8,18 @@
 // lo maneja app.js (setupDragHighlight) sin cambios -- esto solo agrega el
 // "drop" que faltaba.
 (function () {
+  // Mismas listas que engine.py (IMAGE_EXTS/VIDEO_EXTS). Las texturas
+  // aceptan las dos: hay texturas que son clips (grano de pelicula, fugas de
+  // luz) para poner encima del medio y debajo de la plantilla. Ninguna de las
+  // dos necesita transparencia -- eso es cosa de la plantilla.
   const IMAGE_EXTS = [".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"];
+  const VIDEO_EXTS = [".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".gif"];
+  const TEXTURE_EXTS = [...IMAGE_EXTS, ...VIDEO_EXTS];
+
+  function showStatus(text) {
+    const status = document.getElementById("status-text");
+    if (status) status.textContent = text;
+  }
 
   function pathsFromDrop(e) {
     const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
@@ -47,7 +58,12 @@
 
     bind("#template-section", (e) => {
       const png = pathsFromDrop(e).find((p) => p.toLowerCase().endsWith(".png"));
-      if (!png) return;
+      // Mismo caso que en #texture-section: sin este aviso, soltar un JPG
+      // aca no hacia absolutamente nada.
+      if (!png) {
+        showStatus("La plantilla tiene que ser un PNG con zona transparente.");
+        return;
+      }
       window.api.call("set_template", png).then((result) => {
         // set_template rechaza cualquier PNG sin zona transparente (asi
         // funciona una plantilla) -- sin esto, arrastrar una foto comun
@@ -61,10 +77,18 @@
     });
 
     bind("#texture-section", (e) => {
-      const paths = pathsFromDrop(e).filter((p) =>
-        IMAGE_EXTS.includes(p.slice(p.lastIndexOf(".")).toLowerCase())
+      const dropped = pathsFromDrop(e);
+      const paths = dropped.filter((p) =>
+        TEXTURE_EXTS.includes(p.slice(p.lastIndexOf(".")).toLowerCase())
       );
-      if (!paths.length) return;
+      // Antes un archivo que no entraba en la lista se descartaba sin decir
+      // nada (el drop de la seccion corta la propagacion, asi que tampoco
+      // llegaba al del body) -- parecia que la app lo habia ignorado por
+      // gusto.
+      if (!paths.length) {
+        if (dropped.length) showStatus("Esa textura tiene que ser una imagen o un video.");
+        return;
+      }
       let lastAdded = null;
       const adds = paths.map((path) =>
         window.api.call("add_texture_layer", path).then((result) => {

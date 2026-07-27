@@ -22,13 +22,16 @@ const runningDropdown = new WeakMap();
 // (positionFloatingDropdown necesita el scrollHeight real, que solo existe
 // con el elemento visible) -- esta funcion solo anima, y al cerrar recien
 // pone [hidden] cuando la animacion termina.
-function animateDropdown(el, opening) {
+// fromBelow: para paneles que se abren HACIA ARRIBA (el de "Guardar portada",
+// que cuelga de un boton que vive al pie del panel). Sin esto entraba bajando,
+// como si viniera de arriba, y no se leia que sale del boton.
+function animateDropdown(el, opening, fromBelow) {
   if (!el) return;
   const prev = runningDropdown.get(el);
   if (prev) prev.cancel();
 
   const keyframes = [
-    { opacity: 0, transform: "translateY(-6px) scale(0.97)" },
+    { opacity: 0, transform: `translateY(${fromBelow ? 10 : -6}px) scale(0.97)` },
     { opacity: 1, transform: "translateY(0) scale(1)" },
   ];
   if (!opening) keyframes.reverse();

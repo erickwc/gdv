@@ -30,7 +30,27 @@ async function showOpenTemplateDialog(win) {
 async function showOpenTextureDialog(win) {
   const result = await dialog.showOpenDialog(win, {
     properties: ["openFile"],
-    filters: [{ name: "Imagen", extensions: IMAGE_EXTS }],
+    // Imagenes Y videos: una textura puede ser un clip (grano, fugas de luz)
+    // que va encima del medio y debajo de la plantilla. No pide transparencia
+    // -- eso solo aplica a la plantilla (ver showOpenTemplateDialog).
+    filters: [
+      { name: "Imagen o video", extensions: [...IMAGE_EXTS, ...VIDEO_EXTS] },
+      { name: "Todos los archivos", extensions: ["*"] },
+    ],
+  });
+  return result.canceled ? null : result.filePaths[0];
+}
+
+// Imagen propia para usar de portada (el clic en el mini preview del modal
+// "Guardar portada") -- solo imagenes, y no registra nada en Python: la ruta
+// se la queda el renderer hasta que se guarda.
+async function showOpenCoverImageDialog(win) {
+  const result = await dialog.showOpenDialog(win, {
+    properties: ["openFile"],
+    filters: [
+      { name: "Imagen", extensions: IMAGE_EXTS },
+      { name: "Todos los archivos", extensions: ["*"] },
+    ],
   });
   return result.canceled ? null : result.filePaths[0];
 }
@@ -47,5 +67,6 @@ module.exports = {
   showOpenMediaDialog,
   showOpenTemplateDialog,
   showOpenTextureDialog,
+  showOpenCoverImageDialog,
   showSaveOutputDialog,
 };

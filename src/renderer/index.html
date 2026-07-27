@@ -15,49 +15,95 @@
   </script>
 
   <!-- Fondo detras de todo -- position:fixed (no lo recorta el
-       overflow:hidden de .app-root) + z-index:-1. Imagen estatica
-       (background.png) con el mismo grano ya horneado en los pixeles
-       (exportada del mismo diseno de Figma que el SVG anterior) -- mas
-       simple que mantener los filtros SVG encadenados inline. Ver
-       .background en styles.css. -->
-  <div class="background"></div>
-  <!-- Fondo "Silk Aurora" (aurora abstracta retintada al color de la
-       imagen/video cargado, ver tintBackgroundFromImage en
-       silk-aurora-background.js) -- activo de nuevo. "Halftone CMYK"
-       (trama la imagen real, halftone-background.js) queda comentado; para
-       volver a ese, comentar la linea de abajo y descomentar la de
-       halftone-background.js. -->
-  <script src="silk-aurora-background.js"></script>
+       overflow:hidden de .app-root) + z-index:-1. SVG inline (no
+       background-image) para que background-tint.js pueda tocar el fill
+       de los blobs directo por DOM -- ver .background en styles.css. -->
+  <div class="background">
+    <svg id="bg-svg" viewBox="0 0 1352 860" preserveAspectRatio="xMidYMid slice" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <g clip-path="url(#clip0_37_170)">
+        <rect width="1352" height="860" rx="8" fill="#221F1F"/>
+        <g opacity="0.25" filter="url(#filter0_f_37_170)">
+          <path id="bg-blob-1" d="M457.524 718.297C202.738 973.525 41.0983 610.602 -137.961 1108.41L-97.7669 1209.23L208.361 1461.15L1210.65 787.402L1550.49 306.363C1449.16 221.515 980.817 179.42 1002.49 323.944C1037.05 554.446 755.968 362.769 639.153 293.778C522.338 224.787 712.31 463.07 457.524 718.297Z" fill="#5500FF"/>
+        </g>
+        <g opacity="0.25" filter="url(#filter1_f_37_170)">
+          <path id="bg-blob-2" d="M541.692 845.305C286.906 1100.53 125.266 737.61 -53.7931 1235.42L-13.599 1336.24L292.529 1588.16L1294.81 914.41L1634.66 433.37C1533.33 348.523 1064.99 306.427 1086.66 450.952C1121.22 681.454 840.136 489.776 723.321 420.785C606.506 351.794 796.478 590.078 541.692 845.305Z" fill="#C3A7FA"/>
+        </g>
+        <g opacity="0.25" filter="url(#filter2_f_37_170)">
+          <path d="M636.412 992.11C381.626 1247.34 219.987 884.415 40.9276 1382.23L81.1217 1483.04L387.25 1734.97L1389.53 1061.22L1729.38 580.176C1628.05 495.328 1159.71 453.233 1181.38 597.757C1215.94 828.259 934.856 636.581 818.041 567.59C701.226 498.599 891.198 736.883 636.412 992.11Z" fill="white"/>
+        </g>
+      </g>
+      <rect x="0.5" y="0.5" width="1351" height="859" rx="7.5" stroke="white" stroke-opacity="0.12"/>
+      <defs>
+        <filter id="filter0_f_37_170" x="-297.961" y="68.896" width="2008.46" height="1552.26" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+          <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+          <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+          <feGaussianBlur stdDeviation="80" result="effect1_foregroundBlur_37_170"/>
+        </filter>
+        <filter id="filter1_f_37_170" x="-213.793" y="195.904" width="2008.46" height="1552.26" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+          <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+          <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+          <feGaussianBlur stdDeviation="80" result="effect1_foregroundBlur_37_170"/>
+        </filter>
+        <filter id="filter2_f_37_170" x="-119.072" y="342.709" width="2008.46" height="1552.26" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+          <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+          <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+          <feGaussianBlur stdDeviation="80" result="effect1_foregroundBlur_37_170"/>
+        </filter>
+        <clipPath id="clip0_37_170">
+          <rect width="1352" height="860" rx="8" fill="white"/>
+        </clipPath>
+      </defs>
+    </svg>
+  </div>
+  <!-- Retinta bg-blob-1/2 de arriba al color dominante de la imagen/video
+       cargado -- ver tintBackgroundFromImage en background-tint.js. -->
+  <script src="background-tint.js"></script>
+  <!-- Fondos anteriores del rediseno, desactivados (ver conversacion). -->
+  <!-- <script src="silk-aurora-background.js"></script> -->
   <!-- <script type="module" src="halftone-background.js"></script> -->
 
   <div class="app-root">
 
-    <!-- Barra de titulo propia -- titleBarStyle "hidden" deja solo los
-         botones nativos de minimizar/cerrar (o los 3 semaforos en Mac),
-         dibujados por el sistema ARRIBA de todo el contenido; esta barra
-         les da un fondo propio (parte del mismo gradiente de toda la app)
-         para que no floten sueltos. El resto de la franja (a la izquierda
-         del toggle) es arrastrable. -->
-    <div class="app-titlebar"></div>
+    <!-- Franja para arrastrar la ventana -- titleBarStyle "hidden" deja solo
+         los botones nativos de minimizar/cerrar (o los 3 semaforos en Mac),
+         dibujados por el sistema ARRIBA de todo el contenido, y quita la
+         barra del sistema: sin esta franja la ventana no se puede mover.
+         No pinta nada (se ve el fondo de la app) y va como capa encima del
+         previsualizador, no como una fila del layout, para que el panel de
+         controles llegue hasta el borde de arriba -- ver .app-titlebar en
+         styles.css. -->
+    <div class="app-titlebar">
+      <!-- Cierra/abre el previsualizador: deja la ventana con solo el panel
+           de controles (y le pide a Electron que la angoste, ver
+           togglePreviewPanel en app.js). Vive en la franja de arrastre, asi
+           que necesita app-region:no-drag para poder clickearse. -->
+      <button class="titlebar-btn" id="preview-toggle-btn" title="Ocultar el previsualizador"></button>
+    </div>
 
     <div class="app-shell">
 
     <!-- ------------------------------------------------ panel de controles -->
+    <!-- El panel son 3 zonas: .quick-fields fija arriba, .control-panel-inner
+         (la unica que scrollea) en el medio y .status-block fijo abajo. Por
+         eso las 3 son hermanas y no hay una envolviendo a las otras. -->
     <aside class="control-panel">
-      <div class="control-panel-inner">
 
-        <!-- Presets -->
-        <section class="section">
-          <h2>Presets</h2>
-          <div class="control-row" id="preset-controls">
-            <div class="preset-dropdown" id="preset-dropdown">
-              <button type="button" class="preset-dropdown-trigger" id="preset-trigger">
-                <span id="preset-trigger-label">(sin presets guardados)</span>
-                <span class="preset-dropdown-chevron"></span>
-              </button>
-              <div class="preset-dropdown-list" id="preset-list" hidden></div>
+        <!-- Preset / Descargador / Nombre / Almacenar -- las 4 filas
+             label+input de arriba de todo, agrupadas juntas (ver
+             conversacion). Nombre y Almacenar vivian antes en .output-block
+             (preview-panel); se movieron aca. -->
+        <div class="quick-fields">
+          <div class="output-field">
+            <label class="output-field-label" for="preset-trigger">Preset</label>
+            <div class="control-row" id="preset-controls">
+              <div class="preset-dropdown" id="preset-dropdown">
+                <button type="button" class="preset-dropdown-trigger" id="preset-trigger">
+                  <span id="preset-trigger-label">(sin presets guardados)</span>
+                </button>
+                <div class="preset-dropdown-list" id="preset-list" hidden></div>
+              </div>
+              <button class="btn btn-icon" id="preset-save" title="Guardar preset"></button>
             </div>
-            <button class="btn btn-icon" id="preset-save" title="Guardar preset"></button>
           </div>
           <!-- Solo aparece si hay un preset activo Y modificado (asterisco) --
                guardar sobre el MISMO nombre sin preguntar seria facil de
@@ -75,25 +121,42 @@
             <button class="btn btn-icon" id="preset-save-confirm" title="Guardar"></button>
             <button class="btn btn-icon" id="preset-save-cancel" title="Cancelar"></button>
           </div>
-          <p class="hint">Guarda plantilla, textura, tamaño y velocidad actuales para reusarlos después</p>
-        </section>
 
-        <!-- Descargador de videos -->
-        <section class="section">
-          <h2>Descargador de videos</h2>
-          <div class="link-row">
-            <input type="text" id="link-input" placeholder="Pega un link de YouTube / Pinterest y descárgalo aquí">
-            <button class="btn btn-icon" id="link-btn" title="Descargar"></button>
+          <div class="output-field">
+            <label class="output-field-label" for="link-input">Descargador</label>
+            <div class="link-row">
+              <input type="text" id="link-input" placeholder="Pega un link de YouTube / Pinterest y descárgalo aquí">
+            </div>
           </div>
-          <p class="hint" id="download-status"></p>
-        </section>
+          <!-- "Descargando video..." / errores de yt-dlp -- vacio el resto
+               del tiempo (:empty en styles.css le saca el margen). -->
+          <p class="hint hint-inline" id="download-status"></p>
+          <div class="output-field">
+            <label class="output-field-label" for="project-title">Nombre</label>
+            <div class="output-title-wrap" id="output-title-wrap">
+              <input type="text" id="project-title" class="text-input output-title-input" placeholder="Sin título">
+            </div>
+          </div>
+          <div class="output-field">
+            <span class="output-field-label">Almacenar</span>
+            <div class="text-input">
+              <span id="output-label" title="Cambiar" role="button" tabindex="0">Ruta donde se almacenará el video</span>
+            </div>
+          </div>
+        </div>
+
+      <!-- Unica zona con scroll (barra oculta por CSS, ver
+           .control-panel-inner en styles.css). -->
+      <div class="control-panel-inner">
 
         <!-- Contenido del video -->
         <section class="section" id="content-section" hidden>
           <h2>Contenido del video</h2>
           <div class="chip-row" id="chip-row">
+            <!-- Sin icono a la izquierda (lo pidio el usuario): el nombre del
+                 archivo y la linea de abajo ("Video · 3:30 · 1920x1080" /
+                 "Audio · ...") ya dicen de que se trata. -->
             <div class="chip" id="media-chip" hidden>
-              <div class="chip-thumb"></div>
               <div class="chip-info">
                 <span class="chip-name">nombre_del_archivo.mp4</span>
                 <span class="chip-kind">Video · 1920x1080</span>
@@ -101,7 +164,6 @@
               <button class="btn btn-icon" title="Quitar"></button>
             </div>
             <div class="chip" id="audio-chip" hidden>
-              <div class="chip-thumb chip-thumb-audio"></div>
               <div class="chip-info">
                 <span class="chip-name">cancion.mp3</span>
                 <span class="chip-kind">Audio · 3:24</span>
@@ -111,16 +173,20 @@
           </div>
         </section>
 
-        <!-- Escala / bordes -- primero (mismo estilo de perilla que Recorte,
-             quedan juntos) y el titulo cambia solo entre "del video"/"de la
+        <!-- Escala / bordes -- misma forma que "Recorte del loop" (titulo y
+             valor arriba, perilla abajo) porque es el control que le gusta
+             al usuario. El titulo cambia solo entre "del video"/"de la
              imagen" segun el tipo de medio (ver renderScale en app.js) --
              el control tambien aplica a fotos sueltas sin plantilla. -->
         <section class="section" id="scale-section" hidden>
-          <h2 id="scale-section-title">Bordes de la imagen</h2>
-          <div class="control-row">
-            <input type="range" class="slider" id="scale-slider" min="40" max="200" value="100">
-            <input type="text" class="num-entry" id="scale-entry" value="100"><span class="unit unit-percent"></span>
+          <!-- La escala que se ve va de 0 (sin bordes) a 100 (borde maximo),
+               con 50 = el cuadrado de 1080x1080 de fabrica. No es scale_pct:
+               la conversion vive en uiToScalePct/scalePctToUi (app.js). -->
+          <div class="section-title-row">
+            <h2 id="scale-section-title">Bordes de la imagen</h2>
+            <input type="text" class="num-entry num-entry-sm" id="scale-entry" value="50">
           </div>
+          <input type="range" class="slider" id="scale-slider" min="0" max="100" value="50">
         </section>
 
         <!-- Recorte del loop / Velocidad: solo aplican a video -- pegadas
@@ -143,9 +209,10 @@
 
         <section class="section" id="speed-section" hidden>
           <h2>Velocidad</h2>
+          <!-- 0.5x y 0.75x se quitaron a pedido del usuario (nadie las usa)
+               -- el backend sigue aceptando esos valores, asi que un preset
+               viejo guardado con ellos no se rompe. -->
           <div class="segmented" id="speed-control">
-            <button class="segmented-item" data-value="0.5x">0.5x</button>
-            <button class="segmented-item" data-value="0.75x">0.75x</button>
             <button class="segmented-item segmented-active" data-value="1x">1x</button>
             <button class="segmented-item" data-value="1.25x">1.25x</button>
             <button class="segmented-item" data-value="1.5x">1.5x</button>
@@ -166,8 +233,8 @@
         <!-- Plantilla -->
         <section class="section" id="template-section">
           <div class="section-title-row">
-            <h2>Plantilla</h2>
-            <button class="btn btn-text" id="template-add-btn">+ Añadir</button>
+            <h2>Plantillas</h2>
+            <button class="btn btn-add" id="template-add-btn" title="Añadir plantilla" aria-label="Añadir plantilla"></button>
           </div>
           <div class="gallery" id="template-gallery"></div>
           <p class="hint" id="template-info" hidden></p>
@@ -177,17 +244,22 @@
         <section class="section" id="texture-section">
           <div class="section-title-row">
             <h2>Texturas</h2>
-            <button class="btn btn-text" id="texture-add-btn">+ Añadir</button>
+            <button class="btn btn-add" id="texture-add-btn" title="Añadir textura" aria-label="Añadir textura"></button>
           </div>
           <div class="gallery" id="texture-gallery"></div>
 
-          <div class="layer-controls" id="texture-controls" hidden>
-            <div class="preset-dropdown" id="texture-blend-dropdown">
-              <button type="button" class="preset-dropdown-trigger preset-dropdown-trigger-solid" id="texture-blend-trigger">
+          <!-- Cerrado con una CLASE y no con [hidden]: el [hidden] global de
+               styles.css lleva display:none !important, y display:none corta
+               la animacion de despliegue. Ver .layer-controls.is-collapsed. -->
+          <div class="layer-controls is-collapsed" id="texture-controls">
+            <div class="control-row control-row-compact">
+              <label class="control-label">Estilo</label>
+              <div class="preset-dropdown" id="texture-blend-dropdown">
+              <button type="button" class="preset-dropdown-trigger" id="texture-blend-trigger">
                 <span id="texture-blend-label">Aclarar</span>
                 <span class="preset-dropdown-chevron"></span>
               </button>
-              <div class="preset-dropdown-list preset-dropdown-list-solid" id="texture-blend-list" hidden>
+              <div class="preset-dropdown-list" id="texture-blend-list" hidden>
                 <div class="preset-dropdown-item" data-value="Aclarar"><span class="preset-dropdown-item-name">Aclarar</span></div>
                 <div class="preset-dropdown-item" data-value="Trama"><span class="preset-dropdown-item-name">Trama</span></div>
                 <div class="preset-dropdown-item" data-value="Multiplicar"><span class="preset-dropdown-item-name">Multiplicar</span></div>
@@ -195,21 +267,71 @@
                 <div class="preset-dropdown-item" data-value="Luz suave"><span class="preset-dropdown-item-name">Luz suave</span></div>
                 <div class="preset-dropdown-item" data-value="Normal"><span class="preset-dropdown-item-name">Normal</span></div>
               </div>
+              </div>
             </div>
+            <!-- Etiqueta, perilla y numero en la MISMA fila (asi lo pidio el
+                 usuario) -- la perilla toma el espacio que queda y el % de
+                 al lado del numero se quito: la etiqueta ya dice que es un
+                 porcentaje. -->
             <div class="control-row control-row-compact">
-              <label class="control-label">Opacidad</label>
+              <label class="control-label" for="texture-opacity-entry">Opacidad</label>
               <input type="range" class="slider" id="texture-opacity-slider" min="0" max="100">
-              <input type="text" class="num-entry" id="texture-opacity-entry"><span class="unit unit-percent"></span>
+              <input type="text" class="num-entry num-entry-sm" id="texture-opacity-entry">
             </div>
             <div class="control-row control-row-compact">
-              <label class="control-label">Escala</label>
+              <label class="control-label" for="texture-scale-entry">Escala</label>
               <input type="range" class="slider" id="texture-scale-slider" min="10" max="300">
-              <input type="text" class="num-entry" id="texture-scale-entry"><span class="unit unit-percent"></span>
+              <input type="text" class="num-entry num-entry-sm" id="texture-scale-entry">
             </div>
           </div>
         </section>
 
       </div>
+
+        <!-- Estado + acciones al PIE del panel izquierdo (antes vivian en
+             .preview-panel, debajo del previsualizador) -- ver diseno de
+             Figma. Queda fuera de .control-panel-inner para no scrollear
+             con el resto. -->
+        <div class="status-block">
+          <div class="progress-bar" id="progress-bar" hidden>
+            <div class="progress-fill" id="progress-fill"></div>
+          </div>
+
+          <div class="status-row">
+            <span class="status-text" id="status-text"></span>
+          </div>
+
+          <!-- Tarjeta de resultado -- sale al terminar de exportar bien, y
+               reemplaza al mensaje de texto + los botones "Abrir carpeta"/
+               "Ver video" + el icono de portada, que dejaban el pie con
+               cuatro filas apiladas. Reusa la clase .chip de "Contenido del
+               video" a proposito: es la misma idea (un archivo y lo que se
+               puede hacer con el), asi que se ve igual sin CSS nuevo.
+               El icono de portada guarda un PNG con el mismo fotograma
+               compuesto junto al video recien exportado, sin preguntar donde
+               (ver cover_available en api.py); se abre al pasar el cursor. -->
+          <div class="chip result-card" id="result-card" hidden>
+            <span class="result-card-check"></span>
+            <div class="chip-info">
+              <span class="chip-name" id="result-card-name"></span>
+              <span class="chip-kind">exportado</span>
+            </div>
+            <button class="btn btn-icon" id="open-folder-btn" title="Abrir carpeta"></button>
+            <button class="btn btn-icon" id="open-video-btn" title="Ver video"></button>
+            <button class="btn btn-icon" id="save-cover-btn" title="Guardar portada"></button>
+          </div>
+
+          <!-- "Cancelar" mientras se genera -- se lleva el ancho completo. -->
+          <div class="status-actions">
+            <button class="btn btn-ghost" id="cancel-btn" hidden>Cancelar</button>
+          </div>
+
+          <div class="generate-row">
+            <button class="btn btn-primary btn-generate" id="generate-btn" disabled>Generar video</button>
+          </div>
+
+        </div>
+
     </aside>
 
     <!-- ---------------------------------------------------- previsualizador -->
@@ -225,6 +347,12 @@
              cambiar recorte/velocidad (scheduleLoopPreview en app.js), pero
              NO se reproduce solo: el boton de play decide cuando verlo. -->
         <video id="loop-preview-video" hidden loop muted playsinline></video>
+        <!-- El beat, para escucharlo junto al loop (el mp4 del preview sale
+             sin audio -- ver -an en build_compose_command). No hace loop: el
+             video se repite y el beat corre de largo, igual que en el video
+             final. Se sincroniza con play/pausa del loop, ver
+             initLoopPreviewControls. -->
+        <audio id="loop-preview-beat"></audio>
         <button class="loop-preview-play-btn" id="loop-preview-play" hidden title="Ver el loop"></button>
         <!-- Controles propios (pausa/reproducir + buscar momento) -- los
              nativos del <video> con object-fit:contain no responden bien
@@ -234,47 +362,18 @@
           <button class="loop-preview-toggle" id="loop-preview-toggle" title="Pausar/reproducir"></button>
           <input type="range" class="loop-preview-seek" id="loop-preview-seek" min="0" max="1000" value="0" step="1">
         </div>
+        <!-- Aviso de "esto se esta generando" -- los dos previews los arma
+             ffmpeg en hilos aparte de Python y con un video 1080p+ con
+             texturas encima pueden tardar varios segundos, en los que antes
+             no se veia NADA y parecia que la app se habia colgado. No
+             bloquea el panel a proposito: se puede seguir recortando (un
+             loop mas corto es justo lo que hace que termine antes). Ver
+             setPreviewJob en app.js. -->
+        <div class="preview-loading" id="preview-loading" hidden>
+          <span class="preview-loading-spinner"></span>
+          <span id="preview-loading-text">Generando vista previa...</span>
+        </div>
         <button class="preview-expand-btn" id="preview-expand" hidden title="Agrandar"></button>
-      </div>
-
-      <div class="output-block">
-        <div class="output-field">
-          <label class="output-field-label" for="project-title">Nombre del video</label>
-          <div class="output-title-wrap" id="output-title-wrap">
-            <input type="text" id="project-title" class="text-input output-title-input" placeholder="Sin título">
-            <span class="output-title-pencil" id="output-title-pencil"></span>
-          </div>
-        </div>
-        <div class="output-field">
-          <span class="output-field-label">Ruta de almacenamiento</span>
-          <div class="link-row">
-            <span class="text-input" id="output-label">Ruta donde se almacenará el video</span>
-            <button class="btn btn-icon" id="output-browse" title="Cambiar"></button>
-          </div>
-        </div>
-      </div>
-
-      <div class="generate-row">
-        <button class="btn btn-primary btn-generate" id="generate-btn" disabled>Generar video</button>
-        <!-- Solo aparece justo despues de exportar con exito (ver
-             cover_available en api.py) -- guarda un PNG con el mismo
-             fotograma compuesto (plantilla + medio + texturas) junto al
-             video recien exportado, sin preguntar donde. Desaparece en
-             cuanto se carga una imagen/video nuevo. -->
-        <button class="btn btn-icon" id="save-cover-btn" hidden></button>
-      </div>
-
-      <div class="progress-bar" id="progress-bar" hidden>
-        <div class="progress-fill" id="progress-fill"></div>
-      </div>
-
-      <div class="status-row">
-        <span class="status-text" id="status-text"></span>
-        <div class="status-actions">
-          <button class="btn btn-ghost" id="cancel-btn" hidden>Cancelar</button>
-          <button class="btn btn-ghost" id="open-video-btn" hidden>Abrir video</button>
-          <button class="btn btn-ghost" id="open-folder-btn" hidden>Abrir carpeta</button>
-        </div>
       </div>
     </main>
 
@@ -292,28 +391,105 @@
        #save-cover-btn (positionNearTrigger en app.js) y se anima con
        animateDropdown() (motion.js), igual que los demas desplegables. Se
        abre al pasar el cursor por #save-cover-btn, sin click (ver
-       openCoverModal). JS decide que secciones mostrar: el selector de
-       momento del loop solo aplica a video, el de "que guardar" solo si
-       hay plantilla cargada. -->
+       openCoverModal).
+
+       Se organiza en tres preguntas, de arriba a abajo: DE DONDE sale la
+       portada (un fotograma del video o una imagen propia), como se ve, y QUE
+       se guarda. Antes las opciones decian "Completa / Solo la parte vacia /
+       Las dos", que no le decia nada a nadie -- ahora cada una muestra su
+       tamano real en pixeles y si lleva la plantilla o no. Ver
+       renderCoverModal en app.js, que decide que se muestra en cada caso. -->
   <div class="glass-window cover-modal" id="cover-modal" hidden>
     <button class="glass-window-close" id="cover-modal-close" title="Cerrar"></button>
     <h3 class="glass-window-title">Guardar portada</h3>
-    <div class="cover-frame-picker" id="cover-frame-picker" hidden>
-      <p class="hint">Elige el momento del loop que quieres usar como portada</p>
-      <div class="cover-frame-preview">
-        <video id="cover-frame-video" muted playsinline></video>
-        <p class="hint cover-frame-loading" id="cover-frame-loading">Cargando vista previa del loop...</p>
+
+    <!-- Doble funcion: muestra el fotograma elegido Y es la zona donde se
+         suelta una imagen propia (o se hace clic para buscarla). El drop se
+         atiende aca con stopPropagation -- si subiera al del <body>, la
+         imagen entraria como MEDIO de la app y reemplazaria el video
+         cargado (ver drop-handler.js). -->
+    <div class="cover-preview" id="cover-preview" title="Suelta una imagen aquí para usarla como portada">
+      <video id="cover-frame-video" muted playsinline></video>
+      <img id="cover-image-preview" hidden alt="">
+      <!-- Maqueta del lienzo para la imagen propia: el rectangulo 16:9, la
+           imagen recortada en el mismo hueco donde la va a poner ffmpeg (la
+           ventana de la plantilla, o el cuadro que dejen los bordes) y la
+           plantilla encima. Antes se mostraba la imagen suelta y con una foto
+           vertical parecia que no iba a entrar -- ver
+           layoutCoverComposePreview en app.js. -->
+      <div class="cover-compose" id="cover-compose-preview" hidden>
+        <div class="cover-compose-window" id="cover-compose-window">
+          <img class="cover-compose-img" id="cover-compose-img" alt="">
+        </div>
+        <img class="cover-compose-tpl" id="cover-compose-tpl" hidden alt="">
       </div>
-      <input type="range" class="loop-preview-seek cover-frame-seek" id="cover-frame-seek" min="0" max="1000" value="0" step="1" disabled>
+      <p class="hint cover-preview-msg" id="cover-frame-loading">Cargando vista previa del loop...</p>
+      <p class="hint cover-preview-msg" id="cover-drop-hint" hidden>
+        Suelta tu imagen aquí
+        <span class="cover-drop-sub">o pégala con Ctrl+V, o haz clic para buscarla</span>
+      </p>
     </div>
-    <div class="cover-mode-picker" id="cover-mode-picker" hidden>
-      <p class="control-label">¿Qué parte guardar?</p>
-      <div class="segmented" id="cover-mode-control">
-        <button type="button" class="segmented-item segmented-active" data-value="full">Completa</button>
-        <button type="button" class="segmented-item" data-value="empty">Solo la parte vacía</button>
-        <button type="button" class="segmented-item" data-value="both">Las dos</button>
+    <input type="range" class="loop-preview-seek cover-frame-seek" id="cover-frame-seek" min="0" max="1000" value="0" step="1" disabled>
+
+    <!-- Cambiar de fuente no necesita un selector propio arriba de todo (era
+         lo primero que se leia y lo que menos se usa): soltar o pegar una
+         imagen ya cambia solo (setCoverImage en app.js). Este renglon es lo
+         que lo hace descubrible; con una imagen puesta se reemplaza por la
+         vuelta atras de abajo. -->
+    <p class="hint cover-source-hint" id="cover-source-hint">
+      o suelta tu propia imagen, pégala con Ctrl+V o
+      <button type="button" class="cover-inline-link" id="cover-browse-btn">búscala en tu PC</button>
+    </p>
+    <button type="button" class="cover-inline-link cover-back-link" id="cover-back-btn" hidden>
+      ← Volver al frame del video
+    </button>
+
+    <label class="cover-check" id="cover-compose-row" hidden>
+      <input type="checkbox" id="cover-compose" checked>
+      <span>Componer con la plantilla y las texturas</span>
+    </label>
+    <p class="hint cover-framing-hint" id="cover-framing-hint" hidden>
+      Arrástrala para encuadrar · <strong>dos dedos o pinza</strong> para agrandar,
+      o para achicarla hasta que se vea completa · doble clic para centrar ·
+      <button type="button" class="cover-inline-link" id="cover-change-btn">cambiar imagen</button>
+    </p>
+
+    <!-- Las dos se pueden tener prendidas a la vez (eso reemplazo a la vieja
+         casilla "Guardar las dos"): cada tarjeta es un interruptor propio y
+         al menos una queda siempre encendida. Las medidas van abajo del
+         nombre porque son el dato que de verdad desempata. -->
+    <div class="cover-block" id="cover-mode-picker" hidden>
+      <p class="cover-block-label">Qué guardar</p>
+      <div class="cover-options">
+        <button type="button" class="cover-option cover-option-active" data-value="full"
+                title="El lienzo completo, con la plantilla encima">
+          <span class="cover-option-check"></span>
+          <span class="cover-option-art">
+            <svg width="34" height="19" viewBox="0 0 34 19" fill="none">
+              <rect x="0.5" y="0.5" width="33" height="18" rx="2" fill="currentColor" fill-opacity="0.3" stroke="currentColor"/>
+              <rect x="8.5" y="1.5" width="17" height="16" rx="1" stroke="currentColor" stroke-opacity="0.45"/>
+            </svg>
+          </span>
+          <span class="cover-option-title">Completa</span>
+          <span class="cover-option-sub">1920 × 1080</span>
+        </button>
+        <button type="button" class="cover-option" data-value="empty"
+                title="Solo el recuadro de la plantilla, sin el marco">
+          <span class="cover-option-check"></span>
+          <span class="cover-option-art">
+            <svg width="34" height="19" viewBox="0 0 34 19" fill="none">
+              <rect x="0.5" y="0.5" width="33" height="18" rx="2" stroke="currentColor" stroke-opacity="0.35"/>
+              <rect x="8.5" y="1.5" width="17" height="16" rx="1" fill="currentColor" fill-opacity="0.3" stroke="currentColor"/>
+            </svg>
+          </span>
+          <span class="cover-option-title">Solo el cuadro</span>
+          <span class="cover-option-sub" id="cover-size-empty">1080 × 1080</span>
+        </button>
       </div>
     </div>
+
+    <p class="hint" id="cover-dest-hint">Se guarda junto al video exportado.</p>
+
     <div class="cover-modal-footer">
       <button class="btn btn-ghost" id="cover-modal-cancel">Cancelar</button>
       <button class="btn btn-primary" id="cover-modal-save">Guardar portada</button>
