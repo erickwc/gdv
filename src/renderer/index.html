@@ -376,18 +376,37 @@
              NO se reproduce solo: el boton de play decide cuando verlo. -->
         <video id="loop-preview-video" hidden loop muted playsinline></video>
         <!-- El beat, para escucharlo junto al loop (el mp4 del preview sale
-             sin audio -- ver -an en build_compose_command). No hace loop: el
-             video se repite y el beat corre de largo, igual que en el video
-             final. Se sincroniza con play/pausa del loop, ver
-             initLoopPreviewControls. -->
-        <audio id="loop-preview-beat"></audio>
+             sin audio -- ver -an en build_compose_command). El beat corre de
+             largo mientras el video se repite, igual que en el video final: no
+             se resincroniza en cada vuelta del loop. Pero SI lleva loop propio
+             -- el previsualizador da vueltas para siempre, asi que llegar al
+             final del archivo dejaba el resto de la sesion en silencio. Se
+             sincroniza con play/pausa del loop, ver initLoopPreviewControls. -->
+        <audio id="loop-preview-beat" loop></audio>
         <button class="loop-preview-play-btn" id="loop-preview-play" hidden title="Ver el loop"></button>
         <!-- Controles propios (pausa/reproducir + buscar momento) -- los
              nativos del <video> con object-fit:contain no responden bien
              al hover en todo el ancho del recuadro, asi que se reemplazan
-             por estos, con el mismo estilo del resto de la UI. -->
+             por estos, con el mismo estilo del resto de la UI.
+
+             El volumen es del BEAT del preview y de nada mas: el volumen del
+             video exportado lo decide la normalizacion de la exportacion (ver
+             audio_strategy_args en engine.py) y no se toca desde aca. La
+             barrita se despliega al pasar el cursor por el parlante, para no
+             cargar la barra de controles con algo que casi siempre esta quieto
+             (ver .loop-preview-volume en styles.css). -->
         <div class="loop-preview-controls" id="loop-preview-controls" hidden>
           <button class="loop-preview-toggle" id="loop-preview-toggle" title="Pausar/reproducir"></button>
+          <!-- El volumen va pegado al play y NO al final de la barra: el que se
+               estira es el progreso, asi que desplegando la barrita desde la
+               derecha el parlante se corria solo hacia la izquierda y se
+               escapaba de abajo del cursor -- el clic para silenciar caia en la
+               barrita de volumen. Aca el parlante no se mueve nunca. -->
+          <div class="loop-preview-volume" id="loop-preview-volume">
+            <button class="loop-preview-toggle loop-preview-mute" id="loop-preview-mute" title="Silenciar el beat"></button>
+            <input type="range" class="loop-preview-seek loop-preview-vol" id="loop-preview-vol"
+                   min="0" max="100" value="100" step="1" title="Volumen del beat">
+          </div>
           <input type="range" class="loop-preview-seek" id="loop-preview-seek" min="0" max="1000" value="0" step="1">
         </div>
         <!-- Aviso de "esto se esta generando" -- los dos previews los arma

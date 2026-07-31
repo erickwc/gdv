@@ -1501,6 +1501,43 @@ input[type="text"].preset-inline-input {
 .loop-preview-seek:focus {
   outline: none;
 }
+/* Volumen del beat, pegado al play: parlante siempre visible y barrita que se
+   despliega al pasar el cursor por encima. Plegada mide 0 -- asi la de progreso
+   se queda con todo el ancho, que es lo que se mira el 99% del tiempo -- y al
+   desplegarse se lleva 64px de ese ancho (se abre hacia la derecha, sin mover
+   el parlante -- ver el comentario en index.html).
+
+   Comparte el riel y la perilla con .loop-preview-seek (lleva las dos clases),
+   pero NO su flex:1: aca el ancho es fijo y el que se estira es el progreso.
+
+   El :has(:active) es para el arrastre: sacando el mouse del grupo a mitad de
+   camino se pierde el :hover y la barrita se plegaba con la perilla agarrada.
+   Mismo motivo por el que .loop-preview-controls ya lo lleva. */
+.loop-preview-volume {
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+.loop-preview-vol {
+  flex: none;
+  width: 0;
+  margin-left: 0;
+  opacity: 0;
+  /* Plegada NO recibe clicks: la perilla del range se dibuja (y se deja tocar)
+     por fuera de una caja de ancho 0, asi que invisible como esta se quedaba con
+     la mitad derecha del parlante -- el clic para silenciar caia en un volumen
+     que no se veia. Medido con elementFromPoint sobre el parlante. */
+  pointer-events: none;
+  transition: width 0.16s ease, margin-left 0.16s ease, opacity 0.16s ease;
+}
+.loop-preview-volume:hover .loop-preview-vol,
+.loop-preview-volume:focus-within .loop-preview-vol,
+.loop-preview-volume:has(:active) .loop-preview-vol {
+  width: 64px;
+  margin-left: 8px;
+  opacity: 1;
+  pointer-events: auto;
+}
 
 /* ------------------------------------------------- ventana de portada */
 

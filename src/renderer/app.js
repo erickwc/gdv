@@ -101,6 +101,17 @@ const ICONS = {
     + '<path d="M12 4l0 4l6 0l0 -4" /><path d="M9 17a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />',
   cloudDownload: '<path d="M19 18a3.5 3.5 0 0 0 0 -7h-1a5 4.5 0 0 0 -11 -2a4.6 4.4 0 0 0 -2.1 8.4" />'
     + '<path d="M12 13l0 9" /><path d="M9 19l3 3l3 -3" />',
+  // Los tres estados del volumen del beat en el previsualizador (volume,
+  // volume-2 y volume-3 de Tabler): dos ondas, una sola cuando esta bajo, y la
+  // cruz cuando esta en silencio. El parlante es EL MISMO trazo en los tres,
+  // asi que cambiar de estado no mueve nada del icono, solo lo que tiene al
+  // lado. Ver syncBeatVolumeUi.
+  volume: '<path d="M15 8a5 5 0 0 1 0 8" /><path d="M17.7 5a9 9 0 0 1 0 14" />'
+    + '<path d="M6 15h-2a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1h2l3.5 -4.5a.8 .8 0 0 1 1.5 .5v14a.8 .8 0 0 1 -1.5 .5l-3.5 -4.5" />',
+  volumeLow: '<path d="M15 8a5 5 0 0 1 0 8" />'
+    + '<path d="M6 15h-2a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1h2l3.5 -4.5a.8 .8 0 0 1 1.5 .5v14a.8 .8 0 0 1 -1.5 .5l-3.5 -4.5" />',
+  volumeOff: '<path d="M6 15h-2a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1h2l3.5 -4.5a.8 .8 0 0 1 1.5 .5v14a.8 .8 0 0 1 -1.5 .5l-3.5 -4.5" />'
+    + '<path d="M16 10l4 4m0 -4l-4 4" />',
 };
 
 function iconSvg(name, size = 16, strokeWidth = 1) {
@@ -275,6 +286,10 @@ function renderChips(state) {
     kind.style.color = state.audio_clip_warning ? "var(--red)" : "";
   } else {
     audioChip.hidden = true;
+    // Sin beat cargado no puede quedar sonando ninguno: quitarlo a mitad de
+    // reproduccion dejaba el archivo viejo de largo (el <audio> es aparte del
+    // canvas, ver el bloque del beat mas abajo).
+    stopBeat();
   }
 
   $("#focus-section").hidden = !state.show_focus;
@@ -1955,18 +1970,95 @@ function hideLoopPreview() {
 //
 // El mp4 del preview sale sin audio (-an en build_compose_command), asi que
 // el beat se reproduce aparte, con un <audio> propio sincronizado al play/
-// pausa del loop. NO se hace loop del beat: el video se repite y el beat
-// corre de largo, igual que en el video final. Ojo, es el archivo crudo: la
-// exportacion ademas le aplica la normalizacion de audio_strategy_args, asi
-// que el volumen puede no ser exactamente el del mp4 final.
+// pausa del loop. El beat corre de largo mientras el video da vueltas -- NO se
+// vuelve a empezar en cada vuelta del loop -- igual que en el video final, que
+// repite el pedazo de video hasta cubrir el beat entero.
+//
+// Lo que SI hace es empezar de nuevo cuando se TERMINA (loop en el <audio>, ver
+// index.html): el previsualizador da vueltas para siempre, asi que el beat se
+// acababa y el resto de la sesion quedaba en silencio -- se veia el loop
+// repitiendose sin nada de audio hasta que uno pausaba y volvia a darle play.
+//
+// Ojo, es el archivo crudo: la exportacion ademas le aplica la normalizacion de
+// audio_strategy_args, asi que el volumen puede no ser exactamente el del mp4
+// final -- y el volumen de aca abajo es SOLO para escuchar, no viaja al video.
 function beatEl() {
   return $("#loop-preview-beat");
 }
 
+// Si el beat TIENE que estar sonando ahora mismo: lo prende el play y lo apaga
+// la pausa, y nada mas. Es la unica fuente de verdad, y a proposito no se deduce
+// de si el canvas esta corriendo: hay huecos en los que el <video> queda pausado
+// sin que el usuario haya pausado nada -- el cambio a la copia liviana a mitad
+// de reproduccion (medido: casi un segundo con LivePreview.isPlaying() en false)
+// y el final del clip antes de dar la vuelta. En esos huecos, mirar el canvas
+// dejaba al beat sin nadie que lo volviera a arrancar si justo se detenia ahi.
+let beatSonando = false;
+
+// Volumen del beat en el previsualizador. Se guarda para la proxima sesion: sin
+// esto la unica forma de bajarlo era bajarle el volumen a la maquina entera,
+// que es justo lo que este control viene a sacar del medio.
+const BEAT_VOLUME_KEY = "loopPreviewBeatVolume";
+const BEAT_MUTED_KEY = "loopPreviewBeatMuted";
+let beatVolume = 1;   // 0..1, como lo quiere el <audio>
+let beatMuted = false;
+// Donde volver al des-silenciar: el parlante silencia sin mover el volumen
+// guardado, asi que este es el valor que la barrita vuelve a mostrar.
+let beatVolumePrevio = 1;
+
+function loadBeatVolume() {
+  try {
+    const v = parseFloat(localStorage.getItem(BEAT_VOLUME_KEY));
+    if (Number.isFinite(v)) beatVolume = Math.min(1, Math.max(0, v));
+    beatMuted = localStorage.getItem(BEAT_MUTED_KEY) === "1";
+  } catch (e) {
+    // Sin localStorage se arranca al 100% y no se guarda nada -- el control
+    // funciona igual, solo que no se acuerda.
+  }
+  if (beatVolume > 0) beatVolumePrevio = beatVolume;
+}
+
+function saveBeatVolume() {
+  try {
+    localStorage.setItem(BEAT_VOLUME_KEY, String(beatVolume));
+    localStorage.setItem(BEAT_MUTED_KEY, beatMuted ? "1" : "0");
+  } catch (e) {
+    // ver loadBeatVolume
+  }
+}
+
+// Un solo lugar le escribe el volumen al <audio> y pone al dia el parlante y la
+// barrita, asi lo que se ve y lo que se escucha no se pueden separar.
+function syncBeatVolumeUi() {
+  const beat = beatEl();
+  beat.volume = beatVolume;
+  // Silencio por muted y no por volumen 0: son dos palancas distintas del
+  // <audio>, y separadas la barrita se acuerda de donde estaba.
+  beat.muted = beatMuted;
+  const sinSonido = beatMuted || beatVolume === 0;
+  const boton = $("#loop-preview-mute");
+  // Rearmar el SVG solo cuando el icono cambia de verdad: por aca se pasa
+  // tambien en cada play (y en cada vuelta del vigilante), y reescribir el
+  // innerHTML de al lado del video no es gratis.
+  const icono = sinSonido ? "volumeOff" : beatVolume <= 0.5 ? "volumeLow" : "volume";
+  if (boton.dataset.icono !== icono) {
+    boton.innerHTML = iconSvg(icono);
+    boton.dataset.icono = icono;
+  }
+  boton.title = sinSonido ? "Volver a escuchar el beat" : "Silenciar el beat";
+  const barra = $("#loop-preview-vol");
+  barra.value = Math.round((sinSonido ? 0 : beatVolume) * 100);
+  paintSliderFill(barra);
+}
+
+// Arranca el beat (o lo retoma). fromZero solo hace falta para volver a empezar
+// uno que YA venia sonando: un beat recien cargado arranca en 0 solo, y despues
+// de una pausa se retoma donde quedo -- que es justo lo que se pidio.
 function startBeat(fromZero) {
   const beat = beatEl();
   const path = lastState && lastState.audio_path;
   if (!path) return; // todavia sin beat cargado -- el loop se ve igual, muteado
+  beatSonando = true;
   const url = buildFileUrl(path);
   if (beat.src !== url) {
     beat.src = url;
@@ -1974,15 +2066,34 @@ function startBeat(fromZero) {
   } else if (fromZero) {
     beat.currentTime = 0;
   }
+  // El volumen se aplica ANTES del play: si no, el primer instante sale al 100%
+  // aunque estuviera bajado o en silencio.
+  syncBeatVolumeUi();
   // Puede fallar si el formato no lo soporta Chromium (algun .wma, por
   // ejemplo) -- el loop se sigue viendo, solo sin sonido.
   beat.play().catch(() => {});
 }
 
+// Pausa PEDIDA: el beat se queda donde esta (no vuelve a 0) para poder seguir
+// desde ahi al quitar la pausa, y baja la bandera para que el vigilante no lo
+// vuelva a arrancar por atras.
+function pauseBeat() {
+  beatSonando = false;
+  beatEl().pause();
+}
+
+// Para el beat y lo SUELTA: sin src no queda nada que el vigilante pueda volver
+// a arrancar. Hace falta porque quitar el beat a mitad de reproduccion dejaba el
+// archivo viejo sonando. Esto SI vuelve a 0: es "no hay beat", no una pausa.
 function stopBeat() {
   const beat = beatEl();
+  beatSonando = false;
   beat.pause();
   beat.currentTime = 0;
+  if (beat.getAttribute("src")) {
+    beat.removeAttribute("src");
+    beat.load();
+  }
 }
 
 // Sin autoplay: se regenera solo (con el mismo debounce que el fotograma
@@ -2146,14 +2257,22 @@ function positionPreviewOverlays() {
   loading.style.top = `${top + 12}px`;
 }
 
+// El beat puede estar sonando sin que el canvas se mueva: con una foto de medio
+// no hay nada que reproducir, pero el play arranca el beat igual. Ahi el boton
+// tiene que mostrar pausa (y pausar, ver alternar) en vez de ofrecer un play que
+// lo unico que hacia era volver a empezar el beat.
+function algoSonando() {
+  return LivePreview.isPlaying() || beatSonando;
+}
+
 function syncLoopToggleIcon() {
   const toggle = $("#loop-preview-toggle");
-  toggle.innerHTML = iconSvgFilled(LivePreview.isPlaying() ? "playerPause" : "playerPlay");
+  toggle.innerHTML = iconSvgFilled(algoSonando() ? "playerPause" : "playerPlay");
 }
 
 function pauseLoopPreview() {
   LivePreview.pause();
-  beatEl().pause();
+  pauseBeat();
   syncLoopToggleIcon();
 }
 
@@ -2170,7 +2289,7 @@ function initLoopPreviewControls() {
   // canvas no tiene eventos propios, asi que el icono y el beat se sincronizan
   // aca mismo, que es el unico lugar desde donde se arranca y se para.
   const alternar = () => {
-    if (LivePreview.isPlaying()) pauseLoopPreview();
+    if (algoSonando()) pauseLoopPreview();
     else playLoopPreview();
   };
   toggle.addEventListener("click", alternar);
@@ -2214,6 +2333,64 @@ function initLoopPreviewControls() {
   seek.addEventListener("change", () => {
     scrubbing = false;
   });
+
+  // ------------------------------------------------- volumen del beat
+  const beat = beatEl();
+  loadBeatVolume();
+  syncBeatVolumeUi();
+
+  // Parlante = silenciar / volver a escuchar. Con la barrita en 0 no silencia
+  // (ya no se escucha nada): vuelve al ultimo volumen que hubo.
+  $("#loop-preview-mute").addEventListener("click", () => {
+    if (beatMuted || beatVolume === 0) {
+      beatMuted = false;
+      if (beatVolume === 0) beatVolume = beatVolumePrevio || 1;
+    } else {
+      beatMuted = true;
+    }
+    syncBeatVolumeUi();
+    saveBeatVolume();
+  });
+
+  // Mover la barrita tambien saca el silencio: subir el volumen de algo mudo y
+  // que siguiera mudo no se entiende desde afuera.
+  $("#loop-preview-vol").addEventListener("input", (e) => {
+    beatVolume = Math.min(1, Math.max(0, Number(e.target.value) / 100));
+    if (beatVolume > 0) {
+      beatMuted = false;
+      beatVolumePrevio = beatVolume;
+    }
+    syncBeatVolumeUi();
+  });
+  // Se guarda al soltar y no en cada pixel del arrastre.
+  $("#loop-preview-vol").addEventListener("change", saveBeatVolume);
+
+  // El beat tiene que sonar TODO el rato entre el play y la pausa. El <audio> ya
+  // lleva loop, pero esto es la red de seguridad para cuando igual se detiene:
+  // se termino el archivo sin que saltara el loop, el decodificador se trabo, el
+  // beat todavia no estaba cargado cuando se apreto play. Sin esto el
+  // previsualizador seguia dando vueltas en silencio hasta que uno pausaba y
+  // volvia a darle play.
+  //
+  // Va contra beatSonando y NO contra LivePreview.isPlaying(): la pausa de
+  // verdad baja esa bandera (ver pauseBeat), asi que esto no puede pelearse con
+  // el usuario, y a la vez sigue cubriendo los huecos en los que el canvas se ve
+  // parado sin que nadie haya pausado.
+  //
+  // Arranca por startBeat, que es el que sabe si hay beat y cual es: sin beat no
+  // hace nada, y si cambio, pone el nuevo.
+  //
+  // El listener de "pause" lo levanta en el acto; el temporizador es para lo que
+  // no avisa con un evento (un play() que quedo colgado, un archivo que tardo).
+  beat.addEventListener("pause", () => {
+    if (beatSonando) startBeat(false);
+  });
+  beat.addEventListener("ended", () => {
+    if (beatSonando) startBeat(true);
+  });
+  setInterval(() => {
+    if (beatSonando && beat.paused) startBeat(false);
+  }, 400);
 }
 
 // --------------------------------------------------- modal "Guardar portada"
