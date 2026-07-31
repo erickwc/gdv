@@ -112,6 +112,76 @@ PREVIEW_QUALITY_ARGS = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "24"]
 # mejor calidad (cq mas bajo) sin perder el tiempo ganado.
 PREVIEW_QUALITY_ARGS_NVENC = ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "21"]
 
+# ---------------------------------------------------- copia liviana del medio
+#
+# El previsualizador en vivo (live-preview.js) decodifica el archivo ORIGINAL
+# cuadro a cuadro. Con un clip 4K eso es descomprimir 8.3 megapixeles treinta
+# veces por segundo para mostrarlos en un recuadro de unos 500 px de pantalla:
+# medido, se pierden fotogramas (10 de 186 en un stock 4K de 30 fps contra 3 de
+# 184 en el mismo material a 1080p) y el video se ve a los tirones. Antes no
+# pasaba porque lo que se reproducia era el fragmento que componia ffmpeg, a
+# 0.5-0.7 del lienzo.
+#
+# La copia se hace UNA vez por archivo, en segundo plano, y no cambia con el
+# recorte, la velocidad ni las texturas -- todo eso lo compone el canvas encima.
+# Mientras no este lista se sigue usando el original.
+#
+# El tamano lo decide preview_proxy_size: lo MINIMO que puede cubrir el lienzo
+# sin que el previsualizador tenga que agrandar nada. La exportacion NO usa esta
+# copia, sigue leyendo el archivo original.
+
+
+def preview_proxy_size(media_size, canvas=(MAX_WIDTH, MAX_HEIGHT)):
+    """Tamano de la copia, o None si no vale la pena hacerla.
+
+    La regla es "lo mas chica posible SIN que haya que agrandarla despues". El
+    medio se dibuja CUBRIENDO su caja, que como mucho es el lienzo entero, asi
+    que la copia tiene que poder cubrir 2560x1440: el factor es el MAYOR de los
+    dos lados, no el menor.
+
+    Primero se probo con 1080 de alto fijo, pensando en que en pantalla se ve
+    chico igual. Fue un error y se nota enseguida: la caja del lienzo mide hasta
+    1440, asi que el medio pasaba de reducirse (nitido) a AGRANDARSE 1.33x, y el
+    navegador agranda con un filtro pobre. Encima la textura y la plantilla se
+    siguen dibujando a resolucion completa, asi que el medio blando al lado del
+    grano nitido cantaba todavia mas."""
+    w, h = media_size
+    if not w or not h:
+        return None
+    factor = max(canvas[0] / w, canvas[1] / h)
+    if factor >= 1:
+        return None  # ya es igual o mas chico que lo que hace falta
+    # Pares: yuv420p no admite lados impares.
+    return (max(2, round(w * factor / 2) * 2), max(2, round(h * factor / 2) * 2))
+
+
+def build_preview_proxy_command(ffmpeg_exe, media_path, temp_path, size):
+    """Copia del video escalada para el previsualizador. Mismos fps y misma
+    duracion que el original -- el previsualizador y el panel de portada
+    trabajan con tiempos, y tienen que valer igual en los dos archivos."""
+    return [
+        ffmpeg_exe, "-y", "-i", media_path,
+        "-vf", f"scale={size[0]}:{size[1]}:flags=bicubic",
+        # Sin audio: el beat va por su lado y el <video> del preview esta mudo.
+        "-an",
+        # veryfast y crf 18, no mas rapido: esto se MIRA. ultrafast deja el
+        # archivo antes (y se decodifica mas barato, porque no lleva CABAC) pero
+        # apaga el filtro de deblocking, y los bloques se ven -- sobre todo en
+        # degradados, que es la mitad del material que se usa aca. Medido sobre
+        # un 4K de 20s, decodificando en un solo hilo, mejor de tres:
+        #     4K original            10.60 s
+        #     copia a 1440p veryfast  4.27 s   2.5x mas barata
+        #     copia a 1080p veryfast  2.45 s   4.3x mas barata (pero hay que
+        #                                      agrandarla: se ve blanda)
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+        # Fotograma clave cada segundo: en esta copia se BUSCA mucho (la barra
+        # del preview, el selector de fotograma de la portada), y con un GOP
+        # largo cada salto obliga a decodificar desde muy atras.
+        "-g", "30", "-keyint_min", "30",
+        "-pix_fmt", "yuv420p",
+        temp_path,
+    ]
+
 
 def load_config():
     try:
@@ -138,7 +208,14 @@ def detect_template_window(template_path):
     bordes visibles detras de la plantilla; pasarse nunca se nota porque
     esa zona la tapa la parte opaca."""
     with Image.open(template_path) as img:
-        if "A" not in img.getbands():
+        # El alfa no siempre aparece en getbands(): un PNG INDEXADO (modo "P",
+        # lo que exportan Figma/Photoshop como "PNG-8" y lo que dejan los
+        # compresores tipo TinyPNG) guarda su transparencia en el chunk tRNS,
+        # y ahi getbands() devuelve ("P",) a secas. Mirar solo las bandas daba
+        # esas plantillas por opacas y las rechazaba con "no tiene zona
+        # transparente" aunque SI tuvieran ventana. Se decide sobre el alfa ya
+        # resuelto por convert("RGBA"), que aplica paleta y tRNS por igual.
+        if "A" not in img.getbands() and "transparency" not in img.info:
             return None
         img_w, img_h = img.size
         alpha = img.convert("RGBA").getchannel("A")
@@ -320,48 +397,68 @@ def audio_strategy_args(strategy, sample_rate, peak_db=None):
     return args
 
 
-def build_layout(media_size, is_video, scale_pct, template_box):
+def build_layout(media_size, is_video, scale_pct, template_box, crop_aspect=1.0):
     """Decide el plan de composicion: tamano interno del medio, lienzo final
-    y posicion. Devuelve (layout, ancho_final, alto_final)."""
+    y posicion. Devuelve (layout, ancho_final, alto_final).
+
+    crop_aspect es la proporcion (ancho/alto) del recuadro que dejo "Ajustar
+    imagen" -- 1.0 con el recorte cuadrado de siempre, y de ahi el valor por
+    defecto: con un cuadrado la cuenta da exactamente lo mismo que antes."""
     if template_box:
         x, y, w, h = template_box
         layout = {"mode": "template", "inner": (w, h), "canvas": (MAX_WIDTH, MAX_HEIGHT), "pos": (x, y)}
     else:
-        # Sin plantilla el lienzo siempre es 1920x1080 negro y la base
-        # (scale_pct=100) es SIEMPRE un cuadrado fijo de 1080x1080, sin
-        # importar el tamano ni la proporcion original del archivo -- asi
-        # el mismo % recorta exactamente igual sin importar que imagen se
-        # cargue (Ajustar imagen ya decide que parte de la foto entra en
-        # ese cuadrado). La altura se queda fija siempre en 1080 -- el
-        # control de escala solo mueve el ANCHO (a partir del centro): por
-        # debajo de 100% encoge y deja bordes SOLO a los lados; por encima
-        # de 100% amplia, recortando lo que sobre (sin deformar) conforme
-        # se acerca a llenar el lienzo.
-        natural_w = natural_h = MAX_HEIGHT
+        # Sin plantilla el lienzo siempre es negro y la base (scale_pct=100)
+        # tiene el ALTO completo del lienzo; el ancho sale de la proporcion
+        # del recuadro de "Ajustar imagen". Con el recorte cuadrado de
+        # siempre (crop_aspect=1) eso da el cuadrado fijo de toda la vida,
+        # igual para cualquier archivo que se cargue, sin importar su tamano
+        # ni su proporcion. Con un recuadro vertical la caja se angosta en la
+        # misma medida, que es lo que hace que el modo "Vertical" conserve la
+        # foto entera: si la caja siguiera siendo cuadrada, el scale de mas
+        # abajo ampliaria para cubrirla y volveria a comerse el alto.
+        #
+        # La altura se queda fija siempre -- el control de escala solo mueve
+        # el ANCHO (a partir del centro): por debajo de 100% encoge y deja
+        # bordes SOLO a los lados; por encima de 100% amplia, recortando lo
+        # que sobre (sin deformar) conforme se acerca a llenar el lienzo. Una
+        # foto mas apaisada que el lienzo topa con MAX_WIDTH y ahi si pierde
+        # los costados: mas ancho que el lienzo no hay.
+        natural_h = MAX_HEIGHT
+        natural_w = MAX_HEIGHT * max(0.01, crop_aspect)
         scale_factor = max(0.01, scale_pct / 100)
-        inner_w = max(2, min(MAX_WIDTH, int(natural_w * scale_factor) // 2 * 2))
+        inner_w = max(2, min(MAX_WIDTH, int(natural_w * scale_factor)) // 2 * 2)
         layout = {"mode": "bordered", "inner": (inner_w, natural_h),
                   "canvas": (MAX_WIDTH, MAX_HEIGHT), "pos": None}
     return layout, layout["canvas"][0], layout["canvas"][1]
 
 
-def build_focus_crop(focus):
+def build_focus_crop(crop):
     """Recorte manual de "Ajustar imagen", aplicado ANTES de todo lo demas.
-    Recorta un CUADRADO de lado min(iw,ih)/zoom colocado con (focus_x,
-    focus_y) en 0..1 -- exactamente el recuadro que dibuja la UI. Antes se
-    recortaba iw/zoom x ih/zoom (proporcion de la foto) y luego el pipeline
-    centraba el cuadrado: en fotos rectangulares eso impedia mover el
-    recuadro fuera del centro sin hacer mucho zoom. zoom=1.0 y foco
-    centrado -> no-op (mismo resultado que el recorte centrado de siempre),
-    asi que no cambia nada para quien no toque el ajuste."""
-    zoom, focus_x, focus_y = focus
-    zoom = max(1.0, zoom)
-    if zoom == 1.0 and focus_x == 0.5 and focus_y == 0.5:
+
+    crop es el recuadro que se ve en la UI, en fracciones 0..1 del original:
+    (x, y, ancho, alto). Antes esto sabia de CUADRADOS y nada mas (lado
+    min(iw,ih)/zoom mas un punto de foco), que es todo lo que el modo
+    "Cuadrado" necesita; con "Vertical" el recuadro toma la proporcion de la
+    foto, que puede ser cualquiera, asi que ahora se guarda el rectangulo
+    completo y la cuenta se vuelve directa.
+
+    La foto entera (0,0,1,1) es el modo "Vertical" y devuelve "": meter un
+    crop que no recorta nada solo agrega trabajo al filtro.
+
+    OJO: recortar aca no alcanza para que un recuadro no-cuadrado sobreviva.
+    Lo que sigue en la cadena escala para CUBRIR la caja de composicion y
+    recorta el sobrante, asi que si la caja no toma la misma proporcion que
+    este recuadro, el alto que se acaba de respetar se pierde de nuevo -- de
+    eso se encarga build_layout con crop_aspect."""
+    x, y, w, h = crop
+    w = max(0.01, min(1.0, w))
+    h = max(0.01, min(1.0, h))
+    x = max(0.0, min(1.0 - w, x))
+    y = max(0.0, min(1.0 - h, y))
+    if w >= 0.9999 and h >= 0.9999:
         return ""
-    side = f"min(iw\\,ih)/{zoom:.4f}"
-    crop_x = f"(iw-({side}))*{focus_x:.4f}"
-    crop_y = f"(ih-({side}))*{focus_y:.4f}"
-    return f"crop={side}:{side}:{crop_x}:{crop_y},"
+    return f"crop=iw*{w:.4f}:ih*{h:.4f}:iw*{x:.4f}:ih*{y:.4f},"
 
 
 def content_box(layout):
@@ -468,9 +565,31 @@ def build_filtergraph(layout, is_video=False, speed=1.0, deinterlace=False,
             blend_extra = ":shortest=1"
         parts.append(f"[{tex_idx}:v]{tex_chain},format=gbrp[{texs_label}]")
         parts.append(f"[{last}]format=gbrp[{basef_label}]")
+        # "Normal" es la excepcion entre los seis modos. En los otros cinco la
+        # opacidad va del medio HACIA la mezcla (0 = medio solo, 1 = mezcla
+        # entera) y coinciden con el previsualizador; en normal el filtro hace
+        #     dst = A*opacidad + B*(1-opacidad)
+        # o sea que la opacidad se le aplica a la PRIMERA entrada, que aca es el
+        # medio. Con el control al 100% el video se exportaba SIN NADA de
+        # textura, y subirlo la iba borrando en vez de marcarla. Pasando
+        # 1-opacidad queda medio*(1-op) + textura*op, que es exactamente lo que
+        # dibuja el canvas (globalAlpha = opacidad + source-over, ver
+        # dibujarTextura en live-preview.js). Medido contra el previsualizador
+        # en 0, 25, 47, 55, 60 y 100: diferencia 0.
+        #
+        # Lo obvio seria dar vuelta las entradas ([texs][basef]) y dejar la
+        # opacidad como esta. NO se hace, por dos motivos, los dos medidos:
+        #   - la PRIMERA entrada manda el tiempo (framesync) y una textura que
+        #     es imagen tiene un solo fotograma: el video entero saldria de un
+        #     cuadro (por eso el repeatlast del comentario de arriba).
+        #   - en los otros cinco modos la primera entrada tambien hace de base
+        #     de la formula -- overlay y softlight eligen la rama mirandola --
+        #     asi que darla vuelta para todos los rompe: medido, la diferencia
+        #     contra el previsualizador salta de ~0.2 a 39-67 sobre 255.
+        blend_opacity = 1.0 - tex_opacity if tex_mode == "normal" else tex_opacity
         parts.append(
             f"[{basef_label}][{texs_label}]"
-            f"blend=all_mode={tex_mode}:all_opacity={tex_opacity:.3f}{blend_extra}[{out_label}]"
+            f"blend=all_mode={tex_mode}:all_opacity={blend_opacity:.3f}{blend_extra}[{out_label}]"
         )
         last = out_label
 

@@ -21,6 +21,12 @@ contextBridge.exposeInMainWorld("api", {
   // pantalla completa -- hay que destrabarla justo antes de pedirla (ver
   // toggleExpand en app.js).
   setWindowResizable: (resizable) => ipcRenderer.invoke("window-set-resizable", resizable),
+  // F11 -- lo atrapa el proceso principal antes de que el menu por defecto de
+  // Electron lo use para la pantalla completa de la VENTANA, que se peleaba
+  // con la del previsualizador (ver before-input-event en main.js).
+  onExitPreviewFullscreen: (callback) => {
+    ipcRenderer.on("exit-preview-fullscreen", () => callback());
+  },
   showPreviewWindow: (dataUri) => ipcRenderer.invoke("preview-show", dataUri),
   showPreviewVideo: (src) => ipcRenderer.invoke("preview-show-video", src),
   hidePreviewWindow: () => ipcRenderer.invoke("preview-hide"),

@@ -8,52 +8,32 @@
 
 /* ------------------------------------------------------------ tipografia */
 
-/* Cada archivo declarado con su peso REAL. Importa declararlos todos: con
-   una sola cara por familia, cualquier peso distinto al declarado lo
-   inventa el motor (bold/thin sinteticos) y el texto sale deformado.
-   Toda la UI usa el peso 300 (Light) de las dos familias; las caras 400,
-   500 y 600 se quedan declaradas como red de seguridad, para que si algo
-   pide un peso mayor (un <strong>, un <h?> sin estilar) use la cara de
-   verdad en vez de una falsa. */
+/* Open Sauce Two, una sola familia para toda la app (antes Figtree, y antes
+   Google Sans -- ese CSS esta en el commit 3a907db).
+
+   DOS caras nada mas, y a proposito: son las unicas dos que usa el diseno.
+   La carpeta fonts/ trae el paquete entero (300 a 900), pero declarar una
+   cara que nadie pide es peso muerto que igual se descarga.
+     300  Light    -- el peso de toda la interfaz (ver --peso-ui en :root)
+     400  Regular  -- "Generar video", el unico texto mas marcado
+
+   Ninguna es italica: el paquete no la trae. Y cuidado con pedir un peso que
+   no este declarado aca: si se pide 600 o mas, el motor lo INVENTA (negrita
+   sintetica, engorda los trazos a mano) y el texto sale deformado. Entre 400
+   y 500 no inventa nada -- se queda con la cara de 400 -- pero igual conviene
+   escribir el peso que de verdad se va a ver. */
 @font-face {
   font-family: "Open Sauce Two";
   src: url("fonts/open-sauce-two-latin-300-normal.ttf") format("truetype");
   font-weight: 300;
-  font-display: block;
-}
-@font-face {
-  font-family: "Open Sauce Sans";
-  src: url("fonts/open-sauce-sans-latin-300-normal.ttf") format("truetype");
-  font-weight: 300;
+  font-style: normal;
   font-display: block;
 }
 @font-face {
   font-family: "Open Sauce Two";
-  src: url("fonts/OpenSauceTwo-Regular.ttf") format("truetype");
+  src: url("fonts/open-sauce-two-latin-400-normal.ttf") format("truetype");
   font-weight: 400;
-  font-display: block;
-}
-@font-face {
-  font-family: "Open Sauce Two";
-  src: url("fonts/OpenSauceTwo-Medium.ttf") format("truetype");
-  font-weight: 500;
-  font-display: block;
-}
-@font-face {
-  font-family: "Open Sauce Sans";
-  /* El .ttf de peso 400 que trae el paquete descargado esta corrupto (dice
-     ser TrueType pero adentro son datos PostScript, Chromium lo rechaza
-     con "invalid sfntVersion") -- el .woff de esa misma carpeta si es
-     valido (se verifico su name table: "Open Sauce Sans / Regular"), por
-     eso este va en woff y los demas en ttf. */
-  src: url("fonts/OpenSauceSans-Regular.woff") format("woff");
-  font-weight: 400;
-  font-display: block;
-}
-@font-face {
-  font-family: "Open Sauce Sans";
-  src: url("fonts/OpenSauceSans-SemiBold.ttf") format("truetype");
-  font-weight: 600;
+  font-style: normal;
   font-display: block;
 }
 
@@ -71,6 +51,13 @@ html,
 body {
   margin: 0;
   height: 100%;
+  /* Nada de la ventana scrollea: el layout es de alto fijo (.app-root mide
+     100vh) y lo unico que se desplaza es el panel de controles por dentro
+     (.control-panel-inner, overflow:auto). Sin esto aparecia una barra de
+     scroll en toda la ventana por UN pixel: las filas del panel miden alturas
+     fraccionarias (527.625 + 171.375 + 61) y al redondear, el alto de scroll
+     daba 761 contra 760 de ventana. */
+  overflow: hidden;
   /* Esto es una app, no un documento: arrastrar sobre la interfaz no debe
      seleccionar texto. Una seleccion accidental bajo el cursor es lo que
      Chromium convierte en un arrastre nativo, y ese arrastre se peleaba con
@@ -78,8 +65,8 @@ body {
      campos de texto siguen seleccionables, justo abajo. */
   user-select: none;
   -webkit-user-drag: none;
-  font-family: "Open Sauce Two", sans-serif;
-  font-weight: 300;
+  font-family: var(--font-ui);
+  font-weight: var(--peso-ui);
   /* Sin esto, un label que se parte en dos lineas ("Bordes del video")
      queda con los renglones pegados y se ve aplastado. */
   line-height: 1.4;
@@ -123,6 +110,15 @@ textarea {
    (setAdaptiveAccent) los pisa apenas corre, con el mismo matiz que la
    foto/video, igual que el fondo. */
 :root {
+  /* Tipografia de toda la app en UN solo lugar: cambiar estas dos lineas
+     cambia la interfaz entera. Antes cada regla nombraba su familia y su
+     peso a mano (23 declaraciones repartidas), y probar otra fuente obligaba
+     a tocarlas todas. */
+  --font-ui: "Open Sauce Two", sans-serif;
+  /* Peso base para texto corrido (labels, inputs, hints). El unico otro peso
+     declarado es 400 -- si aca se pone cualquier otra cosa, no hay cara que
+     lo cubra (ver el bloque de @font-face arriba). */
+  --peso-ui: 300;
   --accent: #9a97a3;
   --accent-hover: #88858f;
   --accent-glow: rgba(154, 151, 163, 0.18);
@@ -183,8 +179,22 @@ textarea {
   height: 40px;
   z-index: 5;
   display: flex;
-  align-items: center;
-  padding-left: 12px;
+  /* El boton de ocultar el panel se alinea con DOS cosas del diseno, no con
+     la franja (que es solo la zona de arrastre y no se ve):
+       - a la izquierda, con la orilla del previsualizador -- los mismos 24px
+         de padding lateral que .preview-panel, asi su borde izquierdo cae
+         justo donde arranca el fotograma;
+       - a lo alto, con el boton de guardar preset, que es el otro boton de
+         icono de esa misma altura, al otro lado de la division. Los dos
+         miden 24px y arrancan a 16px del techo de la ventana -- aca por este
+         padding, alla por el de .quick-fields. Va ese mismo 16 y no la
+         medida exacta del boton de al lado a proposito: su fila la estira el
+         texto (24.39px con la tipografia de ahora), asi que cualquier numero
+         copiado de ahi se descuadra el dia que cambie la fuente. Con
+         align-items:center quedaba 9px mas arriba y se leia torcido. */
+  align-items: flex-start;
+  padding-top: 16px;
+  padding-left: 24px;
   -webkit-app-region: drag;
 }
 
@@ -227,8 +237,13 @@ textarea {
 .app-root.preview-collapsed.preview-animating .preview-panel {
   display: flex;
 }
+/* Sin previsualizador ya no hay orilla del fotograma con que alinearse: la
+   franja cruza toda la ventana y el boton queda sobre el panel, asi que se
+   alinea con EL, que lleva 16px de padding (los 24 de .preview-panel lo
+   dejaban sobresaliendo de la columna de controles). */
 .app-root.preview-collapsed .app-titlebar {
   left: 0;
+  padding-left: 16px;
 }
 .app-root.preview-collapsed .control-panel {
   padding-top: 40px;
@@ -320,7 +335,7 @@ html[data-platform="darwin"] .control-panel {
 h2 {
   margin: 0;
   font-size: 12px;
-  font-weight: 300;
+  font-weight: var(--peso-ui);
   color: #ffffff;
 }
 
@@ -369,9 +384,9 @@ h2 {
 
 .control-label,
 .output-field-label {
-  font-family: "Open Sauce Two", sans-serif;
+  font-family: var(--font-ui);
   font-size: 12px;
-  font-weight: 300;
+  font-weight: var(--peso-ui);
   width: 81px;
   flex-shrink: 0;
   color: #ffffff;
@@ -383,9 +398,9 @@ input,
 select,
 .text-input,
 .preset-dropdown-trigger {
-  font-family: "Open Sauce Sans", sans-serif;
+  font-family: var(--font-ui);
   font-size: 12px;
-  font-weight: 300;
+  font-weight: var(--peso-ui);
   line-height: 1.3;
   padding: 4px 8px;
   border-radius: 8px;
@@ -516,7 +531,7 @@ select:focus,
 /* ------------------------------------------------------------- botones */
 
 .btn {
-  font-family: "Open Sauce Sans", sans-serif;
+  font-family: var(--font-ui);
   font-size: 12px;
   padding: 4px 12px;
   border-radius: 8px;
@@ -642,7 +657,7 @@ select:focus,
      si. Asi cada fila queda en 28. */
   padding: 4px 8px;
   border-radius: 6px;
-  font-family: "Open Sauce Sans", sans-serif;
+  font-family: var(--font-ui);
   font-size: 12px;
   color: #ffffff;
   cursor: pointer;
@@ -718,7 +733,7 @@ input[type="text"].preset-inline-input {
 }
 
 .segmented-item {
-  font-family: "Open Sauce Sans", sans-serif;
+  font-family: var(--font-ui);
   font-size: 12px;
   padding: 4px 10px;
   border-radius: 8px;
@@ -767,7 +782,7 @@ input[type="text"].preset-inline-input {
   justify-content: center;
   width: 58px;
   height: 58px;
-  border-radius: 12px;
+  border-radius: 16px;
   border: 1px solid var(--field-border);
   background: var(--field-bg);
   overflow: hidden;
@@ -960,7 +975,7 @@ input[type="text"].preset-inline-input {
 }
 
 .chip-name {
-  font-family: "Open Sauce Sans", sans-serif;
+  font-family: var(--font-ui);
   font-size: 12px;
   white-space: nowrap;
   overflow: hidden;
@@ -968,12 +983,21 @@ input[type="text"].preset-inline-input {
 }
 
 .chip-kind {
-  font-family: "Open Sauce Sans", sans-serif;
+  font-family: var(--font-ui);
   font-size: 11px;
   color: var(--muted);
 }
 
 /* -------------------------------------------------------- ajuste imagen */
+
+/* Ancla del boton de forma del recorte, que va absolute en una esquina.
+   display:flex (y no block) para que el canvas no deje el hueco de linea
+   base que dejan los elementos en linea -- si no, el recuadro no cierra con
+   el borde de abajo y el boton queda descentrado respecto de la imagen. */
+.focus-picker-wrap {
+  position: relative;
+  display: flex;
+}
 
 .focus-picker {
   width: 100%;
@@ -984,11 +1008,41 @@ input[type="text"].preset-inline-input {
   cursor: grab;
 }
 
+/* El desplegable de la forma del recorte se apoya en la esquina de arriba a
+   la derecha del mini preview. Pisa el position:relative de .preset-dropdown
+   a proposito: la lista que cuelga se muda a <body> y se posiciona sola
+   (positionFloatingDropdown), asi que no necesita a este de ancla. */
+#crop-mode-dropdown {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+
+/* Mismo vidrio oscuro que el boton de agrandar del previsualizador grande:
+   cae sobre la foto, que puede ser clara u oscura en esa esquina. */
+.focus-crop-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+  color: #ffffff;
+  cursor: pointer;
+}
+.focus-crop-btn:hover {
+  background: rgb(0 0 0 / 13%);
+}
+
 /* -------------------------------------------------------------- ayudas */
 
 .hint {
   margin: 0;
-  font-family: "Open Sauce Sans", sans-serif;
+  font-family: var(--font-ui);
   font-size: 11px;
   line-height: 1.45;
   color: var(--muted);
@@ -1050,7 +1104,7 @@ input[type="text"].preset-inline-input {
 }
 
 .status-text {
-  font-family: "Open Sauce Sans", sans-serif;
+  font-family: var(--font-ui);
   font-size: 12px;
   line-height: 1.35;
   color: var(--muted);
@@ -1091,20 +1145,19 @@ input[type="text"].preset-inline-input {
 }
 
 /* "Generar video" es la accion principal, asi que es el unico texto del
-   panel mas gordo que el resto -- pero en 500, no en 600, que quedaba
-   demasiado. Ojo con la familia: de "Open Sauce Sans" (la que usan todos los
-   botones) solo hay archivos 300, 400 y 600, asi que pedirle 500 caeria al
-   400 y se veria casi igual que el resto. El 500 de verdad (Medium) esta en
-   "Open Sauce Two", la misma familia de las etiquetas del panel, asi que el
-   boton usa esa.
+   panel mas gordo que el resto: 400 contra el 300 de toda la interfaz. Antes
+   pedia 500, que era el Medium de Figtree; de las dos caras que quedan
+   declaradas la mas pesada es 400, asi que se escribe 400. El navegador ya
+   hacia justo eso (un 500 sin cara propia cae en la de 400, sin inventar
+   nada), pero asi el CSS dice lo que de verdad se ve.
 
    Y es el unico CTA que NO sigue el color de la imagen: blanco fijo cuando
    ya se puede generar, apagado cuando falta algo. */
 .btn-generate {
   flex: 1;
   padding: 6px 12px;
-  font-family: "Open Sauce Two", sans-serif;
-  font-weight: 500;
+  font-family: var(--font-ui);
+  font-weight: 400;
 }
 .btn-generate:not(:disabled) {
   background: #ffffff;
@@ -1149,12 +1202,22 @@ input[type="text"].preset-inline-input {
   justify-content: center;
 }
 
+/* El canvas del previsualizador en vivo se comporta igual que el <img> que
+   reemplaza: su tamano intrinseco es el del lienzo (2560x1440, ver
+   live-preview.js), asi que con los max-* de aca entra completo y centrado,
+   sin deformarse. */
 #preview-image,
+#live-preview,
 #loop-preview-video {
   max-width: 100%;
   max-height: 100%;
   border-radius: 12px;
   object-fit: contain;
+}
+
+/* Se puede clickear para pausar/reproducir, igual que el <video>. */
+#live-preview {
+  cursor: pointer;
 }
 
 /* En pantalla completa el fotograma SI tiene que crecer. Con solo los max-*
@@ -1167,7 +1230,9 @@ input[type="text"].preset-inline-input {
    borde. Sin radio: una esquina redondeada en pantalla completa no tiene
    sentido, y ademas con la caja al 100% recortaria el hueco vacio en vez de
    la imagen. */
+   la imagen. */
 #preview-surface:fullscreen #preview-image,
+#preview-surface:fullscreen #live-preview,
 #preview-surface:fullscreen #loop-preview-video {
   width: 100%;
   height: 100%;
@@ -1239,7 +1304,7 @@ input[type="text"].preset-inline-input {
 }
 .dropzone-sub {
   margin: 0;
-  font-family: "Open Sauce Sans", sans-serif;
+  font-family: var(--font-ui);
   font-size: 12px;
   color: var(--muted);
 }
@@ -1264,9 +1329,32 @@ input[type="text"].preset-inline-input {
   top: 50%;
   transform: translate(-50%, -50%);
 }
+/* Estos right/top son solo el respaldo del primer instante: la posicion real
+   la pisa positionPreviewOverlays (app.js) contra el recuadro del medio, y
+   mientras no haya recuadro que medir el boton va oculto (antes se veia aca,
+   flotando en la esquina de la zona vacia, con el preview todavia
+   generandose).
+
+   Se ve mas marcado que el play del loop a proposito: cae sobre una esquina
+   cualquiera del fotograma -- muchas veces clara -- y con el negro al 55% de
+   la regla compartida se perdia encima de la imagen. Le va el mismo vidrio
+   que a la pastilla de "generando" y los desplegables, y una sombra que lo
+   despega de lo que tenga detras, sea claro u oscuro.
+
+   Sin borde (lo pidio el usuario): el circulo se define por su propio vidrio
+   oscuro, no por una linea. Hay que apagarlo a mano porque la regla que
+   comparte con el play del loop le pone 1px solid. */
 .preview-expand-btn {
   right: 12px;
   top: 12px;
+  border: none;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(12px) saturate(140%);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+}
+.preview-expand-btn:hover {
+  background: rgba(0, 0, 0, 0.72);
 }
 
 /* Pastilla de "generando" (arriba a la izquierda, del lado opuesto al boton
@@ -1291,7 +1379,7 @@ input[type="text"].preset-inline-input {
   background: rgba(26, 24, 32, 0.55);
   backdrop-filter: blur(28px) saturate(150%);
   -webkit-backdrop-filter: blur(28px) saturate(150%);
-  font-family: "Open Sauce Sans", sans-serif;
+  font-family: var(--font-ui);
   font-size: 11px;
   color: #ffffff;
   pointer-events: none;
@@ -1348,6 +1436,11 @@ input[type="text"].preset-inline-input {
   pointer-events: none;
   transition: opacity 0.15s ease;
 }
+/* El primer selector apunta al canvas en vivo, que es lo que se ve ahora
+   (#loop-preview-video quedo oculto para siempre -- ver live-preview.js -- y
+   por eso la barra habia dejado de aparecer al pasar el mouse). Se deja
+   tambien el del <video> por si algun camino vuelve a mostrarlo. */
+#live-preview:hover ~ .loop-preview-controls,
 #loop-preview-video:hover ~ .loop-preview-controls,
 .loop-preview-controls:hover,
 .loop-preview-controls:has(:active) {
@@ -1367,14 +1460,46 @@ input[type="text"].preset-inline-input {
   cursor: pointer;
   filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.85));
 }
-/* Este si es un range visible (no cae en .slider) -- barra de progreso. */
+/* Este si es un range visible (no cae en .slider) -- barra de progreso.
+   Se dibuja a mano y no con la apariencia nativa: el navegador le ponia su
+   propio contorno al riel y a la perilla, y encima llevaba un drop-shadow, que
+   juntos eran lo que la hacia ver cargada. Ahora es riel plano + punto blanco,
+   sin borde ni sombra. El relleno del progreso va como degradado con corte seco
+   en --fill, igual que .slider (lo pinta paintSliderFill en app.js) -- al
+   apagar la apariencia nativa se pierde el relleno automatico de
+   accent-color. */
 .loop-preview-seek {
   flex: 1;
   padding: 0;
   border: none;
   background: none;
-  accent-color: var(--accent);
-  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.7));
+  -webkit-appearance: none;
+  appearance: none;
+}
+.loop-preview-seek::-webkit-slider-runnable-track {
+  height: 4px;
+  border: none;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    var(--accent) var(--fill, 0%),
+    rgba(255, 255, 255, 0.25) var(--fill, 0%)
+  );
+}
+.loop-preview-seek::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px; /* centra el punto sobre el riel de 4px */
+  border: none;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: none;
+  cursor: pointer;
+}
+.loop-preview-seek:focus {
+  outline: none;
 }
 
 /* ------------------------------------------------- ventana de portada */
@@ -1399,7 +1524,7 @@ input[type="text"].preset-inline-input {
 .glass-window-title {
   margin: 0;
   font-size: 13px;
-  font-weight: 300;
+  font-weight: var(--peso-ui);
 }
 
 .glass-window-close {
@@ -1476,7 +1601,7 @@ input[type="text"].preset-inline-input {
   padding: 0;
   border: none;
   background: none;
-  font-family: "Open Sauce Sans", sans-serif;
+  font-family: var(--font-ui);
   font-size: 11px;
   color: var(--accent);
   cursor: pointer;
@@ -1503,6 +1628,30 @@ input[type="text"].preset-inline-input {
 .cover-options {
   display: flex;
   gap: 8px;
+}
+/* Variante corta para "Incluir": mismas tarjetas pero de una linea, sin
+   diagrama ni medidas. Se leen como las de "Que guardar" (son lo mismo: dos
+   interruptores) pero ocupan la mitad del alto, que es lo que mantiene el modal
+   corto ahora que hay dos grupos en vez de uno. */
+.cover-options-sm .cover-option {
+  flex-direction: row;
+  align-items: center;
+  padding: 8px 30px 8px 10px;
+}
+.cover-options-sm .cover-option-check {
+  top: 50%;
+  transform: translateY(-50%);
+}
+.cover-options-sm .cover-option-active .cover-option-check::after {
+  top: 2px;
+}
+
+/* Un solo renglon para cambiar de fuente (se ve UNO de los tres botones, ver
+   renderCoverModal): reemplaza a los parrafos que habia antes. */
+.cover-row-source {
+  display: flex;
+  gap: 14px;
+  min-height: 16px;
 }
 .cover-option {
   position: relative;
@@ -1559,11 +1708,11 @@ input[type="text"].preset-inline-input {
   color: var(--accent);
 }
 .cover-option-title {
-  font-family: "Open Sauce Sans", sans-serif;
+  font-family: var(--font-ui);
   font-size: 12px;
 }
 .cover-option-sub {
-  font-family: "Open Sauce Sans", sans-serif;
+  font-family: var(--font-ui);
   font-size: 11px;
   color: var(--muted);
 }
@@ -1575,7 +1724,7 @@ input[type="text"].preset-inline-input {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-family: "Open Sauce Sans", sans-serif;
+  font-family: var(--font-ui);
   font-size: 12px;
   cursor: pointer;
 }
@@ -1660,7 +1809,7 @@ input[type="text"].preset-inline-input {
   height: 100%;
 }
 
-#cover-frame-video,
+#cover-frame-canvas,
 #cover-image-preview {
   width: 100%;
   max-height: 220px;

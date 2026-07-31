@@ -53,13 +53,25 @@ function hslToHex(h, s, l) {
 // casi siempre letterbox/fondo horneado por ffmpeg, no "el color de la
 // foto"), mezclados con el promedio general para no quedar pegado a un
 // solo pixel ruidoso.
+// Lienzo de muestreo, uno solo para toda la app: el ambilight llama a esto
+// varias veces por segundo y crear un <canvas> nuevo cada vez es basura para el
+// recolector, ademas de perder el contexto ya configurado.
+const SAMPLE_SIZE = 32;
+let sampleCtx = null;
+
 function extractImageHue(img) {
-  if (!img || !img.naturalWidth) return null;
-  const size = 32;
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  // naturalWidth es de las <img>; videoWidth, de los <video> -- el medio en vivo
+  // (ver ambilightFromSource abajo, y arrancarAmbilight en live-preview.js).
+  // width cubre un <canvas>. drawImage acepta los tres por igual.
+  if (!img || !(img.naturalWidth || img.videoWidth || img.width)) return null;
+  const size = SAMPLE_SIZE;
+  if (!sampleCtx) {
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    sampleCtx = canvas.getContext("2d", { willReadFrequently: true });
+  }
+  const ctx = sampleCtx;
   let data;
   try {
     ctx.drawImage(img, 0, 0, size, size);
@@ -148,4 +160,83 @@ window.setAdaptiveAccent = function (img) {
   root.setProperty("--accent", accent);
   root.setProperty("--accent-hover", accentHover);
   root.setProperty("--accent-glow", hexToRgbaString(accent, 0.22));
+};
+
+// -------------------------------------------------------------- ambilight
+//
+// El color del fondo SIGUE al video mientras se reproduce, como esas tiras LED
+// detras del televisor. Dos cosas lo hacen posible:
+//
+//   1. se muestrea el cuadro que se esta viendo de verdad -- el canvas del
+//      previsualizador en vivo (live-preview.js), no un fotograma que armo
+//      ffmpeg cuando se toco algo;
+//   2. el matiz aplicado se ACERCA de a poco al del cuadro en vez de saltar.
+//
+// Sin lo segundo, cada cambio (agrandar la escala, mover un borde) pegaba un
+// salto al color que hubiera justo en ese instante y ahi se quedaba clavado.
+let hueActual = null;
+
+function acercarMatiz(actual, objetivo, factor) {
+  // Por el camino corto del circulo: de 350 a 10 pasa por 0, no al reves dando
+  // la vuelta entera por todos los colores del medio.
+  const d = ((objetivo - actual + 540) % 360) - 180;
+  return (actual + d * factor + 360) % 360;
+}
+
+// Ultimo matiz que se ESCRIBIO en el DOM (distinto de hueActual, que avanza en
+// cada muestreo aunque el cambio sea invisible).
+let hueAplicado = null;
+
+// Cuanto tiene que moverse el matiz para que valga la pena tocar el DOM. Escribir
+// el fill de los blobs no es gratis ni de lejos: cada uno vive dentro de un
+// feGaussianBlur de stdDeviation 80 sobre un area de 2000x1550 (ver el <svg> del
+// fondo en index.html), asi que cambiarlo obliga a rehacer los dos desenfoques,
+// y de paso --accent en :root invalida el estilo de TODO el documento. Con el
+// ambilight muestreando a 8 por segundo eso era un parpadeo de trabajo constante
+// mientras el video corria, para mover el color un cuarto de grado. Un grado y
+// medio de matiz sobre un manchon desenfocado no lo ve nadie; el video a los
+// tirones, si.
+const MIN_DELTA_HUE = 1.5;
+
+function aplicarMatiz(hue) {
+  if (hue == null) {
+    hueAplicado = null;
+  } else {
+    if (hueAplicado != null) {
+      const d = Math.abs(((hue - hueAplicado + 540) % 360) - 180);
+      if (d < MIN_DELTA_HUE) return;
+    }
+    hueAplicado = hue;
+  }
+  ensureBlobEls();
+  const colors = hue == null ? NEUTRAL_BLOB_COLORS : deriveBlobColors(hue);
+  if (blob1El) blob1El.setAttribute("fill", colors.blob1);
+  if (blob2El) blob2El.setAttribute("fill", colors.blob2);
+  const root = document.documentElement.style;
+  if (hue == null) {
+    root.setProperty("--accent", NEUTRAL_UI_ACCENT);
+    root.setProperty("--accent-hover", NEUTRAL_UI_ACCENT_HOVER);
+    root.setProperty("--accent-glow", NEUTRAL_UI_ACCENT_GLOW);
+    return;
+  }
+  const accent = hslToHex(hue, 0.4, 0.62);
+  root.setProperty("--accent", accent);
+  root.setProperty("--accent-hover", hslToHex(hue, 0.4, 0.52));
+  root.setProperty("--accent-glow", hexToRgbaString(accent, 0.22));
+}
+
+// src null = sin medio: vuelve al violeta del diseno y olvida el matiz, para que
+// el proximo video no arranque interpolando desde el color del anterior.
+window.ambilightFromSource = function (src, factor = 0.12) {
+  if (!src) {
+    hueActual = null;
+    aplicarMatiz(null);
+    return;
+  }
+  const objetivo = extractImageHue(src);
+  // Cuadro sin color util (un fundido a negro, por ejemplo): se queda el de
+  // antes en vez de irse al violeta de "sin medio" y volver.
+  if (objetivo == null) return;
+  hueActual = hueActual == null ? objetivo : acercarMatiz(hueActual, objetivo, factor);
+  aplicarMatiz(hueActual);
 };

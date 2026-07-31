@@ -45,13 +45,26 @@ const ICONS = {
     + '<path d="M18.42 15.61a2.1 2.1 0 0 1 2.97 2.97l-3.39 3.42h-3v-3l3.42 -3.39" />',
   music: '<path d="M3 17a3 3 0 1 0 6 0a3 3 0 0 0 -6 0" /><path d="M13 17a3 3 0 1 0 6 0a3 3 0 0 0 -6 0" />'
     + '<path d="M9 17v-13h10v13" /><path d="M9 8h10" />',
-  // maximize/minimize de Tabler (las 4 esquinas) -- el "expand" lo mando el
-  // usuario; el "shrink" es su pareja del mismo set, para que entrar y salir
-  // de pantalla completa se vea como el mismo icono al revés.
-  expand: '<path d="M4 8v-2a2 2 0 0 1 2 -2h2" /><path d="M4 16v2a2 2 0 0 0 2 2h2" />'
-    + '<path d="M16 4h2a2 2 0 0 1 2 2v2" /><path d="M16 20h2a2 2 0 0 0 2 -2v-2" />',
-  shrink: '<path d="M15 19v-2a2 2 0 0 1 2 -2h2" /><path d="M15 5v2a2 2 0 0 0 2 2h2" />'
-    + '<path d="M5 15h2a2 2 0 0 1 2 2v2" /><path d="M5 9h2a2 2 0 0 0 2 -2v-2" />',
+  // Los dos del boton de agrandar, tal como los mando el usuario (sin el
+  // <path> del recuadro transparente que traen al principio, que no dibuja
+  // nada -- ninguno de los de aca lo lleva): arrows-maximize para el estado
+  // normal y arrows-minimize para cuando ya esta en pantalla completa. Son
+  // pareja del mismo set -- las mismas 4 esquinas, unas hacia afuera y las
+  // otras hacia adentro -- asi entrar y salir se ve como el mismo icono dado
+  // vuelta. Antes eran las 4 esquinas redondeadas.
+  expand: '<path d="M16 4l4 0l0 4" /><path d="M14 10l6 -6" />'
+    + '<path d="M8 20l-4 0l0 -4" /><path d="M4 20l6 -6" />'
+    + '<path d="M16 20l4 0l0 -4" /><path d="M14 14l6 6" />'
+    + '<path d="M8 4l-4 0l0 4" /><path d="M4 4l6 6" />',
+  shrink: '<path d="M5 9l4 0l0 -4" /><path d="M3 3l6 6" />'
+    + '<path d="M5 15l4 0l0 4" /><path d="M3 21l6 -6" />'
+    + '<path d="M19 9l-4 0l0 -4" /><path d="M15 9l6 -6" />'
+    + '<path d="M19 15l-4 0l0 4" /><path d="M15 15l6 6" />',
+  // Forma del recorte, en la esquina del mini preview de "Ajustar imagen"
+  // (resize de Tabler, lo mando el usuario -- sin el <path> del recuadro
+  // transparente que trae al principio, que no dibuja nada).
+  resize: '<path d="M4 11v8a1 1 0 0 0 1 1h8m-9 -14v-1a1 1 0 0 1 1 -1h1m5 0h2m5 0h1a1 1 0 0 1 1 1v1m0 5v2m0 5v1a1 1 0 0 1 -1 1h-1" />'
+    + '<path d="M4 12h7a1 1 0 0 1 1 1v7" />',
   chevronDown: '<path d="M6 9l6 6l6 -6" />',
   chevronsLeft: '<path d="M11 7l-5 5l5 5" /><path d="M17 7l-5 5l5 5" />',
   chevronsRight: '<path d="M7 7l5 5l-5 5" /><path d="M13 7l5 5l-5 5" />',
@@ -134,6 +147,7 @@ function fillStaticIcons() {
   $("#media-chip").querySelector(".btn-icon").innerHTML = iconSvg("trash");
   $("#audio-chip").querySelector(".btn-icon").innerHTML = iconSvg("trash");
   $("#preview-expand").innerHTML = iconSvg("expand");
+  $("#crop-mode-trigger").innerHTML = iconSvg("resize");
   $("#loop-preview-play").innerHTML = iconSvgFilled("playerPlay");
   $("#loop-preview-toggle").innerHTML = iconSvgFilled("playerPause");
   // "Guardar preset": tenia (por error) el mismo icono de carpeta que
@@ -205,7 +219,7 @@ function render(state) {
   // hay video cargado, asi que no hace falta filtrar aca; lo que si filtra
   // es syncLoopTrimDefined, que decide si ya hay un pedazo que componer.
   syncLoopTrimDefined(state);
-  scheduleLoopPreview();
+  invalidateLoopPreview();
 }
 
 function refresh() {
@@ -452,22 +466,38 @@ function browseTexture() {
   });
 }
 
-// Un solo click en la tarjeta prende/apaga la textura en el video Y la
-// deja seleccionada para editar sus controles debajo -- si se apaga, sus
-// controles se ocultan (deja de estar "seleccionada").
+// El click en la tarjeta hace UNA de tres cosas, segun como este esa textura:
+//
+//   apagada                  -> se prende y queda elegida para editar
+//   prendida, otra elegida   -> pasa a ser la elegida (NO se apaga)
+//   prendida y ya elegida    -> se apaga
+//
+// El caso del medio es el que faltaba: con dos texturas puestas, el unico click
+// disponible las quitaba, asi que no habia forma de pasar de una a la otra para
+// cambiarle el estilo, la opacidad o la escala. Con una sola textura no cambia
+// nada -- la que esta prendida es siempre la elegida, asi que el click la apaga
+// igual que antes.
 function toggleTextureLayer(path, layerIndex) {
-  markPresetModified();
   if (layerIndex === -1) {
+    markPresetModified();
     pywebview.api.add_texture_layer(path).then(() => {
       selectedTexturePath = path;
       refresh();
     });
-  } else {
-    pywebview.api.remove_texture_layer(layerIndex).then(() => {
-      if (selectedTexturePath === path) selectedTexturePath = null;
-      refresh();
-    });
+    return;
   }
+  if (selectedTexturePath !== path) {
+    // Solo cambia a cual le apuntan los controles: no toca las capas, asi que
+    // no hay que ir a Python ni marcar el preset como modificado.
+    selectedTexturePath = path;
+    if (lastState) renderTextureControls(lastState);
+    return;
+  }
+  markPresetModified();
+  pywebview.api.remove_texture_layer(layerIndex).then(() => {
+    selectedTexturePath = null;
+    refresh();
+  });
 }
 
 function deleteTextureFile(path) {
@@ -530,7 +560,7 @@ function commitTextureOpacity(v) {
   markPresetModified();
   pywebview.api.update_texture_layer(i, { opacity: v });
   Preview.schedulePreview();
-  scheduleLoopPreview();
+  invalidateLoopPreview();
 }
 
 function commitTextureScale(v) {
@@ -543,7 +573,7 @@ function commitTextureScale(v) {
   markPresetModified();
   pywebview.api.update_texture_layer(i, { scale: v });
   Preview.schedulePreview();
-  scheduleLoopPreview();
+  invalidateLoopPreview();
 }
 
 // --------------------------------------------------------------- escala
@@ -605,11 +635,10 @@ function commitScale(v) {
   markPresetModified();
   pywebview.api.set_scale_pct(Math.round(uiToScalePct(v)));
   Preview.schedulePreview();
-  // Sin esto el fotograma estatico se actualizaba con el borde nuevo pero
-  // el loop que ya estaba generado (o el que se generara al tocar play)
-  // seguia con el borde viejo -- a diferencia del recorte/velocidad, este
-  // control no disparaba una regeneracion del loop.
-  scheduleLoopPreview();
+  // Sin esto el fotograma estatico se actualizaba con el borde nuevo pero el
+  // loop seguia con el borde viejo. No lo rearma en el momento: lo deja
+  // vencido y se compone cuando se lo quiera ver (ver invalidateLoopPreview).
+  invalidateLoopPreview();
 }
 
 // ----------------------------------------------------------- velocidad
@@ -1185,6 +1214,8 @@ window.addEventListener("pywebviewready", () => {
   FocusPicker.init();
   LoopSlider.init();
   Preview.init();
+  // Antes de initLoopPreviewControls, que le pide el elemento del canvas.
+  LivePreview.init();
   $("#loop-preview-play").addEventListener("click", playLoopPreview);
   $("#preview-toggle-btn").addEventListener("click", togglePreviewPanel);
   initLoopPreviewControls();
@@ -1347,6 +1378,9 @@ window.addEventListener("pywebviewready", () => {
     if (e.key === "Enter") commitScale(e.target.value);
   });
 
+
+
+
   // --------------------------------------------------------- presets
   $("#preset-trigger").addEventListener("click", (e) => {
     e.stopPropagation();
@@ -1440,18 +1474,23 @@ window.addEventListener("pywebviewready", () => {
   });
 
   // ------------------------------------------------- modal "Guardar portada"
+  // La barra recorre TODO el video, no el pedazo que hace loop: mueve el
+  // previsualizador en vivo (que ya tiene el archivo cargado y lo compone) y el
+  // panel muestra un espejo de ese lienzo.
   $("#cover-frame-seek").addEventListener("input", (e) => {
-    const video = $("#cover-frame-video");
-    if (video.duration) video.currentTime = (e.target.value / 1000) * video.duration;
+    // Mismo motivo que la barra del previsualizador: el relleno se pinta a mano
+    // desde que la barra dejo de usar la apariencia nativa del navegador.
+    paintSliderFill(e.target);
+    const v = coverVideoEl();
+    const largo = v.duration || 0;
+    if (largo) v.currentTime = (e.target.value / 1000) * largo;
   });
   // ---- volver al fotograma del video ----
   $("#cover-back-btn").addEventListener("click", () => {
     coverSource = "frame";
     coverImagePath = null;
     $("#cover-image-preview").removeAttribute("src");
-    // El recorte pudo cambiar mientras se miraba la imagen propia, asi que se
-    // pide el fragmento de nuevo si hacia falta.
-    if (lastState && lastState.media_is_video && !$("#cover-frame-video").getAttribute("src")) {
+    if (lastState && lastState.media_is_video) {
       setupCoverFramePicker();
     } else if (lastState && !lastState.media_is_video) {
       $("#cover-image-preview").src = $("#preview-image").src;
@@ -1504,14 +1543,25 @@ window.addEventListener("pywebviewready", () => {
     browseCoverImage();
   });
 
-  $("#cover-compose").addEventListener("change", renderCoverModal);
   setupCoverImageFraming();
-  $$(".cover-option").forEach((opt) => {
+  // "Incluir": cada capa es un interruptor suelto, y las dos pueden quedar
+  // apagadas (esa es la portada pelada, sin marco ni grano).
+  $("#cover-layer-template").addEventListener("click", () => {
+    coverLayers.template = !coverLayers.template;
+    renderCoverModal();
+    dibujarFotogramaDePortada(); // el fotograma del panel acompana al interruptor
+  });
+  $("#cover-layer-textures").addEventListener("click", () => {
+    coverLayers.textures = !coverLayers.textures;
+    renderCoverModal();
+    dibujarFotogramaDePortada();
+  });
+  // "Que guardar": aca SI hay que dejar una prendida -- sin ninguna no habria
+  // archivo que guardar.
+  $$("#cover-mode-picker .cover-option").forEach((opt) => {
     opt.addEventListener("click", () => {
       const key = opt.dataset.value;
       const otra = key === "full" ? "empty" : "full";
-      // Apagar la ultima que queda no tiene sentido (no habria nada que
-      // guardar): en ese caso el click se ignora.
       if (coverWant[key] && !coverWant[otra]) return;
       coverWant[key] = !coverWant[key];
       renderCoverModal();
@@ -1522,16 +1572,17 @@ window.addEventListener("pywebviewready", () => {
     const usingImage = coverSource === "image";
     if (usingImage && !coverImagePath) return;
     const isVideo = !!(lastState && lastState.media_is_video);
-    const loopTime = !usingImage && isVideo ? $("#cover-frame-video").currentTime : null;
+    // Segundos del ARCHIVO (no del loop): la barra del panel recorre el video
+    // entero -- ver source_time en save_cover (api.py).
+    const sourceTime = !usingImage && isVideo ? coverVideoEl().currentTime : null;
     const mode = coverWant.full && coverWant.empty ? "both" : (coverWant.empty ? "empty" : "full");
-    const compose = usingImage ? $("#cover-compose").checked : true;
     // El encuadre elegido a mano viaja junto (zoom, x, y) -- ver
     // build_focus_crop en engine.py, que hace el mismo recorte.
     const focus = usingImage
       ? [coverImageFocus.zoom, coverImageFocus.x, coverImageFocus.y]
       : null;
     closeCoverModal();
-    saveCoverNow(loopTime, mode, usingImage ? coverImagePath : null, compose, focus);
+    saveCoverNow(sourceTime, mode, usingImage ? coverImagePath : null, focus);
   });
   $("#cover-modal-cancel").addEventListener("click", closeCoverModal);
   $("#cover-modal-close").addEventListener("click", closeCoverModal);
@@ -1629,53 +1680,134 @@ function setPreviewJob(kind, running) {
 // Api.request_preview() -- mismo criterio que el "self.after" de Tk en
 // la version vieja (_schedule_preview), pero con setTimeout.
 
+// El <img id="preview-image"> ya no se MUESTRA (lo reemplazo el canvas en vivo),
+// pero sigue haciendo falta como espejo: hay tres cosas que necesitan un <img>
+// de verdad y no un canvas -- el tinte del fondo (background-tint.js pide
+// naturalWidth), la ventana aparte de "Agrandar" (lee su src, ver
+// pywebview-shim.js) y la portada de una foto (el modal reusa ese src).
+//
+// Se actualiza con retraso y no en cada cuadro: canvas.toDataURL() de 2560x1440
+// cuesta decenas de milisegundos y ninguna de las tres cosas necesita ir al dia
+// al instante.
+// Le pide a Python los mosaicos de textura ya preparados -- los MISMOS archivos
+// que come ffmpeg -- y se los pasa al canvas, para que la textura del preview
+// sea pixel a pixel la del video exportado (ver prepared_textures en api.py y
+// dibujarTextura en live-preview.js).
+//
+// Con retraso y en su propio pedido: preparar un mosaico nuevo cuesta trabajo de
+// PIL, y solo hace falta cuando cambia la ESCALA de una textura (el resto de las
+// veces sale del cache y vuelve al instante). Mientras no llega, el canvas
+// dibuja su propia baldosa, que se ve igual de fuerte.
+let preparedTexturesTimer = null;
+function schedulePreparedTextures(delay = 200) {
+  if (preparedTexturesTimer) clearTimeout(preparedTexturesTimer);
+  preparedTexturesTimer = setTimeout(() => {
+    preparedTexturesTimer = null;
+    if (typeof pywebview === "undefined") return;
+    pywebview.api.prepared_textures()
+      .then((lista) => LivePreview.setPreparedTextures(lista))
+      .catch(() => {});
+  }, delay);
+}
+
+let mirrorTimer = null;
+function scheduleMirror(delay = 450) {
+  if (mirrorTimer) clearTimeout(mirrorTimer);
+  mirrorTimer = setTimeout(() => {
+    mirrorTimer = null;
+    // Mientras el loop corre, NO: canvas.toDataURL() de 2560x1440 son decenas de
+    // milisegundos de hilo principal, ademas de traerse el lienzo de vuelta
+    // desde la placa de video, y eso a mitad de reproduccion es un tiron a la
+    // vista. Nadie mira el espejo en ese rato (el panel de portada se abre en
+    // pausa y con video usa su propio fragmento), asi que se reintenta y se
+    // actualiza en cuanto para.
+    if (LivePreview.isPlaying()) {
+      scheduleMirror(delay);
+      return;
+    }
+    const uri = LivePreview.dataUri();
+    if (!uri) return;
+    const img = $("#preview-image");
+    img.src = uri;
+    // El color del fondo NO sale de aca: lo lleva el ambilight, muestreando el
+    // canvas seguido y llegando de a poco (ver arrancarAmbilight en
+    // live-preview.js). Antes se retintaba en este punto y era justo lo que
+    // pegaba el salto: el fondo se clavaba en el color del cuadro que hubiera
+    // en el instante del cambio.
+    if (window.setHalftoneBackgroundImage) {
+      img.decode().then(() => window.setHalftoneBackgroundImage(img)).catch(() => {});
+    }
+  }, delay);
+}
+
 const Preview = (() => {
   let timer = null;
 
-  function schedulePreview(delay = 300) {
+  // Ya no le pide un fotograma a ffmpeg: el previsualizador se compone en vivo
+  // en el canvas (ver live-preview.js), asi que un cambio se ve en el cuadro
+  // siguiente y NO hay pastilla de "Generando vista previa".
+  //
+  // Lo unico que sigue viniendo de Python es la GEOMETRIA: la caja donde cae el
+  // medio (content_box) la calcula engine.content_box, y controles como el de
+  // bordes la cambian. get_state es barato -- no toca ffmpeg -- asi que se le
+  // pide de nuevo y con eso el canvas ya sabe donde dibujar. El nombre y la
+  // firma se mantienen para no tocar los ~15 lugares que llaman a esto.
+  function schedulePreview(delay = 80) {
+    LivePreview.redraw();
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
       if (typeof pywebview === "undefined") return;
-      // La pastilla se prende recien ACA (no al agendar) para que arrastrar
-      // una perilla no la haga aparecer y desaparecer en cada movimiento.
-      setPreviewJob("frame", true);
-      pywebview.api.request_preview().then(
-        // {ok:false} = no va a mandar onPreviewReady (sin medio, o el sondeo
-        // del clip todavia corriendo) -- si no se apaga aca, se queda
-        // girando para siempre.
-        (r) => {
-          if (!r || !r.ok) setPreviewJob("frame", false);
-        },
-        () => setPreviewJob("frame", false)
-      );
+      pywebview.api.get_state().then((s) => {
+        if (!s || !s.media_path) return;
+        LivePreview.applyState(s);
+        schedulePreparedTextures();
+        scheduleMirror();
+      }).catch(() => {});
     }, delay);
   }
 
   function applyState(state) {
     const hasMedia = !!state.media_path;
     $("#preview-dropzone").hidden = hasMedia;
-    $("#preview-expand").hidden = !hasMedia;
+    // El canvas en vivo se entera de TODO por aca: medio, texturas, plantilla,
+    // recorte y velocidad (ver live-preview.js).
+    LivePreview.applyState(state);
+    if (hasMedia) {
+      schedulePreparedTextures();
+      scheduleMirror();
+    }
+    // El boton de agrandar NO se prende con solo tener el medio cargado: hay
+    // un rato (mientras ffmpeg arma el fotograma) en que todavia no hay nada
+    // que agrandar, y ahi quedaba flotando en la esquina de la zona vacia --
+    // positionPreviewOverlays no lo podia reubicar porque no tenia recuadro
+    // que medir, asi que caia en el right/top de respaldo del CSS. Ahora lo
+    // prende ella sola, recien cuando hay fotograma o video a la vista.
     if (!hasMedia) {
-      $("#preview-image").hidden = true;
+      $("#preview-expand").hidden = true;
+      $("#preview-image").removeAttribute("src");
       hideLoopPreview();
       // Se quito el medio a mitad de un preview: el trabajo que quedo
       // corriendo ya no le importa a nadie y su pastilla tiene que irse ya,
       // sin esperar el aviso de Python.
       setPreviewJob("frame", false);
       setPreviewJob("loop", false);
-      if (window.tintBackgroundFromImage) window.tintBackgroundFromImage(null);
+      // Tambien resetea el matiz que venia siguiendo el ambilight, para que el
+      // proximo medio no arranque interpolando desde el color del anterior.
+      if (window.ambilightFromSource) window.ambilightFromSource(null);
       if (window.setHalftoneBackgroundImage) window.setHalftoneBackgroundImage(null);
-      if (window.setAdaptiveAccent) window.setAdaptiveAccent(null);
     }
   }
 
+  // Quedo por compatibilidad: ya no se llama a request_preview (el
+  // previsualizador se compone en vivo), asi que este evento no deberia llegar.
+  // Si llega -- por ejemplo de un pedido que quedo en vuelo al arrancar -- lo
+  // unico que hace es apagar la pastilla y NO pisar nada de lo que se ve.
   function onReady(payload) {
-    // Antes del early return de abajo: aunque el fotograma haya salido mal,
-    // el trabajo termino y la pastilla tiene que apagarse igual.
     setPreviewJob("frame", false);
     const dataUri = payload && payload.data_uri;
     if (!dataUri) return;
+    if (true) return;
     const img = $("#preview-image");
     img.src = dataUri;
     animateImageRefresh(img);
@@ -1761,6 +1893,29 @@ const Preview = (() => {
       // (Volver a trabar el tamano de la ventana lo hace el proceso
       // principal con "leave-html-full-screen" -- ver main.js.)
     });
+    // Esc estando agrandado = volver al previsualizador normal, igual que F11.
+    // El navegador lo hace solo, pero solo si el foco esta donde el espera: si
+    // quedo en un campo de texto o en un desplegable de la app, la tecla se la
+    // lleva otro y la unica salida era el boton. Colgado del documento, llega
+    // siempre. Si hay un panel abierto encima, el otro listener lo cierra y
+    // este saca la pantalla completa -- las dos cosas son lo que uno espera.
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      if (document.fullscreenElement !== $("#preview-surface")) return;
+      document.exitFullscreen().catch(() => {});
+    });
+    // F11 estando agrandado = volver al previsualizador normal. La tecla la
+    // atrapa el proceso principal (ver before-input-event en main.js) porque
+    // alla es donde el menu por defecto de Electron la usaba para la pantalla
+    // completa de la VENTANA, que se desincronizaba con la del documento y
+    // dejaba el previsualizador maximizado sin salida. Sin nada agrandado no
+    // hace nada, a proposito: entrar necesita un gesto real del usuario (el
+    // boton), no vale un aviso por IPC.
+    if (window.api && window.api.onExitPreviewFullscreen) {
+      window.api.onExitPreviewFullscreen(() => {
+        if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      });
+    }
   }
 
   return { init, applyState, onReady, schedulePreview };
@@ -1775,23 +1930,25 @@ function buildFileUrl(path) {
   return `file:///${encodeURI(path.replace(/\\/g, "/"))}`;
 }
 
-// Ruta del ultimo fragmento generado y listo para verse -- null si todavia
-// no hay ninguno, o si el que habia quedo invalido por un cambio de
-// estado. Controla si #loop-preview-play se muestra.
+// Ruta del ultimo fragmento que compuso ffmpeg. Ya no se usa para ver el loop
+// (eso es el canvas en vivo): queda para el panel de portada, que necesita un
+// mp4 real donde buscar un fotograma exacto.
 let loopPreviewPath = null;
 
 function hideLoopPreview() {
+  LivePreview.pause();
   loopPreviewPath = null;
   $("#loop-preview-play").hidden = true;
   $("#loop-preview-controls").hidden = true;
   stopBeat();
+  // El <video> del fragmento ya no se muestra nunca, pero si quedo algo cargado
+  // de una version anterior se suelta igual (memoria y decodificador).
   const video = $("#loop-preview-video");
   if (video.hidden) return;
   video.pause();
   video.hidden = true;
   video.removeAttribute("src");
   video.load();
-  $("#preview-image").hidden = false;
 }
 
 // ------------------------------------------------ el beat junto al loop
@@ -1876,93 +2033,60 @@ function syncLoopTrimDefined(state) {
   if (stateHasRealTrim(state)) loopTrimDefined = true;
 }
 
-let loopPreviewTimer = null;
-function scheduleLoopPreview(delay = 400) {
-  // Todavia sin recortar: no hay pedazo que componer (ver arriba).
-  if (!loopTrimDefined) return;
-  if (loopPreviewTimer) clearTimeout(loopPreviewTimer);
-  loopPreviewTimer = setTimeout(() => {
-    loopPreviewTimer = null;
-    if (typeof pywebview === "undefined") return;
-    setPreviewJob("loop", true);
-    // request_loop_preview() solo devuelve {ok:false} (o rechaza) cuando
-    // NO va a mandar onLoopPreviewReady (por ejemplo, todavia analizando
-    // el clip recien cargado, o el medio no es un video) -- sin boton que
-    // resetear, un fallo aca se ignora en silencio (es un refresco de
-    // fondo, no una accion del usuario) y solo hay que apagar la pastilla,
-    // que si no se queda girando para siempre; el proximo cambio de
-    // recorte/velocidad vuelve a intentar.
-    pywebview.api.request_loop_preview().then(
-      (r) => {
-        if (!r || !r.ok) setPreviewJob("loop", false);
-      },
-      () => setPreviewJob("loop", false)
-    );
-  }, delay);
+// Ya no se compone ningun fragmento para el previsualizador: lo que se ve es el
+// canvas en vivo (ver live-preview.js). Estas dos funciones quedan porque las
+// llaman los controles de siempre, pero ahora lo unico que hacen es refrescar el
+// canvas y ofrecer el boton de "ver el loop" cuando hay un video listo.
+//
+// El unico que TODAVIA le pide un mp4 a ffmpeg es el panel de portada, que
+// necesita buscar un fotograma exacto -- y lo pide por su cuenta (ver
+// setupCoverFramePicker), no por aca.
+function invalidateLoopPreview() {
+  LivePreview.redraw();
+  // El boton central aparece en cuanto hay un video que se pueda ver. No hay
+  // nada que esperar: apretarlo lo pone a andar en el acto.
+  const hayVideo = !!(lastState && lastState.media_is_video && lastState.media_path);
+  if (hayVideo && !LivePreview.isPlaying()) $("#loop-preview-play").hidden = false;
+  // La barra de pausa/posicion tambien esta disponible desde el arranque: antes
+  // aparecia recien despues del primer play, porque hasta entonces no habia
+  // ningun fragmento cargado. Ahora el canvas ya muestra el video, asi que es un
+  // reproductor desde el primer momento -- que se VEA o no lo sigue decidiendo
+  // el cursor encima del previsualizador (ver .loop-preview-controls en
+  // styles.css); esto solo la habilita.
+  $("#loop-preview-controls").hidden = !hayVideo;
+  if (hayVideo) syncLoopToggleIcon();
 }
 
+// Se mantiene el nombre porque lo llaman el recorte y la velocidad: con el
+// canvas eso ya no cuesta nada, solo hay que redibujar con los valores nuevos
+// (la geometria la trae Preview.schedulePreview, que los dos ya llaman).
+function scheduleLoopPreview(delay = 0) {
+  LivePreview.redraw();
+}
+
+// Ya NADIE pide fragmentos del loop: el previsualizador se compone en vivo en el
+// canvas y el panel de portada recorre el video entero (ver
+// setupCoverFramePicker). Esto queda porque el evento puede llegar de un pedido
+// que quedara en vuelo, y lo unico que hace es apagar la pastilla.
 window.onLoopPreviewReady = function (payload) {
   setPreviewJob("loop", false);
-  // Fragmento de OTRO medio: se descarta. Pasaba al pegar una foto encima de
-  // un video -- el trabajo del video seguia corriendo, terminaba despues, y
-  // esta funcion volvia a mostrar (y reproducir) ese loop encima de la foto
-  // recien cargada. Python ya lo corta de su lado (_invalidate_loop_preview);
-  // esto es el segundo cerrojo, por si algun camino nuevo se lo saltea.
-  const suMedio = payload && payload.media_path;
-  const medioActual = lastState && lastState.media_path;
-  if (suMedio && medioActual && suMedio !== medioActual) return;
-  const path = payload && payload.path;
-  if (coverModalWaitingForPreview) {
-    coverModalWaitingForPreview = false;
-    if (path) {
-      const coverVideo = $("#cover-frame-video");
-      coverVideo.src = buildFileUrl(path);
-      coverVideo.addEventListener(
-        "loadedmetadata",
-        () => {
-          $("#cover-frame-seek").disabled = false;
-          $("#cover-frame-loading").hidden = true;
-        },
-        { once: true }
-      );
-    } else {
-      $("#cover-frame-loading").textContent = "No se pudo generar la vista previa.";
-    }
-  }
-  if (!path) {
-    if (payload && payload.error) console.error("[loop preview] ffmpeg:", payload.error);
-    return;
-  }
-  loopPreviewPath = path;
-  const video = $("#loop-preview-video");
-  if (!video.hidden) {
-    // Ya se estaba viendo un fragmento anterior -- se actualiza en vivo
-    // en vez de tirarlo de vuelta al fotograma estatico.
-    video.src = buildFileUrl(path);
-    video.play();
-    return;
-  }
-  $("#loop-preview-play").hidden = false;
+  if (payload && payload.error) console.error("[loop preview] ffmpeg:", payload.error);
+  if (payload && payload.path) loopPreviewPath = payload.path;
 };
 
 function playLoopPreview() {
-  if (!loopPreviewPath) return;
-  const video = $("#loop-preview-video");
-  // Ya cargado y solo en pausa (el boton central vuelve a aparecer al
-  // pausar): reanudar donde estaba en vez de empezar el loop de cero.
-  if (!video.hidden && video.src) {
-    video.play();
-    startBeat(false);
-    return;
-  }
-  video.src = buildFileUrl(loopPreviewPath);
+  // Sin composicion de por medio: el canvas ya tiene el medio real cargado y lo
+  // dibuja compuesto cuadro a cuadro, asi que "ver el loop" es simplemente
+  // ponerlo a andar. Antes esto esperaba un mp4 armado por ffmpeg.
+  if (!LivePreview.ready()) return;
   $("#loop-preview-play").hidden = true;
   $("#preview-image").hidden = true;
-  video.hidden = false;
   $("#loop-preview-controls").hidden = false;
+  LivePreview.play();
   positionPreviewOverlays();
-  video.play();
-  startBeat(true);
+  startBeat(false);
+  syncLoopToggleIcon();
+
 }
 
 // Controles propios de pausa/reproducir + buscar momento (ver comentario en
@@ -1977,6 +2101,9 @@ function playLoopPreview() {
 // cambio de tamano (ventana, pantalla completa, cerrar el panel) porque el
 // recuadro se mueve con ellos.
 function visibleMediaBox() {
+  // Lo que se ve es el canvas en vivo; los otros dos quedaron de respaldo.
+  const lienzo = LivePreview.element();
+  if (lienzo && !lienzo.hidden && LivePreview.ready()) return lienzo.getBoundingClientRect();
   const video = $("#loop-preview-video");
   if (!video.hidden && video.videoWidth) return video.getBoundingClientRect();
   const img = $("#preview-image");
@@ -1986,6 +2113,11 @@ function visibleMediaBox() {
 
 function positionPreviewOverlays() {
   const box = visibleMediaBox();
+  // Sin recuadro que medir no hay donde apoyar el boton de agrandar (y nada
+  // que agrandar tampoco): se esconde en vez de quedarse en la esquina de la
+  // zona entera, que es lo unico que sabe hacer el CSS solo. Esta es la
+  // UNICA linea que lo vuelve a mostrar -- ver applyState.
+  $("#preview-expand").hidden = !box;
   if (!box) return;
   const surface = $("#preview-surface").getBoundingClientRect();
   const left = Math.round(box.left - surface.left);
@@ -2014,49 +2146,70 @@ function positionPreviewOverlays() {
   loading.style.top = `${top + 12}px`;
 }
 
+function syncLoopToggleIcon() {
+  const toggle = $("#loop-preview-toggle");
+  toggle.innerHTML = iconSvgFilled(LivePreview.isPlaying() ? "playerPause" : "playerPlay");
+}
+
+function pauseLoopPreview() {
+  LivePreview.pause();
+  beatEl().pause();
+  syncLoopToggleIcon();
+}
+
 function initLoopPreviewControls() {
-  const video = $("#loop-preview-video");
   const toggle = $("#loop-preview-toggle");
   const seek = $("#loop-preview-seek");
   let scrubbing = false;
 
-  // El recuadro del video recien se sabe con los metadatos (ahi se conoce su
-  // proporcion); despues, cada vez que cambie el tamano del hueco.
-  video.addEventListener("loadedmetadata", positionPreviewOverlays);
   window.addEventListener("resize", positionPreviewOverlays);
   document.addEventListener("fullscreenchange", positionPreviewOverlays);
 
+  // Play/pausa del canvas en vivo. Antes esto hablaba con el <video> del
+  // fragmento compuesto por ffmpeg y se colgaba de sus eventos play/pause; el
+  // canvas no tiene eventos propios, asi que el icono y el beat se sincronizan
+  // aca mismo, que es el unico lugar desde donde se arranca y se para.
   const alternar = () => {
-    if (video.paused) video.play(); else video.pause();
+    if (LivePreview.isPlaying()) pauseLoopPreview();
+    else playLoopPreview();
   };
   toggle.addEventListener("click", alternar);
-  // Click en el video = play/pausa, como en cualquier reproductor. La barra
-  // esta ENCIMA del video (hermana, no hija), asi que tocar el boton o
-  // arrastrar la barrita no llega hasta aca.
-  video.addEventListener("click", alternar);
+  // Click en el cuadro = play/pausa, como en cualquier reproductor. La barra
+  // esta ENCIMA (hermana, no hija), asi que tocar el boton o arrastrar la
+  // barrita no llega hasta aca.
+  const lienzo = LivePreview.element();
+  if (lienzo) lienzo.addEventListener("click", alternar);
 
-  // Al pausar se queda la barra tal cual (lo pidio el usuario): el boton
-  // central de play solo existe para el PRIMER play, antes de que el
-  // fragmento se muestre. Que la barra se vea o no lo decide el cursor
-  // encima del previsualizador -- ver .loop-preview-controls en styles.css.
-  video.addEventListener("play", () => {
-    toggle.innerHTML = iconSvgFilled("playerPause");
-    $("#loop-preview-play").hidden = true;
-    $("#loop-preview-controls").hidden = false;
-    positionPreviewOverlays();
-    startBeat(false);
-  });
-  video.addEventListener("pause", () => {
-    toggle.innerHTML = iconSvgFilled("playerPlay");
-    beatEl().pause();
-  });
-  video.addEventListener("timeupdate", () => {
-    if (scrubbing || !video.duration) return;
-    seek.value = Math.round((video.currentTime / video.duration) * 1000);
-  });
+  // La barrita se mueve sola mientras corre: el canvas no emite timeupdate, se
+  // lee su posicion (0..1 DENTRO del recorte) en cada cuadro de pantalla.
+  //
+  // Solo cuando se la esta viendo: la barra aparece al pasar el cursor por el
+  // previsualizador (ver .loop-preview-controls en styles.css) y el resto del
+  // tiempo esta en opacity 0. Escribirle el valor y el --fill sesenta veces por
+  // segundo igual obligaba al navegador a recalcular estilo y repintar en cada
+  // cuadro -- justo mientras el video pide toda la maquina -- para mover algo
+  // que no se ve.
+  let cursorEncima = false;
+  const surface = $("#preview-surface");
+  surface.addEventListener("pointerenter", () => { cursorEncima = true; });
+  surface.addEventListener("pointerleave", () => { cursorEncima = false; });
+
+  const seguirBarra = () => {
+    if (cursorEncima && !scrubbing && LivePreview.isPlaying()) {
+      seek.value = Math.round(LivePreview.progress() * 1000);
+      // El relleno del progreso ya no lo pinta el navegador (la barra dejo de
+      // usar la apariencia nativa para sacarle el contorno, ver
+      // .loop-preview-seek en styles.css): se pinta aca, como los demas.
+      paintSliderFill(seek);
+    }
+    requestAnimationFrame(seguirBarra);
+  };
+  requestAnimationFrame(seguirBarra);
+
   seek.addEventListener("input", () => {
     scrubbing = true;
-    if (video.duration) video.currentTime = (seek.value / 1000) * video.duration;
+    paintSliderFill(seek);
+    LivePreview.seek(seek.value / 1000);
   });
   seek.addEventListener("change", () => {
     scrubbing = false;
@@ -2068,8 +2221,6 @@ function initLoopPreviewControls() {
 // exito, ver cover_available en api.py). Si no hay nada que elegir (foto
 // suelta sin plantilla: ni momento del loop ni "parte vacia" tienen
 // sentido) se salta el modal y guarda directo, igual que antes.
-
-let coverModalWaitingForPreview = false;
 
 // Ancla el panel al boton que lo abre en vez de centrarlo -- pegado al
 // borde DERECHO del boton, desplegado hacia ARRIBA (el boton vive abajo
@@ -2098,7 +2249,14 @@ let coverSource = "frame"; // "frame" | "image"
 let coverImagePath = null;
 // Las dos tarjetas de "Que guardar" se prenden por separado (reemplazan a la
 // casilla "Guardar las dos"): full+empty = las dos, y nunca las dos apagadas.
-let coverWant = { full: true, empty: false };
+// Arrancan LAS DOS puestas -- guardar las dos versiones es lo normal, y apagar
+// la que no se quiera es un clic.
+let coverWant = { full: true, empty: true };
+// Que capas se ponen encima. Sueltas y validas para las DOS fuentes (fotograma
+// del video o imagen propia) -- antes era una sola casilla "Componer con la
+// plantilla y las texturas" que ademas solo aparecia con imagen propia. Estas
+// dos SI pueden quedar las dos apagadas: eso es la portada pelada.
+let coverLayers = { template: true, textures: true };
 
 const COVER_IMAGE_EXTS = [".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff", ".gif", ".avif"];
 
@@ -2106,9 +2264,14 @@ function isCoverImage(path) {
   return COVER_IMAGE_EXTS.includes(path.slice(path.lastIndexOf(".")).toLowerCase());
 }
 
-function saveCoverNow(loopTime, mode, sourceImage, compose, imageFocus) {
-  pywebview.api.save_cover(loopTime, mode, sourceImage || null, compose !== false,
-                           imageFocus || null).then((r) => {
+function saveCoverNow(sourceTime, mode, sourceImage, imageFocus) {
+  // Las dos capas van por separado y valen para cualquier fuente (ver
+  // save_cover en api.py). loop_time queda en null: el momento viaja como
+  // source_time, en segundos del archivo, porque el selector ya no se limita al
+  // pedazo recortado.
+  pywebview.api.save_cover(null, mode, sourceImage || null,
+                           coverLayers.template, coverLayers.textures,
+                           imageFocus || null, sourceTime).then((r) => {
     if (!r.ok) $("#status-text").textContent = r.error || "No se pudo guardar la portada.";
   });
 }
@@ -2119,19 +2282,20 @@ function saveCoverNow(loopTime, mode, sourceImage, compose, imageFocus) {
 function renderCoverModal() {
   const isVideo = !!(lastState && lastState.media_is_video);
   const usingImage = coverSource === "image";
-  const compose = $("#cover-compose").checked;
+  const hayPlantilla = !!(lastState && lastState.template_path);
+  const hayTexturas = !!(lastState && lastState.texture_layers && lastState.texture_layers.length);
 
-  // El renglon de "o suelta tu propia imagen" es la unica pista de que se
-  // puede cambiar de fuente (ya no hay selector); con una imagen puesta, lo
-  // que hace falta es lo contrario: la vuelta al fotograma.
-  $("#cover-source-hint").hidden = usingImage;
+  // Un solo renglon para la fuente, con tres botones de los que se ve UNO:
+  // traer una imagen, volver al fotograma, o cambiar la que ya hay.
+  $("#cover-browse-btn").hidden = usingImage;
   $("#cover-back-btn").hidden = !usingImage;
+  $("#cover-change-btn").hidden = !(usingImage && coverImagePath);
 
-  // Elegir el momento del loop solo tiene sentido con un video y en modo
-  // fotograma; una foto no tiene loop que recorrer.
+  // Elegir el momento solo tiene sentido con un video y en modo fotograma; una
+  // foto no tiene nada que recorrer.
   $("#cover-frame-seek").hidden = usingImage || !isVideo;
-  $("#cover-frame-video").hidden = usingImage || !isVideo;
-  // Dos cosas se pelean por el hueco: el video del loop y la maqueta del
+  $("#cover-frame-canvas").hidden = usingImage || !isVideo;
+  // Dos cosas se pelean por el hueco: el fotograma elegido y la maqueta del
   // lienzo (que ahora vale tanto con plantilla como sin ella -- el recorte
   // cuadrado se mantiene igual, lo unico que cambia es si la plantilla va
   // encima). El <img> pelado queda para el fotograma ya compuesto de una foto.
@@ -2139,25 +2303,26 @@ function renderCoverModal() {
   $("#cover-image-preview").hidden = usingImage || isVideo;
   if (usingImage && coverImagePath) layoutCoverComposePreview();
   $("#cover-drop-hint").hidden = !usingImage || !!coverImagePath;
-  $("#cover-framing-hint").hidden = !(usingImage && coverImagePath);
-  $("#cover-frame-loading").hidden = usingImage || !isVideo || !coverModalWaitingForPreview;
-  $("#cover-compose-row").hidden = !usingImage;
+
+  // "Incluir": cada capa se ofrece solo si existe. Sin plantilla ni texturas
+  // cargadas el bloque entero se va -- no tiene sentido ofrecer apagar algo
+  // que no esta puesto.
+  $("#cover-layer-template").hidden = !hayPlantilla;
+  $("#cover-layer-textures").hidden = !hayTexturas;
+  $("#cover-layers-block").hidden = !hayPlantilla && !hayTexturas;
+  $("#cover-layer-template").classList.toggle("cover-option-active", coverLayers.template);
+  $("#cover-layer-textures").classList.toggle("cover-option-active", coverLayers.textures);
 
   // Las dos opciones valen SIEMPRE, con plantilla o sin ella: el "cuadro"
   // existe igual (sin plantilla es el que dejan los bordes negros, centrado
-  // -- ver content_box en engine.py). Antes esto se escondia con
-  // !hasTemplate porque el recorte se sacaba de template_box, que sin
-  // plantilla es null; ahora el recuadro lo manda Python en content_box.
+  // -- ver content_box en engine.py).
   $("#cover-mode-picker").hidden = false;
-  const box = lastState && lastState.content_box;
-  if (box) $("#cover-size-empty").textContent = `${box[2]} × ${box[3]}`;
-  const lienzo = lastState && lastState.canvas_size;
-  if (lienzo) $("#cover-size-full").textContent = `${lienzo[0]} × ${lienzo[1]}`;
-  $$(".cover-option").forEach((b) => {
+  $$("#cover-mode-picker .cover-option").forEach((b) => {
     b.classList.toggle("cover-option-active", !!coverWant[b.dataset.value]);
   });
 
   $("#cover-modal-save").disabled = usingImage && !coverImagePath;
+
 }
 
 // Coloca la imagen propia en el MISMO hueco donde la va a poner ffmpeg: la
@@ -2206,7 +2371,7 @@ function layoutCoverComposePreview() {
   win.style.height = `${(hueco.h / lienzo.h) * 100}%`;
 
   // La plantilla encima solo si se va a componer con ella.
-  const conPlantilla = !!(lastState && lastState.template_path) && $("#cover-compose").checked;
+  const conPlantilla = !!(lastState && lastState.template_path) && coverLayers.template;
   tpl.hidden = !conPlantilla;
   if (conPlantilla) tpl.src = buildFileUrl(lastState.template_path);
 
@@ -2319,34 +2484,75 @@ function closeCoverModal() {
   // fromBelow tambien al cerrar, para que se vaya por donde vino (hacia el
   // boton) y no hacia arriba. Pone [hidden] solo al terminar la animacion.
   animateDropdown(modal, false, true);
-  coverModalWaitingForPreview = false;
-  const video = $("#cover-frame-video");
-  video.pause();
-  video.removeAttribute("src");
-  video.load();
+  // El <video> del panel se queda cargado (volver a abrirlo es instantaneo)
+  // pero quieto. No hay nada que devolver al previsualizador: nunca se lo toco.
+  if (coverVideo) coverVideo.pause();
+}
+
+// El panel tiene su PROPIO <video>, aparte del previsualizador. Es la unica
+// forma de que buscar el fotograma de la portada no arrastre lo que se esta
+// viendo: si los dos comparten el mismo elemento, mover la barra del panel mueve
+// el previsualizador. Lee el mismo archivo (la copia liviana, si hay) y compone
+// con las MISMAS capas y la misma geometria, pidiendoselo a LivePreview.
+//
+// Antes esto era un <video> con un fragmento que armaba ffmpeg en el momento
+// ("Cargando vista previa del loop..."), lo que ademas ataba la portada al
+// pedazo recortado: no habia forma de sacarla de otra parte del video.
+let coverVideo = null;
+let coverVideoUrl = null;
+
+function coverVideoEl() {
+  if (coverVideo) return coverVideo;
+  coverVideo = document.createElement("video");
+  coverVideo.id = "cover-source-video";
+  coverVideo.muted = true;
+  coverVideo.playsInline = true;
+  coverVideo.preload = "auto";
+  // Fuera de la vista pero en el DOM: un <video> suelto no siempre decodifica.
+  coverVideo.style.cssText =
+    "position:absolute;width:1px;height:1px;opacity:0;pointer-events:none";
+  coverVideo.setAttribute("aria-hidden", "true");
+  document.body.appendChild(coverVideo);
+  // Se dibuja cuando el fotograma buscado ESTA, no cuando se pidio.
+  coverVideo.addEventListener("seeked", dibujarFotogramaDePortada);
+  coverVideo.addEventListener("loadeddata", dibujarFotogramaDePortada);
+  return coverVideo;
+}
+
+function dibujarFotogramaDePortada() {
+  const lienzo = $("#cover-frame-canvas");
+  if (!lienzo || !coverVideo) return;
+  // Con las capas que digan los interruptores de "Incluir": el panel tiene que
+  // mostrar lo que se va a guardar. Antes mostraba siempre todo puesto (el
+  // fragmento venia compuesto por ffmpeg), asi que apagar "Plantilla" o
+  // "Textura" no cambiaba nada a la vista y parecia que el boton no hacia nada.
+  LivePreview.composeInto(lienzo, coverVideo, {
+    plantilla: coverLayers.template,
+    texturas: coverLayers.textures,
+  });
 }
 
 function setupCoverFramePicker() {
-  const video = $("#cover-frame-video");
   const seek = $("#cover-frame-seek");
-  video.pause();
-  video.removeAttribute("src");
-  video.load();
-  seek.disabled = true;
-  seek.value = 0;
-  $("#cover-frame-loading").textContent = "Cargando vista previa del loop...";
-  coverModalWaitingForPreview = true;
+  const v = coverVideoEl();
+  const url = LivePreview.sourceUrl();
+  if (url && url !== coverVideoUrl) {
+    coverVideoUrl = url;
+    v.src = url;
+  }
+  // Arranca en el momento que ya se estaba viendo, que es el candidato natural
+  // a portada: uno suele parar el loop justo en el cuadro que le gusta.
+  const arranque = LivePreview.currentTime();
+  const posicionar = () => {
+    const largo = v.duration || 0;
+    seek.disabled = !largo;
+    seek.value = largo ? Math.round((arranque / largo) * 1000) : 0;
+    paintSliderFill(seek);
+    v.currentTime = arranque; // el "seeked" dibuja
+  };
+  if (v.readyState >= 1) posicionar();
+  else v.addEventListener("loadedmetadata", posicionar, { once: true });
   renderCoverModal();
-  // Se pide un fragmento nuevo (no se reusa el que ya estuviera cargado en
-  // el previsualizador principal) para que siempre refleje el recorte y la
-  // velocidad ACTUALES -- ver onLoopPreviewReady mas abajo, que lo entrega
-  // por el mismo evento de siempre.
-  pywebview.api.request_loop_preview().then((r) => {
-    if (!r || !r.ok) {
-      coverModalWaitingForPreview = false;
-      $("#cover-frame-loading").textContent = "No se pudo generar la vista previa.";
-    }
-  });
 }
 
 function openCoverModal() {
@@ -2354,22 +2560,30 @@ function openCoverModal() {
   if (!modal.hidden) return; // ya esta abierto (el mouse volvio a entrar)
   const isVideo = !!(lastState && lastState.media_is_video);
 
-  // Estado de arranque en cada apertura: fotograma, sin imagen propia, la
-  // portada completa. (Antes, una foto sin plantilla se guardaba directo sin
-  // abrir nada; ahora el panel siempre se abre, porque incluso en ese caso
+  // Estado de arranque en cada apertura: fotograma, sin imagen propia, y las dos
+  // versiones de la portada. (Antes, una foto sin plantilla se guardaba directo
+  // sin abrir nada; ahora el panel siempre se abre, porque incluso en ese caso
   // sirve para traer una imagen propia.)
   coverSource = "frame";
   coverImagePath = null;
-  coverWant = { full: true, empty: false };
-  $("#cover-compose").checked = true;
-  $("#cover-drop-hint").innerHTML =
-    'Suelta tu imagen aquí<span class="cover-drop-sub">o pégala con Ctrl+V, o haz clic para buscarla</span>';
+  coverWant = { full: true, empty: true };
+  // Las dos capas arrancan puestas: es lo que se veia en el previsualizador,
+  // asi que es lo que uno espera de la portada.
+  coverLayers = { template: true, textures: true };
+  $("#cover-drop-hint").textContent = "Suelta o pega tu imagen";
   $("#cover-image-preview").removeAttribute("src");
   // Con una foto (no video) el "fotograma" es el mismo que ya se ve compuesto
   // en el previsualizador grande -- se reusa su data URI en vez de pedirle a
   // ffmpeg otro igual.
   if (!isVideo) $("#cover-image-preview").src = $("#preview-image").src;
   renderCoverModal();
+
+  // Nada suena ni se mueve mientras se arma la portada: se para el loop y el
+  // beat. Antes esto le hablaba al <video> del fragmento, que quedo oculto para
+  // siempre con el previsualizador en canvas -- o sea que no paraba nada.
+  // Elegir un momento no necesita reproducir nada, y el previsualizador ya no se
+  // mueve al buscar: el panel tiene su propio video (ver coverVideoEl).
+  if (LivePreview.isPlaying()) pauseLoopPreview();
 
   modal.hidden = false;
   positionNearTrigger($("#save-cover-btn"), modal);
@@ -2418,10 +2632,22 @@ window.onPreviewReady = Preview.onReady;
 
 // ------------------------------------------------------- ajustar imagen
 //
-// Reimplementacion en canvas del ImageFocusPicker de Tk (app.py): mismo
-// algoritmo pixel a pixel (ver _focus_rect/_final_rect alla), asi que el
-// recuadro que se ve aca coincide exactamente con lo que exporta ffmpeg.
-// La geometria vive en JS; Python solo guarda el resultado (set_focus).
+// Reimplementacion en canvas del ImageFocusPicker de Tk (app.py): el
+// recuadro que se ve aca es exactamente lo que recorta ffmpeg. La geometria
+// vive en JS; Python solo guarda el resultado (set_crop).
+//
+// El recorte se guarda como RECTANGULO en fracciones 0..1 de la foto
+// original (rx, ry, rw, rh). Antes era zoom + punto de foco, que solo sabia
+// describir cuadrados; el corte Vertical toma la proporcion de la foto, que
+// puede ser cualquiera. Los dos cortes son el MISMO rectangulo con distintas
+// reglas de arrastre:
+//   cuadrado -- se mueve y se agranda, pero se mantiene cuadrado
+//   vertical -- la foto entera; no hay nada que arrastrar
+//
+// Ojo con una trampa de las fracciones: 0.5 x 0.5 NO es un cuadrado salvo
+// que la foto lo sea. Por eso todo el arrastre se hace en PIXELES DEL CANVAS
+// (donde la foto se dibuja a escala uniforme, asi que un cuadrado se ve
+// cuadrado) y recien al guardar se pasa a fracciones.
 
 const FocusPicker = (() => {
   const W = 352, H = 200; // debe coincidir con FOCUS_PICKER_W/H en api.py
@@ -2430,10 +2656,14 @@ const FocusPicker = (() => {
   let canvas, ctx;
   let image = null;
   let imgW = W, imgH = H; // tamano ajustado (fit) de la imagen dentro del canvas
-  let zoom = 100, focusX = 0.5, focusY = 0.5;
+  let mode = "cuadrado";
+  // Recorte en fracciones de la foto original. La foto entera por defecto:
+  // es lo que corresponde hasta que Python mande el cuadrado centrado.
+  let rx = 0, ry = 0, rw = 1, rh = 1;
   let lastPreviewUri = null;
   // null | {mode:"move"} | {mode:"resize", ax, ay} (ancla = esquina opuesta)
   let drag = null;
+  let cropModeOpen = false;
 
   function clamp01(v) {
     return Math.max(0, Math.min(1, v));
@@ -2447,24 +2677,31 @@ const FocusPicker = (() => {
     return [(W - imgW) / 2, (H - imgH) / 2];
   }
 
-  // Recuadro CUADRADO del recorte -- exactamente lo que exporta ffmpeg
-  // (build_focus_crop): lado min(iw,ih)/zoom colocado con focusX/focusY.
-  function cropRect() {
-    const side = minDim() * (100 / zoom);
+  // El recuadro en pixeles del canvas: [x0, y0, x1, y1].
+  //
+  // "Ajustar imagen" y "Bordes de la imagen" son controles independientes:
+  // el borde solo afecta como se compone el recorte YA HECHO sobre el lienzo
+  // final (letterbox en los lados), no que parte de la foto se puede
+  // seleccionar aca -- por eso este widget no lo toma en cuenta para nada.
+  function finalRect() {
     const [ox, oy] = origin();
-    const x = ox + (imgW - side) * focusX;
-    const y = oy + (imgH - side) * focusY;
-    return [x, y, side];
+    const x = ox + rx * imgW;
+    const y = oy + ry * imgH;
+    return [x, y, x + rw * imgW, y + rh * imgH];
   }
 
-  // "Ajustar imagen" (posicion/zoom del recorte) y "Bordes de la imagen"
-  // son controles independientes: el borde solo afecta como se compone el
-  // recorte YA HECHO sobre el lienzo final (letterbox en los lados), no
-  // que parte de la foto se puede seleccionar aca -- por eso este widget
-  // ya no lo toma en cuenta para nada, ni al dibujar ni al arrastrar.
-  function finalRect() {
-    const [x, y, side] = cropRect();
-    return [x, y, x + side, y + side];
+  // Guarda un recuadro dado en pixeles del canvas, recortandolo para que no
+  // se salga de la foto.
+  function setRectPx(x0, y0, x1, y1) {
+    const [ox, oy] = origin();
+    const left = Math.max(ox, Math.min(x0, x1));
+    const top = Math.max(oy, Math.min(y0, y1));
+    const right = Math.min(ox + imgW, Math.max(x0, x1));
+    const bottom = Math.min(oy + imgH, Math.max(y0, y1));
+    rx = clamp01((left - ox) / imgW);
+    ry = clamp01((top - oy) / imgH);
+    rw = clamp01((right - left) / imgW);
+    rh = clamp01((bottom - top) / imgH);
   }
 
   // Esquinas del recuadro visible, con el cursor de flechas que le toca a
@@ -2507,7 +2744,10 @@ const FocusPicker = (() => {
     ctx.strokeStyle = "#ffffff";
     ctx.lineWidth = 2;
     ctx.strokeRect(cx0, cy0, cx1 - cx0, cy1 - cy0);
-    // tiradores de esquina (cuadraditos) para redimensionar
+    // Tiradores de esquina (cuadraditos) para redimensionar -- en Vertical
+    // no van: el recuadro ES la foto entera y no hay nada que ajustar, asi
+    // que dibujarlos invitaria a arrastrar algo que no se mueve.
+    if (mode === "vertical") return;
     for (const c of corners()) {
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(c.x - HANDLE, c.y - HANDLE, HANDLE * 2, HANDLE * 2);
@@ -2518,9 +2758,10 @@ const FocusPicker = (() => {
   }
 
   function notify() {
-    pywebview.api.set_focus(Math.round(zoom), focusX, focusY);
+    pywebview.api.set_crop(mode, rx, ry, rw, rh);
     Preview.schedulePreview();
   }
+
 
   function canvasPos(e) {
     const rect = canvas.getBoundingClientRect();
@@ -2528,6 +2769,8 @@ const FocusPicker = (() => {
   }
 
   function hitTest(px, py) {
+    // En Vertical no se agarra nada: el recorte es la foto completa.
+    if (mode === "vertical") return null;
     for (const c of corners()) {
       if (Math.abs(px - c.x) <= HIT && Math.abs(py - c.y) <= HIT) {
         return { mode: "resize", ...c };
@@ -2544,17 +2787,14 @@ const FocusPicker = (() => {
     return { mode: "move" };
   }
 
+  // Redimensionar desde una esquina, con la opuesta (ax, ay) clavada. Solo
+  // pasa en Cuadrado: un solo lado, el del eje que mas se movio. Tope en el
+  // cuadrado mas grande que entra en la foto (minDim) y piso en un tercio
+  // -- lo que antes eran los topes de zoom 100..300.
   function applyResize(px, py, ax, ay) {
-    // lado deseado del cuadrado segun el eje dominante del gesto
     let side = Math.max(Math.abs(px - ax), Math.abs(py - ay));
-    side = Math.max(minDim() / 3, Math.min(minDim(), side)); // zoom 100..300
-    zoom = (100 * minDim()) / side;
-    // la esquina ancla queda clavada en su lugar
-    const x = px >= ax ? ax : ax - side;
-    const y = py >= ay ? ay : ay - side;
-    const [ox, oy] = origin();
-    focusX = imgW - side < 1 ? 0.5 : clamp01((x - ox) / (imgW - side));
-    focusY = imgH - side < 1 ? 0.5 : clamp01((y - oy) / (imgH - side));
+    side = Math.max(minDim() / 3, Math.min(minDim(), side));
+    setRectPx(ax, ay, px >= ax ? ax + side : ax - side, py >= ay ? ay + side : ay - side);
     redraw();
   }
 
@@ -2581,11 +2821,33 @@ const FocusPicker = (() => {
     img.src = dataUri;
   }
 
+  // El boton es solo un icono, asi que el corte puesto se lee en dos lados:
+  // el tooltip del boton y la ayuda de abajo (que ademas cambia porque en
+  // Vertical no hay nada que arrastrar y decir "arrastra para ajustar" seria
+  // mentir).
+  const NOMBRES = { cuadrado: "Cuadrado", vertical: "Vertical" };
+  const AYUDAS = {
+    cuadrado: "Arrastra para mover · las esquinas para acercar",
+    vertical: "Se usa la foto completa, a todo su alto",
+  };
+
+  function renderMode() {
+    const nombre = NOMBRES[mode] || NOMBRES.cuadrado;
+    $("#crop-mode-trigger").title = `Forma del recorte: ${nombre}`;
+    $("#focus-hint").textContent = AYUDAS[mode] || AYUDAS.cuadrado;
+    $$("#crop-mode-list .preset-dropdown-item").forEach((item) => {
+      item.classList.toggle("active", item.dataset.value === mode);
+    });
+    if (canvas) canvas.style.cursor = mode === "vertical" ? "default" : "grab";
+  }
+
   function applyState(state) {
-    zoom = state.focus_zoom_pct || 100;
-    focusX = state.focus_x ?? 0.5;
-    focusY = state.focus_y ?? 0.5;
+    mode = state.crop_mode || "cuadrado";
+    const r = state.crop_rect || [0, 0, 1, 1];
+    rx = clamp01(r[0]); ry = clamp01(r[1]);
+    rw = clamp01(r[2]); rh = clamp01(r[3]);
     loadImage(state.show_focus ? state.media_focus_preview : null);
+    renderMode();
     redraw();
   }
 
@@ -2626,11 +2888,15 @@ const FocusPicker = (() => {
       // cursor sale del canvas (mide solo 352x200) -- el delta relativo
       // no depende de estar "dentro". setPointerCapture mantiene el
       // arrastre vivo fuera del canvas.
-      const side = minDim() * (100 / zoom);
-      const rangeX = Math.max(1, imgW - side);
-      const rangeY = Math.max(1, imgH - side);
-      focusX = clamp01(focusX + e.movementX / rangeX);
-      focusY = clamp01(focusY + e.movementY / rangeY);
+      //
+      // El recuadro se corre entero y se frena contra los bordes de la foto,
+      // sin cambiar de tamano (de ahi que se sume el mismo delta a las dos
+      // esquinas, y que el clamp sea sobre la posicion y no sobre el lado).
+      const [x0, y0, x1, y1] = finalRect();
+      const [ox, oy] = origin();
+      const dx = Math.max(ox - x0, Math.min(ox + imgW - x1, e.movementX));
+      const dy = Math.max(oy - y0, Math.min(oy + imgH - y1, e.movementY));
+      setRectPx(x0 + dx, y0 + dy, x1 + dx, y1 + dy);
       redraw();
     });
     const endDrag = () => {
@@ -2642,8 +2908,51 @@ const FocusPicker = (() => {
     canvas.addEventListener("pointercancel", endDrag);
 
     $("#focus-reset").addEventListener("click", () => {
-      pywebview.api.reset_focus().then((r) => applyState(r.state));
+      pywebview.api.reset_focus().then((r) => {
+        applyState(r.state);
+        Preview.schedulePreview();
+      });
     });
+
+    // Desplegable del corte -- mismo componente y mismo cableado que el de
+    // Estilo de la textura (ver toggleTextureBlendDropdown): la lista se muda
+    // a <body> al abrirse, por eso el click de afuera chequea los dos
+    // closest() por separado.
+    $("#crop-mode-trigger").addEventListener("click", (e) => {
+      e.stopPropagation();
+      cropModeOpen = !cropModeOpen;
+      const list = $("#crop-mode-list");
+      $("#crop-mode-dropdown").classList.toggle("open", cropModeOpen);
+      if (cropModeOpen) {
+        list.hidden = false;
+        positionFloatingDropdown($("#crop-mode-trigger"), list);
+      }
+      animateDropdown(list, cropModeOpen);
+    });
+    document.addEventListener("click", (e) => {
+      if (cropModeOpen && !e.target.closest("#crop-mode-dropdown") && !e.target.closest("#crop-mode-list")) {
+        closeCropModeDropdown();
+      }
+    });
+    $$("#crop-mode-list .preset-dropdown-item").forEach((item) => {
+      item.addEventListener("click", () => {
+        closeCropModeDropdown();
+        // El recuadro de arranque de cada corte lo decide Python
+        // (_centered_rect): el cuadrado centrado depende de la proporcion de
+        // la foto, que es un dato que vive alla.
+        pywebview.api.set_crop_mode(item.dataset.value).then((r) => {
+          applyState(r.state);
+          Preview.schedulePreview();
+        });
+      });
+    });
+  }
+
+  function closeCropModeDropdown() {
+    if (!cropModeOpen) return;
+    cropModeOpen = false;
+    $("#crop-mode-dropdown").classList.remove("open");
+    animateDropdown($("#crop-mode-list"), false);
   }
 
   return { init, applyState };

@@ -66,13 +66,39 @@ function createMainWindow() {
   win.webContents.on("console-message", (event) => {
     console.log(`[renderer] ${event.message} (${event.sourceId}:${event.lineNumber})`);
   });
-  // F12 para abrir DevTools -- con autoHideMenuBar:true el menu por defecto
-  // de Electron (que trae F12 atado a "Toggle Developer Tools") no siempre
-  // llega a instalarse/disparar, asi que se registra a mano para no
-  // depender de eso.
-  win.webContents.on("before-input-event", (_event, input) => {
-    if (input.type === "keyDown" && input.key === "F12") {
+  // Las dos teclas que hay que manejar a mano por culpa del menu por defecto
+  // de Electron, que con autoHideMenuBar:true sigue instalado aunque no se
+  // vea: F12 porque su atajo no siempre llega a dispararse, y F11 porque el
+  // suyo hace justo lo que NO se quiere (ver abajo).
+  //
+  // F12 abre DevTools -- el menu lo trae atado a "Toggle Developer Tools",
+  // pero no siempre llega a instalarse/disparar, asi que se registra aca
+  // para no depender de eso.
+  win.webContents.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown") return;
+    if (input.key === "F12") {
       win.webContents.toggleDevTools();
+      return;
+    }
+    // F11 tiene que morir ACA. Con autoHideMenuBar:true el menu por defecto
+    // de Electron sigue instalado (solo esta escondido) y trae F11 atado a
+    // "Toggle Full Screen", que es la pantalla completa DE LA VENTANA -- otra
+    // cosa que la del previsualizador, que es la del documento
+    // (requestFullscreen sobre #preview-surface, ver toggleExpand en app.js).
+    // Mezclarlas rompia la app: estando agrandado el previsualizador, F11
+    // apagaba la de la ventana pero dejaba el documento en pantalla completa,
+    // asi que la ventana volvia a 1180x760 con el previsualizador todavia
+    // "maximizado" adentro y sin forma de salir.
+    //
+    // preventDefault mata el atajo del menu (y de paso el keydown en la
+    // pagina, que es todo lo que hace falta). En su lugar se le pide al
+    // renderer que salga de la pantalla completa del previsualizador, que es
+    // lo que el usuario espera de F11 estando agrandado. Salir no necesita
+    // gesto del usuario, asi que funciona igual viniendo por IPC -- ENTRAR si
+    // lo necesitaria, por eso F11 no agranda: para eso esta el boton.
+    if (input.key === "F11") {
+      event.preventDefault();
+      win.webContents.send("exit-preview-fullscreen");
     }
   });
   // Vuelve al tamano fijo en cuanto la ventana sale de la pantalla completa
@@ -81,6 +107,22 @@ function createMainWindow() {
   // app.js). Cubre las tres formas de salir: el boton, Esc, y cualquier
   // atajo del sistema.
   win.on("leave-html-full-screen", () => win.setResizable(false));
+
+  // Red de seguridad contra el DESINCRONIZADO entre las dos pantallas
+  // completas: la de la VENTANA y la del DOCUMENTO (#preview-surface) son
+  // independientes, y apagar la de la ventana por su cuenta deja al documento
+  // creyendo que sigue agrandado. Eso es exactamente lo que se veia: la
+  // ventana volvia a su tamano normal pero el previsualizador seguia
+  // "maximizado" adentro, tapando la app, con el boton de achicar cayendo
+  // encima de la X del sistema y sin forma de salir.
+  //
+  // Atrapar F11 (arriba) evita la via conocida, pero no es suficiente: la
+  // pantalla completa de la ventana la puede apagar cualquier cosa (otro
+  // atajo, el sistema, doble clic en la barra). Por eso, cada vez que la
+  // VENTANA sale de pantalla completa, se le avisa al renderer -- si el
+  // documento quedo agrandado, sale; si ya estaba normal, no hace nada. Asi
+  // los dos estados no pueden quedar separados, venga de donde venga.
+  win.on("leave-full-screen", () => win.webContents.send("exit-preview-fullscreen"));
   return win;
 }
 

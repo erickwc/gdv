@@ -226,8 +226,24 @@
             <h2>Ajustar imagen</h2>
             <button class="btn btn-text" id="focus-reset">Centrar</button>
           </div>
-          <canvas class="focus-picker" id="focus-picker" width="352" height="200"></canvas>
-          <p class="hint">Arrastra para ajustar</p>
+          <!-- Forma del recorte. El boton vive en la ESQUINA del mini preview
+               y no como una fila mas del panel: es ahi donde se esta mirando
+               al encuadrar, asi que el recuadro y el control que decide su
+               forma quedan en el mismo lugar. La lista que despliega es el
+               mismo componente que los otros desplegables (Preset, Estilo de
+               la textura) -- el <select> nativo lo pinta el sistema en blanco
+               y no hay forma de darle el vidrio del resto de la UI. -->
+          <div class="focus-picker-wrap">
+            <canvas class="focus-picker" id="focus-picker" width="352" height="200"></canvas>
+            <div class="preset-dropdown" id="crop-mode-dropdown">
+              <button type="button" class="focus-crop-btn" id="crop-mode-trigger" title="Forma del recorte"></button>
+              <div class="preset-dropdown-list" id="crop-mode-list" hidden>
+                <div class="preset-dropdown-item" data-value="cuadrado"><span class="preset-dropdown-item-name">Cuadrado</span></div>
+                <div class="preset-dropdown-item" data-value="vertical"><span class="preset-dropdown-item-name">Vertical</span></div>
+              </div>
+            </div>
+          </div>
+          <p class="hint" id="focus-hint">Arrastra para ajustar</p>
         </section>
 
         <!-- Plantilla -->
@@ -346,6 +362,13 @@
           <p class="dropzone-title">Suelta aquí tus dos archivos</p>
           <p class="dropzone-sub">o haz clic para buscarlos, o pega una imagen con Ctrl+V</p>
         </div>
+        <!-- Previsualizador EN VIVO: compone medio + texturas + plantilla en
+             el momento, cuadro a cuadro (ver live-preview.js). Reemplaza en
+             pantalla al <img> del fotograma y al <video> del loop, que eran
+             dos pasadas de ffmpeg por cada cambio. Los dos siguen en el DOM: el
+             <img> lo usa la ventana aparte y el <video> quedo como respaldo del
+             panel de portada. -->
+        <canvas id="live-preview" width="2560" height="1440" hidden></canvas>
         <img id="preview-image" hidden>
         <!-- Fragmento real del loop (FASE 1 de la generacion, sin la FASE
              2 lenta de repetir+mezclar audio) -- se regenera solo al
@@ -414,7 +437,12 @@
          imagen entraria como MEDIO de la app y reemplazaria el video
          cargado (ver drop-handler.js). -->
     <div class="cover-preview" id="cover-preview" title="Suelta una imagen aquí para usarla como portada">
-      <video id="cover-frame-video" muted playsinline></video>
+      <!-- Espejo del previsualizador en vivo: el fotograma que se elige con la
+           barra de abajo, ya compuesto (medio + texturas + plantilla). Antes
+           era un <video> con un fragmento del loop que armaba ffmpeg, y habia
+           que esperarlo cada vez que se abria el panel -- ademas de que solo
+           dejaba elegir dentro del recorte. Ver setupCoverFramePicker. -->
+      <canvas id="cover-frame-canvas"></canvas>
       <img id="cover-image-preview" hidden alt="">
       <!-- Maqueta del lienzo para la imagen propia: el rectangulo 16:9, la
            imagen recortada en el mismo hueco donde la va a poner ffmpeg (la
@@ -428,41 +456,46 @@
         </div>
         <img class="cover-compose-tpl" id="cover-compose-tpl" hidden alt="">
       </div>
-      <p class="hint cover-preview-msg" id="cover-frame-loading">Cargando vista previa del loop...</p>
-      <p class="hint cover-preview-msg" id="cover-drop-hint" hidden>
-        Suelta tu imagen aquí
-        <span class="cover-drop-sub">o pégala con Ctrl+V, o haz clic para buscarla</span>
-      </p>
+      <p class="hint cover-preview-msg" id="cover-drop-hint" hidden>Suelta o pega tu imagen</p>
     </div>
     <input type="range" class="loop-preview-seek cover-frame-seek" id="cover-frame-seek" min="0" max="1000" value="0" step="1" disabled>
 
-    <!-- Cambiar de fuente no necesita un selector propio arriba de todo (era
-         lo primero que se leia y lo que menos se usa): soltar o pegar una
-         imagen ya cambia solo (setCoverImage en app.js). Este renglon es lo
-         que lo hace descubrible; con una imagen puesta se reemplaza por la
-         vuelta atras de abajo. -->
-    <p class="hint cover-source-hint" id="cover-source-hint">
-      o suelta tu propia imagen, pégala con Ctrl+V o
-      <button type="button" class="cover-inline-link" id="cover-browse-btn">búscala en tu PC</button>
-    </p>
-    <button type="button" class="cover-inline-link cover-back-link" id="cover-back-btn" hidden>
-      ← Volver al frame del video
-    </button>
+    <!-- UN solo renglon para cambiar de fuente, con el texto justo: antes eran
+         cuatro parrafos (la invitacion a soltar una imagen, la vuelta atras, la
+         casilla de componer y las instrucciones de encuadre) y el modal se leia
+         como un formulario. Soltar o pegar una imagen sigue cambiando la fuente
+         solo (setCoverImage en app.js); esto es lo que lo hace descubrible. -->
+    <div class="cover-row cover-row-source">
+      <button type="button" class="cover-inline-link" id="cover-browse-btn">Usar mi imagen</button>
+      <button type="button" class="cover-inline-link" id="cover-back-btn" hidden>Usar el frame del video</button>
+      <button type="button" class="cover-inline-link" id="cover-change-btn" hidden>Cambiar imagen</button>
+    </div>
 
-    <label class="cover-check" id="cover-compose-row" hidden>
-      <input type="checkbox" id="cover-compose" checked>
-      <span>Componer con la plantilla y las texturas</span>
-    </label>
-    <p class="hint cover-framing-hint" id="cover-framing-hint" hidden>
-      Arrástrala para encuadrar · <strong>dos dedos o pinza</strong> para agrandar,
-      o para achicarla hasta que se vea completa · doble clic para centrar ·
-      <button type="button" class="cover-inline-link" id="cover-change-btn">cambiar imagen</button>
-    </p>
+    <!-- Que se pone encima. Dos interruptores SUELTOS (antes una sola casilla
+         "Componer con la plantilla y las texturas", y encima solo aparecia con
+         imagen propia): asi se puede guardar con plantilla y sin grano, o al
+         revés, y vale igual para un fotograma del video que para una imagen
+         propia. Mismo aspecto que las tarjetas de "Qué guardar" de abajo para
+         que se lean como lo que son, dos grupos de opciones. -->
+    <div class="cover-block" id="cover-layers-block">
+      <p class="cover-block-label">Incluir</p>
+      <div class="cover-options cover-options-sm">
+        <button type="button" class="cover-option cover-option-active" id="cover-layer-template">
+          <span class="cover-option-check"></span>
+          <span class="cover-option-title">Plantilla</span>
+        </button>
+        <button type="button" class="cover-option cover-option-active" id="cover-layer-textures">
+          <span class="cover-option-check"></span>
+          <span class="cover-option-title">Textura</span>
+        </button>
+      </div>
+    </div>
 
     <!-- Las dos se pueden tener prendidas a la vez (eso reemplazo a la vieja
          casilla "Guardar las dos"): cada tarjeta es un interruptor propio y
-         al menos una queda siempre encendida. Las medidas van abajo del
-         nombre porque son el dato que de verdad desempata. -->
+         al menos una queda siempre encendida. Sin las medidas al pie: el
+         diagramita ya dice cual es el recorte, y dos numeros por tarjeta era
+         justo el tipo de dato que hacia pensar de mas. -->
     <div class="cover-block" id="cover-mode-picker" hidden>
       <p class="cover-block-label">Qué guardar</p>
       <div class="cover-options">
@@ -476,7 +509,6 @@
             </svg>
           </span>
           <span class="cover-option-title">Completa</span>
-          <span class="cover-option-sub" id="cover-size-full">1920 × 1080</span>
         </button>
         <button type="button" class="cover-option" data-value="empty"
                 title="Solo el recuadro de la plantilla, sin el marco">
@@ -488,12 +520,10 @@
             </svg>
           </span>
           <span class="cover-option-title">Solo el cuadro</span>
-          <span class="cover-option-sub" id="cover-size-empty">1080 × 1080</span>
         </button>
       </div>
     </div>
 
-    <p class="hint" id="cover-dest-hint">Se guarda junto al video exportado.</p>
 
     <div class="cover-modal-footer">
       <button class="btn btn-ghost" id="cover-modal-cancel">Cancelar</button>
@@ -505,6 +535,9 @@
   <script src="event-bridge.js"></script>
   <script src="drop-handler.js"></script>
   <script src="motion.js"></script>
+  <!-- Antes de app.js: define window.LivePreview, que app.js usa desde su
+       propia inicializacion. -->
+  <script src="live-preview.js"></script>
   <script src="app.js"></script>
   <script>
     // app.js engancha toda su inicializacion a este evento (igual que hacia

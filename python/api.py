@@ -103,17 +103,25 @@ class Api:
         self.media_interlaced = False
         self.media_thumb = None       # data URI o None
         self.media_kind_text = None   # texto descriptivo del chip
+        # Copia escalada del video para el previsualizador (ver
+        # build_preview_proxy_command en engine.py). None = se usa el original:
+        # o el clip ya es chico, o la copia todavia se esta armando.
+        self.preview_proxy_path = None
         self.media_display_name = None  # titulo de yt-dlp, si se descargo por link
         self.trim_range = None        # (start, end) calculado al generar, o None (clip completo)
         self.trim_start = 0.0
         self.trim_end = 1.0
 
-        # Ajustar imagen (zoom + punto de interes) -- solo aplica a fotos.
-        # zoom en % (100-300), focus_x/focus_y en fraccion 0..1.
+        # Ajustar imagen -- solo aplica a fotos. El recuadro elegido va como
+        # rectangulo (x, y, ancho, alto) en fracciones 0..1 del original;
+        # antes eran zoom + punto de foco, que solo sabia describir cuadrados.
+        # crop_mode es cual de los dos cortes esta puesto y lo unico que hace
+        # es decidir como se puede arrastrar el recuadro en la UI:
+        #   "cuadrado" -- se mueve y se agranda, pero siempre cuadrado
+        #   "vertical" -- la foto entera, sin recorte y sin nada que arrastrar
         self.media_focus_preview = None  # data URI de la miniatura para el canvas
-        self.focus_zoom_pct = 100
-        self.focus_x = 0.5
-        self.focus_y = 0.5
+        self.crop_mode = "cuadrado"
+        self.crop_rect = [0.0, 0.0, 1.0, 1.0]
 
         self.audio_path = None
         self.audio_kind_text = None
@@ -144,7 +152,6 @@ class Api:
 
         self.scale_pct = 100
         self.speed = "1x"
-        self.focus = None  # (zoom, focus_x, focus_y) o None = sin ajuste
 
         self.process = None
         self.cancel_requested = False
@@ -173,6 +180,9 @@ class Api:
         self._loop_preview_token = None
         self._loop_preview_counter = 0
         self._loop_preview_path = None
+        # Sufijo unico para el PNG de cada imagen pegada como portada -- ver
+        # clipboard_image_path (la ruta no puede repetirse).
+        self._cover_paste_counter = 0
         # None = todavia no se probo: _loop_preview_job intenta NVENC (GPU)
         # primero y cae a libx264 si falla, y recuerda el resultado aca para
         # no volver a perder tiempo probando NVENC en cada preview si esta
@@ -211,6 +221,7 @@ class Api:
         template_box = self.template_box if self.template_path else None
         layout, _, _ = engine.build_layout(
             self.media_size, self.media_is_video, self.scale_pct, template_box,
+            crop_aspect=self.current_crop_aspect(),
         )
         return list(engine.content_box(layout))
 
@@ -225,10 +236,14 @@ class Api:
             "media_interlaced": self.media_interlaced,
             "media_thumb": self.media_thumb,
             "media_kind_text": self.media_kind_text,
+            # De donde saca los fotogramas el previsualizador. Casi siempre es
+            # el propio medio; con un clip grande (4K) es la copia liviana, que
+            # se decodifica mucho mas barato -- ver _preview_proxy_job. La
+            # EXPORTACION nunca la usa: sale siempre de media_path.
+            "preview_path": self.preview_proxy_path or self.media_path,
             "media_focus_preview": self.media_focus_preview,
-            "focus_zoom_pct": self.focus_zoom_pct,
-            "focus_x": self.focus_x,
-            "focus_y": self.focus_y,
+            "crop_mode": self.crop_mode,
+            "crop_rect": list(self.crop_rect),
             "audio_path": self.audio_path,
             "audio_filename": os.path.basename(self.audio_path) if self.audio_path else None,
             "audio_kind_text": self.audio_kind_text,
@@ -477,10 +492,20 @@ class Api:
                 }]
             else:
                 layers_data = []
-        self.texture_layers = [
+        # Sin repetidas: un config guardado antes de este arreglo puede traer la
+        # misma textura dos veces, y esa copia de mas no se podia ni ver ni
+        # apagar desde la galeria (ver _dedupe_layers). Asi se cura sola al
+        # abrir la app.
+        utiles = [
             dict(state) for state in layers_data
             if state.get("path") and os.path.exists(state["path"])
         ]
+        self.texture_layers = self._dedupe_layers(utiles)
+        # Y se deja curado en el archivo, no solo en memoria: si no, el config
+        # se quedaba con las repetidas hasta que algo mas lo reescribiera, y
+        # leerlo confundia (mostraba dos capas donde la app usaba una).
+        if len(self.texture_layers) != len(layers_data):
+            self._persist_texture_layers()
         # add_texture_layer() registra el archivo en _texture_paths (asi
         # aparece en la galeria, ver list_available_textures) -- restaurar
         # texture_layers directo del config, como arriba, se saltaba ese
@@ -497,14 +522,57 @@ class Api:
         self.config_data["textures"] = self.texture_layers
         engine.save_config(self.config_data)
 
+    @staticmethod
+    def _same_file_key(path):
+        """Clave para saber si dos capas son EL MISMO archivo. Comparar la
+        cadena pelada no alcanza: la misma textura puede llegar escrita
+        distinto -- "C:/Users/..." o "C:\\Users\\...", y en Windows ademas con
+        otras mayusculas -- y asi se colaban dos capas del mismo archivo, que es
+        justo lo que _dedupe_layers tiene que evitar."""
+        return os.path.normcase(os.path.normpath(path))
+
+    @staticmethod
+    def _dedupe_layers(layers):
+        """UNA capa por archivo. La galeria dibuja una tarjeta por textura
+        disponible y la enciende buscando la PRIMERA capa con esa ruta (ver
+        renderTextureGallery en app.js), asi que una segunda capa del mismo
+        archivo quedaba invisible: la tarjeta no la representaba, apagarla
+        quitaba solo una, y la textura seguia puesta -- de hecho aplicada DOS
+        veces, sumando el efecto. Y como el panel de ajustes tambien va contra
+        la primera, esa segunda copia no habia forma de controlarla.
+
+        Se conserva la primera, que es la que tiene los ajustes que se vinieron
+        tocando."""
+        vistas = set()
+        unicas = []
+        for capa in layers:
+            ruta = capa.get("path")
+            if not ruta:
+                continue
+            clave = Api._same_file_key(ruta)
+            if clave in vistas:
+                continue
+            vistas.add(clave)
+            unicas.append(capa)
+        return unicas
+
+    def _layer_index(self, path):
+        clave = self._same_file_key(path)
+        return next((i for i, c in enumerate(self.texture_layers)
+                     if c.get("path") and self._same_file_key(c["path"]) == clave), -1)
+
     def add_texture_layer(self, path):
         if not self._texture_is_readable(path):
             return {"ok": False, "error": "No se pudo leer esa textura (¿imagen o video válido?)."}
         display = os.path.splitext(os.path.basename(path))[0]
         self._texture_paths[display] = path
-        layer = {"path": path, "blend": "Aclarar", "opacity": 47, "scale": 100}
-        self.texture_layers.append(layer)
-        self._persist_texture_layers()
+        # Ya puesta: no se agrega una segunda vez (ver _dedupe_layers). Devuelve
+        # ok igual, asi soltar de nuevo una textura que ya estaba simplemente la
+        # deja seleccionada en vez de no hacer nada visible.
+        if self._layer_index(path) == -1:
+            self.texture_layers.append(
+                {"path": path, "blend": "Aclarar", "opacity": 47, "scale": 100})
+            self._persist_texture_layers()
         return {"ok": True, "texture_layers": self.texture_layers}
 
     def update_texture_layer(self, index, fields):
@@ -601,6 +669,9 @@ class Api:
                 self.texture_layers.append(dict(state))
             elif path:
                 missing.append(os.path.basename(path))
+        # Un preset guardado antes del arreglo de las repetidas puede traer la
+        # misma textura dos veces -- ver _dedupe_layers.
+        self.texture_layers = self._dedupe_layers(self.texture_layers)
         self._persist_texture_layers()
 
         if "scale_pct" in preset:
@@ -684,9 +755,11 @@ class Api:
         self.media_thumb = _image_to_data_uri(thumb_src)
         self.media_kind_text = f"Imagen · {width}x{height}"
         self.media_focus_preview = _image_to_data_uri(focus_src)
-        self.focus_zoom_pct = 100
-        self.focus_x = 0.5
-        self.focus_y = 0.5
+        # Foto nueva, encuadre limpio. El corte se queda como estaba (si venia
+        # trabajando en Vertical, la siguiente foto sigue en Vertical), pero el
+        # recuadro se recalcula: el cuadrado centrado depende de la proporcion
+        # de ESTA foto, no de la anterior.
+        self.crop_rect = self._centered_rect(self.crop_mode)
         self.cover_available = False
         self._update_default_output()
         return True
@@ -716,6 +789,7 @@ class Api:
         self._invalidate_loop_preview()
         self.media_path = path
         self.media_is_video = True
+        self.preview_proxy_path = None  # la del clip anterior no sirve
         self.media_size = None
         self.media_duration = None
         self.media_interlaced = False
@@ -750,6 +824,75 @@ class Api:
             parts.append("entrelazado (se corregirá)")
         self.media_kind_text = " · ".join(parts)
         self._notify_state_changed()
+        self._maybe_start_preview_proxy(path)
+
+    # ------------------------------------------ copia liviana para el preview
+
+    def _maybe_start_preview_proxy(self, path):
+        """Arranca la copia escalada si el clip es mas grande de lo que el
+        previsualizador necesita. Con un clip que ya entra no se hace nada: el
+        original se decodifica barato y una copia solo gastaria disco y tiempo
+        (ademas de perder calidad al recomprimir)."""
+        if not self.media_size:
+            return
+        destino = engine.preview_proxy_size(self.media_size)
+        if not destino:
+            return
+        threading.Thread(target=self._preview_proxy_job, args=(path, destino),
+                         daemon=True).start()
+
+    def _preview_proxy_job(self, path, size):
+        # El nombre lleva ruta + fecha de modificacion: si el usuario vuelve a
+        # cargar el mismo clip la copia ya esta hecha y se usa al instante, y si
+        # el archivo cambio (mismo nombre, otro contenido) el nombre cambia y no
+        # se reusa una copia vieja.
+        try:
+            marca = int(os.path.getmtime(path))
+        except OSError:
+            marca = 0
+        digest = hashlib.md5(f"{path}|{marca}".encode("utf-8")).hexdigest()[:12]
+        destino = os.path.join(
+            tempfile.gettempdir(),
+            f"genvideo_preview_{digest}_{size[0]}x{size[1]}.mp4")
+
+        if not os.path.exists(destino) or os.path.getsize(destino) == 0:
+            self._limpiar_copias_viejas(destino)
+            cmd = engine.build_preview_proxy_command(self.ffmpeg_exe, path, destino, size)
+            try:
+                # stdin=DEVNULL: sin esto ffmpeg puede quedarse esperando en la
+                # tuberia de JSON-RPC hacia Electron (ver _run_ffmpeg).
+                subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True,
+                               creationflags=engine.CREATE_NO_WINDOW)
+            except Exception:
+                return  # sin copia: el previsualizador sigue con el original
+            if not os.path.exists(destino) or os.path.getsize(destino) == 0:
+                return
+
+        if path != self.media_path or not self.media_is_video:
+            return  # el usuario ya cambio de medio mientras se armaba
+        self.preview_proxy_path = destino
+        self._notify_state_changed()
+
+    @staticmethod
+    def _limpiar_copias_viejas(salvo, dias=7):
+        """Las copias se guardan para reusarlas al volver a cargar el mismo
+        clip, pero no para siempre: cada una pesa lo suyo y viven en el temp del
+        sistema. Se borran las que no se tocan hace una semana."""
+        limite = time.time() - dias * 86400
+        try:
+            for nombre in os.listdir(tempfile.gettempdir()):
+                if not nombre.startswith("genvideo_preview_"):
+                    continue
+                viejo = os.path.join(tempfile.gettempdir(), nombre)
+                if viejo == salvo:
+                    continue
+                try:
+                    if os.path.getmtime(viejo) < limite:
+                        os.remove(viejo)
+                except OSError:
+                    pass  # en uso por otra ventana, o ya no esta
+        except OSError:
+            pass
 
     def _set_audio(self, path):
         self.audio_path = path
@@ -795,9 +938,8 @@ class Api:
         self.media_kind_text = None
         self.media_display_name = None
         self.media_focus_preview = None
-        self.focus_zoom_pct = 100
-        self.focus_x = 0.5
-        self.focus_y = 0.5
+        self.crop_mode = "cuadrado"
+        self.crop_rect = [0.0, 0.0, 1.0, 1.0]
         self.trim_start = 0.0
         self.trim_end = 1.0
         self.cover_available = False
@@ -805,28 +947,80 @@ class Api:
 
     # -------------------------------------------------------- ajustar imagen
 
-    def set_focus(self, zoom_pct, focus_x, focus_y):
-        """Se llama en cada arrastre/zoom del canvas -- la geometria
-        (recuadro final, recorte real) se calcula toda en JS (app.js,
-        mismo algoritmo que el ImageFocusPicker de Tk); aca solo se
-        guarda el resultado para usarlo al generar (build_focus_crop)."""
-        self.focus_zoom_pct = max(100, min(300, round(zoom_pct)))
-        self.focus_x = max(0.0, min(1.0, focus_x))
-        self.focus_y = max(0.0, min(1.0, focus_y))
+    CROP_MODES = ("cuadrado", "vertical")
+
+    def _centered_rect(self, mode):
+        """El recuadro con que arranca cada corte, centrado en la foto.
+
+        "cuadrado" es el cuadrado mas grande que entra (lo que antes daba zoom
+        100 con el foco al medio), asi que depende de la proporcion del
+        archivo. "vertical" es la foto entera, que es lo que ES."""
+        if mode != "cuadrado":
+            return [0.0, 0.0, 1.0, 1.0]
+        w, h = self.media_size or (0, 0)
+        if w <= 0 or h <= 0:
+            return [0.0, 0.0, 1.0, 1.0]
+        if w >= h:
+            fw = h / w
+            return [(1.0 - fw) / 2, 0.0, fw, 1.0]
+        fh = w / h
+        return [0.0, (1.0 - fh) / 2, 1.0, fh]
+
+    def _clamp_rect(self, x, y, w, h):
+        w = max(0.01, min(1.0, float(w)))
+        h = max(0.01, min(1.0, float(h)))
+        return [max(0.0, min(1.0 - w, float(x))),
+                max(0.0, min(1.0 - h, float(y))), w, h]
+
+    def set_crop(self, mode, x, y, w, h):
+        """Se llama en cada arrastre del canvas -- la geometria la calcula
+        toda JS (app.js) y aca solo se guarda el resultado para usarlo al
+        generar (build_focus_crop) y para dimensionar la caja de composicion
+        (build_layout)."""
+        if mode not in self.CROP_MODES:
+            mode = "cuadrado"
+        self.crop_mode = mode
+        self.crop_rect = self._clamp_rect(x, y, w, h)
         return {"ok": True}
 
-    def reset_focus(self):
-        self.focus_zoom_pct = 100
-        self.focus_x = 0.5
-        self.focus_y = 0.5
+    def set_crop_mode(self, mode):
+        """Cambiar de corte desde el desplegable del mini preview -- cada uno
+        vuelve a su recuadro centrado."""
+        if mode not in self.CROP_MODES:
+            mode = "cuadrado"
+        self.crop_mode = mode
+        self.crop_rect = self._centered_rect(mode)
         return {"ok": True, "state": self.get_state()}
 
-    def current_focus(self):
-        """(zoom_fraccion, focus_x, focus_y) para build_focus_crop, o None
-        si no aplica (video, o sin medio cargado) -- usado por la Fase 8."""
+    def reset_focus(self):
+        """El boton "Centrar" -- vuelve al recuadro de arranque del corte
+        puesto, sin cambiar de corte."""
+        self.crop_rect = self._centered_rect(self.crop_mode)
+        return {"ok": True, "state": self.get_state()}
+
+    def current_crop(self):
+        """(x, y, ancho, alto) para build_focus_crop, o None si no aplica
+        (video, o sin medio cargado) -- usado por la Fase 8."""
         if self.media_is_video or not self.media_path:
             return None
-        return (self.focus_zoom_pct / 100.0, self.focus_x, self.focus_y)
+        return tuple(self.crop_rect)
+
+    def current_crop_aspect(self):
+        """Proporcion ancho/alto del recuadro EN PIXELES del original, que es
+        la que tiene que tomar la caja de composicion para no recortar de
+        nuevo lo que este recorte ya eligio (ver build_layout).
+
+        Ojo con la cuenta: crop_rect son fracciones, y una fraccion cuadrada
+        (0.5 x 0.5) NO es un cuadrado salvo que la foto lo sea -- hay que
+        pasar por los pixeles reales. Sin foto, o con video, devuelve 1.0:
+        la caja cuadrada de siempre."""
+        if self.media_is_video or not self.media_path or not self.media_size:
+            return 1.0
+        w, h = self.media_size
+        _, _, fw, fh = self.crop_rect
+        px_w = max(1.0, w * fw)
+        px_h = max(1.0, h * fh)
+        return px_w / px_h
 
     def remove_audio(self):
         self.audio_path = None
@@ -867,6 +1061,7 @@ class Api:
     def set_scale_pct(self, value):
         self.scale_pct = int(round(float(value)))
         return {"ok": True}
+
 
     # -------------------------------------------------- pegar del portapapeles
 
@@ -947,7 +1142,17 @@ class Api:
                 if isinstance(path, str) and os.path.splitext(path)[1].lower() in engine.IMAGE_EXTS:
                     return {"ok": True, "path": path}
             return {"ok": False, "empty": True}
-        path = os.path.join(tempfile.gettempdir(), "genvideo_portada_pegada.png")
+        # Nombre NUEVO en cada pegada, no uno fijo: la ruta termina en el src de
+        # un <img> (ver setCoverImage en app.js) y asignarle a src la MISMA
+        # cadena que ya tenia no dispara ninguna carga -- el navegador se queda
+        # con la imagen anterior. Asi, pegar una segunda imagen sobreescribia el
+        # archivo pero en pantalla seguia la primera (y peor: el encuadre se
+        # calculaba con las medidas de la vieja).
+        self._cover_paste_counter += 1
+        path = os.path.join(
+            tempfile.gettempdir(),
+            f"genvideo_portada_pegada_{self._cover_paste_counter}.png",
+        )
         try:
             data.convert("RGB").save(path, "PNG")
         except Exception as exc:
@@ -995,12 +1200,27 @@ class Api:
             cached = self._texture_cache.get(texture_path)
             if cached and cached[0] == key and os.path.exists(cached[1]):
                 return cached[1]
+            # La escala y el lienzo van en el NOMBRE: el previsualizador en vivo
+            # dibuja este mismo archivo (ver prepared_textures), y con un nombre
+            # fijo el navegador se quedaba con la version anterior al cambiar la
+            # escala -- asignarle a un <img> la misma URL no dispara recarga.
             digest = hashlib.md5(texture_path.encode("utf-8")).hexdigest()[:10]
-            path = os.path.join(tempfile.gettempdir(), f"genvideo_textura_preparada_{digest}.png")
+            path = os.path.join(
+                tempfile.gettempdir(),
+                f"genvideo_textura_preparada_{digest}_{scale}_{canvas_w}x{canvas_h}.png")
+            # La baldosa se mide RELATIVA al lienzo, no en pixeles absolutos. El
+            # preview del loop se compone a resolucion reducida (0.5 o 0.7, ver
+            # _build_loop_preview_cmd), y con un tamano absoluto la misma baldosa
+            # ocupaba una fraccion MAS GRANDE de esa imagen mas chica: el grano
+            # salia mucho mas grueso ahi que en la exportacion real -- y como el
+            # panel de portada muestra justo ese fragmento, la portada parecia
+            # armarse con otra escala de textura. Con el factor, la proporcion
+            # baldosa/lienzo es la misma a cualquier resolucion.
+            factor = canvas_w / engine.MAX_WIDTH
             with Image.open(texture_path) as tex:
                 tex = tex.convert("RGB")
-                tile_w = max(2, round(tex.width * scale / 100))
-                tile_h = max(2, round(tex.height * scale / 100))
+                tile_w = max(2, round(tex.width * scale / 100 * factor))
+                tile_h = max(2, round(tex.height * scale / 100 * factor))
                 tile = tex.resize((tile_w, tile_h), Image.LANCZOS)
             board = Image.new("RGB", (canvas_w, canvas_h))
             for y in range(0, canvas_h, tile_h):
@@ -1009,6 +1229,38 @@ class Api:
             board.save(path)
             self._texture_cache[texture_path] = (key, path)
             return path
+
+    def prepared_textures(self):
+        """Los mosaicos ya preparados -- LOS MISMOS archivos que come ffmpeg --
+        para que el previsualizador en vivo dibuje exactamente lo que va a salir
+        exportado.
+
+        Sin esto el canvas se armaba su propia baldosa redimensionando la
+        textura en el navegador, que usa otro filtro que PIL: sobre un semitono
+        fino los pixeles no caian igual y quedaba una diferencia contra el
+        archivo final (medida: 21/255 en modo Normal, 9/255 en Multiplicar).
+        Dibujando este mosaico no hay redimensionado propio y coinciden.
+
+        Va aparte de get_state a proposito: preparar un mosaico nuevo cuesta
+        (PIL lo tilea al lienzo entero) y get_state se llama todo el tiempo.
+        Aca solo se paga cuando cambia la ESCALA de la textura; el resto de las
+        veces sale del cache de _prepare_texture."""
+        salida = []
+        for capa in self.texture_layers:
+            ruta = capa.get("path")
+            if not ruta:
+                continue
+            preparado = None
+            # Una textura de VIDEO no se tilea (PIL no la abre): esa el canvas la
+            # dibuja como zoom del fotograma, igual que ffmpeg.
+            if not self._texture_is_video(ruta):
+                try:
+                    preparado = self._prepare_texture(
+                        ruta, capa.get("scale", 100), engine.MAX_WIDTH, engine.MAX_HEIGHT)
+                except Exception:
+                    preparado = None
+            salida.append({"path": ruta, "prepared": preparado})
+        return salida
 
     # -------------------------------------------------- previsualizador en vivo
 
@@ -1026,6 +1278,7 @@ class Api:
         template_box = self.template_box if self.template_path else None
         layout, _, _ = engine.build_layout(
             self.media_size, self.media_is_video, self.scale_pct, template_box,
+            crop_aspect=self.current_crop_aspect(),
         )
         # Fraccion del ancho del lienzo que ocupa el medio real (sin
         # plantilla, el resto son barras negras horneadas en el frame
@@ -1061,7 +1314,7 @@ class Api:
             idx += 1
         fc = engine.build_filtergraph(
             layout, is_video=False, tpl_idx=tpl_idx, textures=tex_layers,
-            focus=self.current_focus(),
+            focus=self.current_crop(),
         )
         self._preview_counter += 1
         png = os.path.join(tempfile.gettempdir(), f"genvideo_preview_{self._preview_counter}.png")
@@ -1131,8 +1384,9 @@ class Api:
         lienzo.save(out, "PNG")
         return out
 
-    def save_cover(self, loop_time=None, mode="full", source_image=None, compose=True,
-                   image_focus=None):
+    def save_cover(self, loop_time=None, mode="full", source_image=None,
+                   with_template=True, with_textures=True, image_focus=None,
+                   source_time=None):
         """Guarda uno o dos PNG con el fotograma compuesto (plantilla +
         medio + texturas) -- misma logica de composicion que
         request_preview. Va SIEMPRE junto al video recien exportado, sin
@@ -1154,10 +1408,16 @@ class Api:
 
         source_image: ruta de una imagen propia (la que se arrastra al modal)
         para usarla EN VEZ de un fotograma del video -- para cuando ningun
-        momento del loop sirve como portada. compose=False NO significa
-        "copiar el archivo": significa la misma composicion pero SIN la
-        plantilla encima ni las texturas -- el recorte al cuadro de la portada
-        se mantiene igual, que es lo que se quiere ver.
+        momento del loop sirve como portada.
+
+        with_template / with_textures: que se pone encima. Son dos
+        interruptores SUELTOS y valen para las dos fuentes (fotograma del video
+        o imagen propia) -- antes era un unico "compose" que ademas solo se
+        miraba con imagen propia, asi que con un fotograma no habia forma de
+        sacar la plantilla, ni de quedarse con la plantilla pero sin el grano.
+        Apagarlos NO significa "copiar el archivo": la geometria es la misma
+        (mismo recorte al cuadro de la portada), solo se dejan de dibujar esas
+        capas.
 
         image_focus: (zoom, x, y) del encuadre que el usuario eligio a mano
         arrastrando la imagen en el modal (ver build_focus_crop en engine.py y
@@ -1189,14 +1449,15 @@ class Api:
 
         layout, _, _ = engine.build_layout(
             self.media_size, self.media_is_video, self.scale_pct, template_box,
+            crop_aspect=self.current_crop_aspect(),
         )
         textures = self._current_textures(*layout["canvas"])
 
-        # "Sin componer" (compose=False, solo con imagen propia): se queda la
-        # geometria -- el mismo recorte al cuadro de la portada -- y se van la
-        # plantilla y las texturas.
-        overlay_template = self.template_path if (compose or not source_image) else None
-        if source_image and not compose:
+        # Cada capa por separado, y con cualquier fuente: la geometria no cambia
+        # (el recorte al cuadro de la portada se mantiene), solo se deja de
+        # dibujar lo que se apago.
+        overlay_template = self.template_path if with_template else None
+        if not with_textures:
             textures = []
 
         cmd = [self.ffmpeg_exe, "-y"]
@@ -1218,10 +1479,16 @@ class Api:
                     pass  # si algo falla, sigue con la imagen cruda y el recorte de siempre
             cmd += ["-i", source_image]
         else:
-            focus = self.current_focus()
+            focus = self.current_crop()
             if self.media_is_video:
                 start = self.trim_start
-                if loop_time is not None:
+                if source_time is not None:
+                    # Momento en tiempo del ARCHIVO, sin pasar por el loop: el
+                    # selector del panel de portada recorre el video entero, no
+                    # solo el pedazo recortado, asi que la portada puede salir de
+                    # cualquier parte (ver setupCoverFramePicker en app.js).
+                    start = max(0.0, float(source_time))
+                elif loop_time is not None:
                     try:
                         speed = float(self.speed.rstrip("x"))
                     except ValueError:
@@ -1319,6 +1586,7 @@ class Api:
         template_box = self.template_box if self.template_path else None
         layout, _, _ = engine.build_layout(
             self.media_size, self.media_is_video, self.scale_pct, template_box,
+            crop_aspect=self.current_crop_aspect(),
         )
         # content_width_frac es una proporcion (inner/canvas) -- no cambia
         # con la resolucion, asi que se calcula sobre el layout a tamano
@@ -1484,6 +1752,7 @@ class Api:
             layout, width, height = engine.build_layout(
                 self.media_size, self.media_is_video,
                 self.scale_pct, template_box if template_path else None,
+                crop_aspect=self.current_crop_aspect(),
             )
 
             textures = self._current_textures(*layout["canvas"])
@@ -1555,7 +1824,7 @@ class Api:
                         self.ffmpeg_exe, self.media_path,
                         self.audio_path, self.output_path, duration, audio_args,
                         layout, template_path=template_path, textures=textures,
-                        focus=self.current_focus(),
+                        focus=self.current_crop(),
                     )
                     returncode = self._run_ffmpeg(cmd, duration)
                     if returncode == 0 or self.cancel_requested:
@@ -1573,7 +1842,7 @@ class Api:
                     engine.build_still_unit_command(
                         self.ffmpeg_exe, self.media_path, temp_unit, layout, unit_seconds,
                         template_path=template_path, textures=textures,
-                        focus=self.current_focus(),
+                        focus=self.current_crop(),
                     ),
                     unit_seconds,
                 )
