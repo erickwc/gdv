@@ -179,22 +179,21 @@ textarea {
   height: 40px;
   z-index: 5;
   display: flex;
-  /* El boton de ocultar el panel se alinea con DOS cosas del diseno, no con
-     la franja (que es solo la zona de arrastre y no se ve):
-       - a la izquierda, con la orilla del previsualizador -- los mismos 24px
-         de padding lateral que .preview-panel, asi su borde izquierdo cae
-         justo donde arranca el fotograma;
-       - a lo alto, con el boton de guardar preset, que es el otro boton de
-         icono de esa misma altura, al otro lado de la division. Los dos
-         miden 24px y arrancan a 16px del techo de la ventana -- aca por este
-         padding, alla por el de .quick-fields. Va ese mismo 16 y no la
-         medida exacta del boton de al lado a proposito: su fila la estira el
-         texto (24.39px con la tipografia de ahora), asi que cualquier numero
-         copiado de ahi se descuadra el dia que cambie la fuente. Con
-         align-items:center quedaba 9px mas arriba y se leia torcido. */
+  /* El boton de ocultar el panel se manda solo a la esquina superior
+     derecha (margin-left:auto en .titlebar-btn) -- del lado de ENFRENTE de
+     los 3 semaforos de macOS (arriba a la izquierda, trafficLightPosition
+     en main.js), que ademas es un hueco que en Mac queda vacio del todo
+     (no hay minimizar/cerrar nativos ahi como en Windows). A lo alto se
+     alinea con el boton de guardar preset (mismo panel, otra fila): los
+     dos miden 24px y arrancan a 16px del techo de la ventana -- aca por
+     este padding, alla por el de .quick-fields. Va ese mismo 16 y no la
+     medida exacta del boton de al lado a proposito: su fila la estira el
+     texto (24.39px con la tipografia de ahora), asi que cualquier numero
+     copiado de ahi se descuadra el dia que cambie la fuente. Con
+     align-items:center quedaba 9px mas arriba y se leia torcido. */
   align-items: flex-start;
   padding-top: 16px;
-  padding-left: 24px;
+  padding-right: 16px;
   -webkit-app-region: drag;
 }
 
@@ -202,6 +201,7 @@ textarea {
    entera es zona de arrastre de la ventana). */
 .titlebar-btn {
   -webkit-app-region: no-drag;
+  margin-left: auto; /* a la esquina opuesta de los semaforos, ver .app-titlebar */
   display: flex;
   align-items: center;
   justify-content: center;
@@ -224,7 +224,9 @@ textarea {
    Electron). La franja de arrastre pasa a cruzar todo el ancho, y el panel
    arranca 40px mas abajo para no quedar debajo de los botones nativos de
    minimizar/cerrar, que en una ventana angosta caen justo sobre su primera
-   fila (mismo problema que en macOS, ver la regla de data-platform). */
+   fila (mismo problema que en macOS, ver la regla de data-platform). El
+   boton sigue yendo a la esquina derecha (margin-left:auto), ahora la
+   unica columna que queda. */
 .app-root.preview-collapsed .preview-panel {
   display: none;
 }
@@ -232,18 +234,12 @@ textarea {
    previsualizador tiene que SEGUIR dibujandose, aunque .preview-collapsed ya
    lo haya apagado: si no, desaparece en el primer fotograma y lo unico que se
    ve es el salto de la ventana. Como conserva su flex:1, se encoge junto con
-   ella. La franja de arrastre en cambio si salta a left:0 desde el principio,
-   a proposito: es donde vive el boton que se acaba de tocar. */
+   ella. */
 .app-root.preview-collapsed.preview-animating .preview-panel {
   display: flex;
 }
-/* Sin previsualizador ya no hay orilla del fotograma con que alinearse: la
-   franja cruza toda la ventana y el boton queda sobre el panel, asi que se
-   alinea con EL, que lleva 16px de padding (los 24 de .preview-panel lo
-   dejaban sobresaliendo de la columna de controles). */
 .app-root.preview-collapsed .app-titlebar {
   left: 0;
-  padding-left: 16px;
 }
 .app-root.preview-collapsed .control-panel {
   padding-top: 40px;
@@ -252,8 +248,9 @@ textarea {
 
 /* En macOS los 3 semaforos van arriba a la IZQUIERDA
    (trafficLightPosition en main.js), o sea justo encima de la primera fila
-   del panel: ahi la franja si tiene que cruzar todo el ancho y el panel
-   empieza 40px mas abajo para dejarles el hueco. */
+   del panel: ahi la franja si tiene que cruzar todo el ancho (para poder
+   arrastrar la ventana tambien desde encima del panel) y el panel empieza
+   40px mas abajo para dejarles el hueco. */
 html[data-platform="darwin"] .app-titlebar {
   left: 0;
 }
@@ -967,6 +964,46 @@ input[type="text"].preset-inline-input {
   color: #ffffff;
 }
 
+/* Tooltip propio -- no title= nativo: en esta ventana (titleBarStyle:
+   "hidden", ver createMainWindow) el tooltip del sistema no se llegaba a
+   mostrar por mas rato que se dejara el cursor quieto (probado por el
+   usuario en los botones de la tarjeta de resultado). Reusable con
+   data-tooltip="texto" en cualquier boton, no solo esos tres.
+
+   ::after y no un <span> aparte: nace y muere con el propio boton, sin
+   marcado extra ni JS que lo posicione. transition-delay (no un setTimeout
+   en JS) da el mismo retraso de "dejar el cursor quieto" que un tooltip de
+   verdad, sin logica aparte. */
+[data-tooltip] {
+  position: relative;
+}
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--field-border);
+  background: rgba(20, 18, 26, 0.95);
+  color: #ffffff;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 400;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  z-index: 50;
+}
+[data-tooltip]:hover::after,
+[data-tooltip]:focus-visible::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+  transition-delay: 0.4s;
+}
+
 .chip-info {
   display: flex;
   flex-direction: column;
@@ -1288,13 +1325,13 @@ input[type="text"].preset-inline-input {
   box-shadow: inset 0 0 0 0.1px var(--accent);
 }
 
-/* El sobre de arriba, a 48px como en el diseno. Va como emoji del sistema
-   (Segoe UI Emoji en Windows), asi que trae su propio color y no hereda el de
-   la UI. line-height 1 para que no arrastre el interlineado de la pagina y
-   deje aire de mas debajo. */
+/* Carpeta de vidrio de arriba (PNG del usuario, ver index.html) -- antes era
+   el emoji de sistema, que se veia distinto en cada plataforma (su propia
+   fuente de emoji) en vez de igual en las dos. display:block saca el hueco
+   fantasma que una imagen en linea deja debajo (linea base de texto) sin
+   necesitar line-height. */
 .dropzone-art {
-  font-size: 38px;
-  line-height: 1;
+  display: block;
   margin-bottom: 4px;
 }
 
@@ -1500,6 +1537,17 @@ input[type="text"].preset-inline-input {
 }
 .loop-preview-seek:focus {
   outline: none;
+}
+/* Tiempo real del beat ("1:23 / 3:31") -- ver #loop-preview-time en
+   index.html. tabular-nums para que los digitos no bailen el ancho al
+   cambiar (1 vs 11 minutos, etc.), flex-shrink:0 para que la barra de
+   progreso (flex:1) sea la unica que cede espacio. */
+.loop-preview-time {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  white-space: nowrap;
 }
 /* Volumen del beat, pegado al play: parlante siempre visible y barrita que se
    despliega al pasar el cursor por encima. Plegada mide 0 -- asi la de progreso

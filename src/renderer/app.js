@@ -112,6 +112,9 @@ const ICONS = {
     + '<path d="M6 15h-2a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1h2l3.5 -4.5a.8 .8 0 0 1 1.5 .5v14a.8 .8 0 0 1 -1.5 .5l-3.5 -4.5" />',
   volumeOff: '<path d="M6 15h-2a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1h2l3.5 -4.5a.8 .8 0 0 1 1.5 .5v14a.8 .8 0 0 1 -1.5 .5l-3.5 -4.5" />'
     + '<path d="M16 10l4 4m0 -4l-4 4" />',
+  // rotate-clockwise de Tabler, tal cual (verificado contra el original, no
+  // inventado a mano -- ver rotate-media-btn en index.html).
+  rotate: '<path d="M4.05 11a8 8 0 1 1 .5 4m-.5 5v-5h5" />',
 };
 
 function iconSvg(name, size = 16, strokeWidth = 1) {
@@ -155,7 +158,8 @@ const ADD_ICON_SVG = '<svg width="23" height="23" viewBox="0 0 23 23" fill="none
 // marcado (para no repetir el SVG en dos lugares) -- se rellenan una vez
 // al arrancar.
 function fillStaticIcons() {
-  $("#media-chip").querySelector(".btn-icon").innerHTML = iconSvg("trash");
+  $("#remove-media-btn").innerHTML = iconSvg("trash");
+  $("#rotate-media-btn").innerHTML = iconSvg("rotate");
   $("#audio-chip").querySelector(".btn-icon").innerHTML = iconSvg("trash");
   $("#preview-expand").innerHTML = iconSvg("expand");
   $("#crop-mode-trigger").innerHTML = iconSvg("resize");
@@ -181,6 +185,14 @@ function fillStaticIcons() {
   $("#save-cover-btn").innerHTML = iconSvg("photoEdit");
   $("#cover-modal-close").innerHTML = iconSvgFilled("close");
   $$(".unit-percent").forEach((el) => (el.innerHTML = iconSvg("percentage", 12)));
+  // El atajo de pegar YA funciona con Cmd+V en Mac (es el evento nativo
+  // "paste" del navegador, no una tecla fija atada a mano -- ver el
+  // listener mas abajo), pero el texto se habia quedado escrito para
+  // Windows. data-platform lo pone index.html bien temprano, antes de que
+  // corra este script.
+  if (document.documentElement.dataset.platform === "darwin") {
+    $(".dropzone-sub").textContent = "o haz clic para buscarlos, o pega una imagen con ⌘V";
+  }
 }
 
 function formatDuration(sec) {
@@ -208,6 +220,15 @@ function parseDuration(text) {
 // --------------------------------------------------------------- render
 
 function render(state) {
+  // Si TENIA beat antes de este estado -- antes de pisar lastState, para
+  // comparar contra lo de recien. Booleano (hay/no hay) y no la ruta exacta
+  // a proposito: audio_preview_path pasa de la ruta original a la copia en
+  // aac en cuanto termina de armarse en segundo plano (ver
+  // _maybe_start_audio_preview_proxy en api.py), y esa SEGUNDA vuelta no es
+  // "se agrego un beat nuevo" -- comparando rutas el loop se reiniciaba de
+  // nuevo solo, unos segundos despues de arrancar, sin que el usuario
+  // tocara nada.
+  const teniaBeat = !!(lastState && (lastState.audio_preview_path || lastState.audio_path));
   lastState = state;
   // Se cargo otro medio: el resultado del export anterior deja de mostrarse
   // (cover_available es justo esa senal, ver api.py).
@@ -231,6 +252,18 @@ function render(state) {
   // es syncLoopTrimDefined, que decide si ya hay un pedazo que componer.
   syncLoopTrimDefined(state);
   invalidateLoopPreview();
+  // Se acaba de agregar un beat (no habia ninguno) con el loop YA sonando
+  // sin sonido -- nada mira audio_path mientras corre (startBeat solo se
+  // llama al arrancar/pausar), asi que sin esto quedaba mudo hasta la
+  // proxima pausa. Se reinicia el loop entero (no solo el beat) para que
+  // arranquen sincronizados desde el principio, en vez de que el beat entre
+  // a mitad de una vuelta ya empezada. Solo pasa si YA estaba sonando --
+  // pedido explicito, cargar el beat con todo pausado no dispara nada.
+  const hayBeatAhora = !!(state.audio_preview_path || state.audio_path);
+  if (!teniaBeat && hayBeatAhora && LivePreview.isPlaying()) {
+    LivePreview.seek(0);
+    startBeat(true);
+  }
 }
 
 function refresh() {
@@ -273,6 +306,13 @@ function renderChips(state) {
     mediaChip.hidden = false;
     mediaChip.querySelector(".chip-name").textContent = titleCase(state.media_filename);
     mediaChip.querySelector(".chip-kind").textContent = state.media_kind_text || "";
+    // media_was_vertical (tamano ORIGINAL), no media_size (el actual):
+    // un video que llega girado 180/270 -- no solo 90 -- necesita mas de
+    // un click para quedar derecho, y a mitad de camino el archivo esta
+    // horizontal un rato. Si se chequeara el tamano actual el boton se
+    // escondia despues del primer click y no habia forma de seguir
+    // girando hasta la orientacion correcta.
+    $("#rotate-media-btn").hidden = !(state.media_is_video && state.media_was_vertical);
   } else {
     mediaChip.hidden = true;
   }
@@ -1258,8 +1298,20 @@ window.addEventListener("pywebviewready", () => {
     });
   });
   // ------------------------------------------------------- archivos
-  $("#media-chip").querySelector(".btn-icon").addEventListener("click", () => {
+  $("#remove-media-btn").addEventListener("click", () => {
     pywebview.api.remove_media().then((r) => render(r.state));
+  });
+  $("#rotate-media-btn").addEventListener("click", (e) => {
+    // Deshabilitado durante el giro (no solo el guard de Python): sin esto,
+    // clickear varias veces rapido mientras el primer giro todavia corre
+    // mandaba pedidos que Python rechazaba con {ok:false} y SIN "state" --
+    // render(undefined) explotaba.
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    pywebview.api.rotate_media().then((r) => {
+      if (r.ok) render(r.state);
+      btn.disabled = false;
+    });
   });
   $("#audio-chip").querySelector(".btn-icon").addEventListener("click", () => {
     pywebview.api.remove_audio().then((r) => render(r.state));
@@ -1632,9 +1684,12 @@ function togglePreviewPanel() {
   // apaga en el primer fotograma y del deslizamiento no se ve nada.
   root.classList.add("preview-animating");
   const btn = $("#preview-toggle-btn");
-  // El icono no cambia entre estados (ver sidebarToggle en ICONS) -- solo el
-  // title. Se pinta igual en cada vuelta por si el boton se re-renderiza.
-  btn.innerHTML = iconSvg("sidebarToggle", 20, 1.2);
+  // Desplegado: el panel de dos zonas de siempre (sidebarToggle) -- probado
+  // con un chevron adentro (ver el comentario de sidebarToggle en ICONS) y
+  // se veia apretado en un panel tan angosto, asi que se descarto. Colapsado:
+  // una flecha doble APARTE (no metida en el icono del panel) apuntando a
+  // donde reaparece el previsualizador si se vuelve a tocar.
+  btn.innerHTML = iconSvg(previewCollapsed ? "chevronsRight" : "sidebarToggle", 20, 1.2);
   btn.title = previewCollapsed ? "Mostrar el previsualizador" : "Ocultar el previsualizador";
   // El ancho del panel sale del CSS (--panel-width), asi que la medida vive
   // en un solo lugar.
@@ -2056,7 +2111,11 @@ function syncBeatVolumeUi() {
 // de una pausa se retoma donde quedo -- que es justo lo que se pidio.
 function startBeat(fromZero) {
   const beat = beatEl();
-  const path = lastState && lastState.audio_path;
+  // audio_preview_path: el original si Chromium lo puede tocar tal cual, o
+  // una copia en aac si no (ver needs_audio_preview_proxy en engine.py --
+  // un wav de 32-bit float, el que exportan por defecto FL Studio/Ableton/
+  // Logic, tira NotSupportedError y dejaba el beat mudo sin ningun aviso).
+  const path = lastState && (lastState.audio_preview_path || lastState.audio_path);
   if (!path) return; // todavia sin beat cargado -- el loop se ve igual, muteado
   beatSonando = true;
   const url = buildFileUrl(path);
@@ -2069,9 +2128,11 @@ function startBeat(fromZero) {
   // El volumen se aplica ANTES del play: si no, el primer instante sale al 100%
   // aunque estuviera bajado o en silencio.
   syncBeatVolumeUi();
-  // Puede fallar si el formato no lo soporta Chromium (algun .wma, por
-  // ejemplo) -- el loop se sigue viendo, solo sin sonido.
-  beat.play().catch(() => {});
+  // Puede seguir fallando si la copia todavia no esta lista (se arma en
+  // segundo plano al cargar el beat) -- el loop se sigue viendo, solo sin
+  // sonido hasta el proximo play/pausa. Se loguea en vez de tragarselo en
+  // silencio: antes un fallo real (el wav de 32-bit) no dejaba ningun rastro.
+  beat.play().catch((err) => console.error("[beat] no se pudo reproducir:", err && err.name, err && err.message));
 }
 
 // Pausa PEDIDA: el beat se queda donde esta (no vuelve a 0) para poder seguir
@@ -2276,9 +2337,27 @@ function pauseLoopPreview() {
   syncLoopToggleIcon();
 }
 
+// Duracion de UNA vuelta del loop en segundos REALES (de reloj, ya con la
+// velocidad aplicada) -- la misma cuenta que hace la exportacion real para
+// saber cuantas veces repetir el pedazo hasta cubrir el beat entero (ver
+// FASE 2 en _run_ffmpeg_job, api.py). Con esto la barra/tiempo pueden
+// convertir "donde estoy en el beat completo" a "que parte del recorte le
+// toca mostrar al loop" sin tocar nada de LivePreview.
+function loopUnitDuration() {
+  const state = lastState;
+  if (!state) return 0;
+  const inicio = state.trim_start ?? 0;
+  const fin = state.trim_end ?? state.media_duration ?? 0;
+  const speedTxt = state.speed || "1x";
+  const speed = parseFloat(String(speedTxt).replace("x", "")) || 1;
+  const largo = Math.max(0, fin - inicio);
+  return speed > 0 ? largo / speed : largo;
+}
+
 function initLoopPreviewControls() {
   const toggle = $("#loop-preview-toggle");
   const seek = $("#loop-preview-seek");
+  const timeLabel = $("#loop-preview-time");
   let scrubbing = false;
 
   window.addEventListener("resize", positionPreviewOverlays);
@@ -2313,22 +2392,65 @@ function initLoopPreviewControls() {
   surface.addEventListener("pointerenter", () => { cursorEncima = true; });
   surface.addEventListener("pointerleave", () => { cursorEncima = false; });
 
-  const seguirBarra = () => {
-    if (cursorEncima && !scrubbing && LivePreview.isPlaying()) {
+  // null si el beat todavia no cargo metadata (o no hay beat) -- ahi se cae
+  // al comportamiento de siempre (posicion DENTRO del recorte, sin tiempo
+  // total: sin beat el loop da vueltas para siempre, no hay "total" que
+  // mostrar).
+  function duracionBeat() {
+    const beat = beatEl();
+    return Number.isFinite(beat.duration) && beat.duration > 0 ? beat.duration : null;
+  }
+
+  // Un solo lugar pinta la barra Y el tiempo, para que nunca se puedan
+  // desincronizar entre si.
+  function actualizarBarra(tiempoAbsoluto) {
+    const dur = duracionBeat();
+    if (dur !== null) {
+      const t = tiempoAbsoluto ?? beatEl().currentTime;
+      seek.value = Math.round(Math.max(0, Math.min(1, t / dur)) * 1000);
+      timeLabel.textContent = `${formatDuration(t)} / ${formatDuration(dur)}`;
+      timeLabel.hidden = false;
+    } else {
       seek.value = Math.round(LivePreview.progress() * 1000);
-      // El relleno del progreso ya no lo pinta el navegador (la barra dejo de
-      // usar la apariencia nativa para sacarle el contorno, ver
-      // .loop-preview-seek en styles.css): se pinta aca, como los demas.
-      paintSliderFill(seek);
+      timeLabel.hidden = true;
     }
+    // El relleno del progreso ya no lo pinta el navegador (la barra dejo de
+    // usar la apariencia nativa para sacarle el contorno, ver
+    // .loop-preview-seek en styles.css): se pinta aca, como los demas.
+    paintSliderFill(seek);
+  }
+
+  const seguirBarra = () => {
+    // algoSonando() y no solo LivePreview.isPlaying(): con una FOTO de medio
+    // no hay video que reproducir, pero el beat igual suena (ver el
+    // comentario de algoSonando mas arriba) -- con el chequeo viejo la barra
+    // se quedaba clavada en 0 todo ese tiempo.
+    if (cursorEncima && !scrubbing && algoSonando()) actualizarBarra();
     requestAnimationFrame(seguirBarra);
   };
   requestAnimationFrame(seguirBarra);
 
   seek.addEventListener("input", () => {
     scrubbing = true;
+    const frac = seek.value / 1000;
+    const dur = duracionBeat();
+    if (dur !== null) {
+      // Arrastrar mueve el BEAT a ese punto del tema completo (igual que
+      // cualquier reproductor) y el loop de video se ajusta solo a la parte
+      // del recorte que le toca mostrar en ese instante -- ni LivePreview ni
+      // su logica de edicion en vivo se tocan, esto solo llama a su
+      // seek(frac) de siempre con el frac ya convertido.
+      const tiempoAbsoluto = frac * dur;
+      beatEl().currentTime = tiempoAbsoluto;
+      const unidad = loopUnitDuration();
+      const fracLoop = unidad > 0 ? (tiempoAbsoluto % unidad) / unidad : 0;
+      LivePreview.seek(fracLoop);
+      timeLabel.textContent = `${formatDuration(tiempoAbsoluto)} / ${formatDuration(dur)}`;
+      timeLabel.hidden = false;
+    } else {
+      LivePreview.seek(frac);
+    }
     paintSliderFill(seek);
-    LivePreview.seek(seek.value / 1000);
   });
   seek.addEventListener("change", () => {
     scrubbing = false;
@@ -2755,13 +2877,12 @@ function openCoverModal() {
   if (!isVideo) $("#cover-image-preview").src = $("#preview-image").src;
   renderCoverModal();
 
-  // Nada suena ni se mueve mientras se arma la portada: se para el loop y el
-  // beat. Antes esto le hablaba al <video> del fragmento, que quedo oculto para
-  // siempre con el previsualizador en canvas -- o sea que no paraba nada.
-  // Elegir un momento no necesita reproducir nada, y el previsualizador ya no se
-  // mueve al buscar: el panel tiene su propio video (ver coverVideoEl).
-  if (LivePreview.isPlaying()) pauseLoopPreview();
-
+  // El previsualizador (y el beat) siguen sonando mientras se arma la
+  // portada -- pedido del usuario, que se abre este panel de pasada
+  // (aparece con solo pasar el cursor) y no quiere que el loop se corte
+  // por eso. Es seguro: el panel tiene su PROPIO <video> (ver
+  // coverVideoEl), asi que buscar un momento aca no mueve ni pausa el
+  // previsualizador grande.
   modal.hidden = false;
   positionNearTrigger($("#save-cover-btn"), modal);
   animateDropdown(modal, true, true); // entra subiendo, desde el boton

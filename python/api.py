@@ -99,6 +99,7 @@ class Api:
         self.media_path = None
         self.media_is_video = False
         self.media_size = None
+        self.media_was_vertical = False  # tamano ORIGINAL, no el actual -- ver rotate_media
         self.media_duration = None
         self.media_interlaced = False
         self.media_thumb = None       # data URI o None
@@ -127,6 +128,10 @@ class Api:
         self.audio_kind_text = None
         self.audio_clip_warning = None  # True/False/None (None = sin medir todavia)
         self.audio_peak_db = None  # pico real en dB -- ver audio_strategy_args en engine.py
+        # Copia del beat en un formato que el <audio> del previsualizador pueda
+        # tocar (ver needs_audio_preview_proxy en engine.py). None = se usa el
+        # original: o el codec ya es compatible, o la copia se esta armando.
+        self.audio_preview_proxy_path = None
 
         self.output_path = None
         self.user_chose_output = False
@@ -141,6 +146,15 @@ class Api:
         self.template_box = None
 
         self._texture_paths = {}
+        # Lock DISTINTO de _texture_lock (que protege _texture_cache, el
+        # render tileado -- otro dato). Sin este, agregar una textura mientras
+        # onStateChanged dispara list_available_textures() en otro hilo podia
+        # perder la recien agregada: la reconstruccion de _refresh_available_
+        # textures() terminaba DESPUES y pisaba el dict entero, exactamente el
+        # bug que _template_lock ya evita del lado de plantillas (ver el
+        # comentario de _refresh_template_list) -- a este lado nunca se le
+        # habia sumado la misma proteccion.
+        self._texture_paths_lock = threading.Lock()
         self.texture_layers = []  # lista de {"path","blend","opacity","scale"}
         self._texture_cache = {}
         self._texture_lock = threading.Lock()
@@ -158,6 +172,10 @@ class Api:
         self._generating = False  # ver start_generation -- evita clics repetidos disparando 2 generaciones a la vez
         self._downloading = False  # ver download_from_link -- mismo caso, con la descarga por link
         self._generation_counter = 0  # sufijo unico para los temporales de _run_ffmpeg_job (ver ahi)
+        self._download_counter = 0  # sufijo unico para el archivo bajado (ver _download_video)
+        self._rotating = False  # ver rotate_media -- mismo caso, con el giro de 90 grados
+        self._rotate_counter = 0  # sufijo unico para el temporal de _rotate_job (ver ahi)
+        self._last_rotated_path = None  # ultimo temporal que dejo _rotate_job, para borrarlo en el proximo giro (NUNCA el original: puede ser un archivo del usuario)
         self._last_progress_emit_ts = 0.0
         self._last_ffmpeg_error = None  # tail de stderr del ultimo fallo real (ver _run_ffmpeg)
 
@@ -232,6 +250,8 @@ class Api:
                 os.path.basename(self.media_path) if self.media_path else None),
             "media_is_video": self.media_is_video,
             "media_size": self.media_size,
+            # Tamano ORIGINAL (no el actual): ver rotate_media/renderChips.
+            "media_was_vertical": self.media_was_vertical,
             "media_duration": self.media_duration,
             "media_interlaced": self.media_interlaced,
             "media_thumb": self.media_thumb,
@@ -245,6 +265,7 @@ class Api:
             "crop_mode": self.crop_mode,
             "crop_rect": list(self.crop_rect),
             "audio_path": self.audio_path,
+            "audio_preview_path": self.audio_preview_proxy_path or self.audio_path,
             "audio_filename": os.path.basename(self.audio_path) if self.audio_path else None,
             "audio_kind_text": self.audio_kind_text,
             "audio_clip_warning": self.audio_clip_warning,
@@ -364,6 +385,21 @@ class Api:
         return {"templates": templates, "active": active}
 
     def _restore_template_from_config(self):
+        """A diferencia de las texturas (que reconstruyen _texture_paths a
+        partir de texture_layers, la lista de capas activas), una plantilla
+        sola puede estar puesta a la vez -- no hay una lista de "capas" de
+        donde derivar que otras se agregaron antes. Sin guardar esa lista
+        aparte (template_library), cambiar de A a B y cerrar la app hacia
+        que A desapareciera de la galeria para siempre: nunca quedaba
+        escrita en ningun lado, solo vivia en memoria mientras la app
+        seguia abierta -- exactamente lo que el usuario reporto como "las
+        plantillas no se quedan guardadas"."""
+        library = self.config_data.get("template_library") or []
+        with self._template_lock:
+            for path in library:
+                if os.path.exists(path):
+                    display = os.path.splitext(os.path.basename(path))[0]
+                    self._template_paths[display] = path
         saved = self.config_data.get("template")
         if saved and os.path.exists(saved):
             self.set_template(saved)
@@ -382,11 +418,14 @@ class Api:
         display = os.path.splitext(os.path.basename(path))[0]
         with self._template_lock:
             self._template_paths[display] = path
+            library = list(self._template_paths.values())
         self.template_path = path
         # box viene en pixeles de la plantilla; a coordenadas del lienzo
         # (plantillas que no son 1920x1080 se escalan y CENTRAN)
         self.template_box = engine.template_canvas_box(path, box)
         self.config_data["template"] = path
+        # La galeria ENTERA, no solo la activa -- ver _restore_template_from_config.
+        self.config_data["template_library"] = library
         engine.save_config(self.config_data)
         return {"ok": True, "template_path": path, "template_box": box}
 
@@ -413,7 +452,10 @@ class Api:
             display = next((d for d, p in self._template_paths.items() if p == path), None)
             if display:
                 self._template_paths.pop(display, None)
+            library = list(self._template_paths.values())
         self._template_thumb_cache.pop(path, None)
+        self.config_data["template_library"] = library
+        engine.save_config(self.config_data)
         if self.template_path == path:
             self.clear_template()
         return {"ok": True}
@@ -421,25 +463,27 @@ class Api:
     # ------------------------------------------------------------ texturas
 
     def _refresh_available_textures(self):
-        self._texture_paths = {
-            display: path for display, path in self._texture_paths.items()
-            if os.path.dirname(path) != engine.TEXTURES_DIR and os.path.exists(path)
-        }
-        if os.path.isdir(engine.TEXTURES_DIR):
-            for name in sorted(os.listdir(engine.TEXTURES_DIR)):
-                # Imagenes Y videos: hay texturas que son clips (grano de
-                # pelicula, fugas de luz) -- ver _texture_is_video.
-                if os.path.splitext(name)[1].lower() in (engine.IMAGE_EXTS | engine.VIDEO_EXTS):
-                    display = os.path.splitext(name)[0]
-                    self._texture_paths[display] = os.path.join(engine.TEXTURES_DIR, name)
+        with self._texture_paths_lock:
+            self._texture_paths = {
+                display: path for display, path in self._texture_paths.items()
+                if os.path.dirname(path) != engine.TEXTURES_DIR and os.path.exists(path)
+            }
+            if os.path.isdir(engine.TEXTURES_DIR):
+                for name in sorted(os.listdir(engine.TEXTURES_DIR)):
+                    # Imagenes Y videos: hay texturas que son clips (grano de
+                    # pelicula, fugas de luz) -- ver _texture_is_video.
+                    if os.path.splitext(name)[1].lower() in (engine.IMAGE_EXTS | engine.VIDEO_EXTS):
+                        display = os.path.splitext(name)[0]
+                        self._texture_paths[display] = os.path.join(engine.TEXTURES_DIR, name)
 
     def list_available_textures(self):
         self._refresh_available_textures()
-        return [
-            {"name": d, "path": p,
-             "thumb": _thumb_for(p, self._texture_thumb_cache, self.ffmpeg_exe)}
-            for d, p in sorted(self._texture_paths.items())
-        ]
+        with self._texture_paths_lock:
+            return [
+                {"name": d, "path": p,
+                 "thumb": _thumb_for(p, self._texture_thumb_cache, self.ffmpeg_exe)}
+                for d, p in sorted(self._texture_paths.items())
+            ]
 
     @staticmethod
     def _texture_is_video(path):
@@ -469,7 +513,8 @@ class Api:
         if not self._texture_is_readable(path):
             return None
         display = os.path.splitext(os.path.basename(path))[0]
-        self._texture_paths[display] = path
+        with self._texture_paths_lock:
+            self._texture_paths[display] = path
         return path
 
     def set_textures_collapsed(self, collapsed):
@@ -513,10 +558,11 @@ class Api:
         # reabrir el preset porque esos salen de texture_layers, pero la
         # textura en si no aparecia en la galeria (ni la tarjeta activa)
         # porque list_available_textures() no la conocia todavia.
-        for state in self.texture_layers:
-            path = state["path"]
-            display = os.path.splitext(os.path.basename(path))[0]
-            self._texture_paths[display] = path
+        with self._texture_paths_lock:
+            for state in self.texture_layers:
+                path = state["path"]
+                display = os.path.splitext(os.path.basename(path))[0]
+                self._texture_paths[display] = path
 
     def _persist_texture_layers(self):
         self.config_data["textures"] = self.texture_layers
@@ -565,7 +611,8 @@ class Api:
         if not self._texture_is_readable(path):
             return {"ok": False, "error": "No se pudo leer esa textura (¿imagen o video válido?)."}
         display = os.path.splitext(os.path.basename(path))[0]
-        self._texture_paths[display] = path
+        with self._texture_paths_lock:
+            self._texture_paths[display] = path
         # Ya puesta: no se agrega una segunda vez (ver _dedupe_layers). Devuelve
         # ok igual, asi soltar de nuevo una textura que ya estaba simplemente la
         # deja seleccionada en vez de no hacer nada visible.
@@ -601,7 +648,8 @@ class Api:
             except OSError as exc:
                 return {"ok": False, "error": str(exc)}
         display = os.path.splitext(os.path.basename(path))[0]
-        self._texture_paths.pop(display, None)
+        with self._texture_paths_lock:
+            self._texture_paths.pop(display, None)
         self._texture_thumb_cache.pop(path, None)
         self.texture_layers = [layer for layer in self.texture_layers if layer["path"] != path]
         self._persist_texture_layers()
@@ -750,6 +798,7 @@ class Api:
         self.media_path = path
         self.media_is_video = False
         self.media_size = (width, height)
+        self.media_was_vertical = False  # el boton de girar es solo para video
         self.media_duration = None
         self.media_interlaced = False
         self.media_thumb = _image_to_data_uri(thumb_src)
@@ -797,10 +846,18 @@ class Api:
         self.media_kind_text = "Video · analizando..."
         self.media_display_name = None
         self.cover_available = False
+        self.media_was_vertical = False  # lo pone en firme _probe_video_job cuando llegue el tamano real
         self._update_default_output()
         threading.Thread(target=self._probe_video_job, args=(path,), daemon=True).start()
 
     def _probe_video_job(self, path):
+        """Solo la llama _set_video, con un archivo recien cargado -- el
+        giro (_rotate_job) NO pasa por aca: transponer ya nos dice el nuevo
+        ancho/alto sin preguntarle a ffmpeg (es un intercambio exacto), y
+        si viene entrelazado/la duracion no cambian con un giro geometrico
+        puro, asi que reusarlos evita el paso mas caro de este metodo
+        (detect_interlaced decodifica hasta 200 fotogramas enteros) en
+        cada click de girar."""
         info = engine.probe_media(self.ffmpeg_exe, path)
         thumb_img = engine.extract_video_thumb(self.ffmpeg_exe, path)
         interlaced = engine.detect_interlaced(self.ffmpeg_exe, path)
@@ -813,6 +870,9 @@ class Api:
         self.trim_end = max(0.5, float(info["duration"] or 1.0))
         if thumb_img is not None:
             self.media_thumb = _image_to_data_uri(thumb_img)
+        if info["video_size"]:
+            w, h = info["video_size"]
+            self.media_was_vertical = w < h
 
         parts = ["Video"]
         formatted = engine.format_duration(info["duration"])
@@ -825,6 +885,104 @@ class Api:
         self.media_kind_text = " · ".join(parts)
         self._notify_state_changed()
         self._maybe_start_preview_proxy(path)
+
+    def rotate_media(self):
+        """Gira el video actual 90 grados en sentido horario. Solo tiene
+        sentido con video que ORIGINALMENTE era vertical (la UI ya lo
+        esconde con uno que nunca lo fue, ver renderChips en app.js) --
+        pero se valida aca tambien por si acaso, no solo confiar en que el
+        boton este escondido. Se chequea media_was_vertical, NO el tamano
+        actual: un video que llega girado 180/270 (no solo 90) necesita
+        mas de un click, y en el medio del ciclo el archivo esta
+        horizontal un rato -- si se chequeara el tamano actual, el primer
+        click ya lo hubiera bloqueado."""
+        if not self.media_path or not self.media_is_video:
+            return {"ok": False, "error": "No hay video cargado"}
+        if self._rotating:
+            return {"ok": False, "error": "Ya se esta girando el video"}
+        if not self.media_was_vertical:
+            return {"ok": False, "error": "Solo se puede girar video vertical"}
+        self._rotating = True
+        self.media_kind_text = "Video · girando..."
+        self._notify_state_changed()
+        threading.Thread(target=self._rotate_job, args=(self.media_path,), daemon=True).start()
+        return {"ok": True, "state": self.get_state()}
+
+    def _rotate_job(self, src):
+        self._rotate_counter += 1
+        temp_path = os.path.join(tempfile.gettempdir(), f"genvideo_rotate_{self._rotate_counter}.mp4")
+        cmd = engine.build_rotate_command(self.ffmpeg_exe, src, temp_path)
+        try:
+            result = subprocess.run(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, creationflags=engine.CREATE_NO_WINDOW,
+            )
+        except Exception as exc:
+            result = None
+            error_text = str(exc)
+        else:
+            error_text = result.stdout if result.returncode != 0 else None
+
+        if src != self.media_path:
+            # El usuario cambio/quito el medio mientras giraba -- este
+            # resultado ya no sirve para nada, ni vale la pena avisar error.
+            self._rotating = False
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+            return
+
+        self._rotating = False
+        if error_text is not None:
+            self.media_kind_text = "Video · no se pudo girar"
+            self._notify_state_changed()
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+            return
+
+        # NUNCA se borra `src`: puede ser el archivo original del usuario
+        # (arrastrado desde su disco), no algo que la app haya creado. Lo
+        # unico que se limpia es el giro anterior, que si es siempre un
+        # temporal propio (ver _last_rotated_path arriba).
+        viejo = self._last_rotated_path
+        self._last_rotated_path = temp_path
+        self.media_path = temp_path
+
+        # Actualizacion LIVIANA en vez de _probe_video_job: transponer 90
+        # intercambia ancho/alto de forma exacta (no hace falta volver a
+        # preguntarle a ffmpeg algo que ya sabemos), y la duracion y si
+        # viene entrelazado tampoco cambian con un giro geometrico puro --
+        # se mantienen los que ya se habian medido. Sin esto cada click
+        # disparaba ffprobe + detect_interlaced (hasta 200 fotogramas
+        # decodificados) + la miniatura, tres pasadas de ffmpeg para un
+        # click que el usuario quiere ver al instante.
+        if self.media_size:
+            w, h = self.media_size
+            self.media_size = (h, w)
+        thumb_img = engine.extract_video_thumb(self.ffmpeg_exe, temp_path)
+        if thumb_img is not None:
+            self.media_thumb = _image_to_data_uri(thumb_img)
+
+        parts = ["Video"]
+        formatted = engine.format_duration(self.media_duration)
+        if formatted:
+            parts.append(formatted)
+        if self.media_size:
+            parts.append(f"{self.media_size[0]}x{self.media_size[1]}")
+        if self.media_interlaced:
+            parts.append("entrelazado (se corregirá)")
+        self.media_kind_text = " · ".join(parts)
+        self._notify_state_changed()
+        self._maybe_start_preview_proxy(temp_path)
+
+        if viejo:
+            try:
+                os.remove(viejo)
+            except OSError:
+                pass
 
     # ------------------------------------------ copia liviana para el preview
 
@@ -874,14 +1032,14 @@ class Api:
         self._notify_state_changed()
 
     @staticmethod
-    def _limpiar_copias_viejas(salvo, dias=7):
+    def _limpiar_copias_viejas(salvo, dias=7, prefijo="genvideo_preview_"):
         """Las copias se guardan para reusarlas al volver a cargar el mismo
         clip, pero no para siempre: cada una pesa lo suyo y viven en el temp del
         sistema. Se borran las que no se tocan hace una semana."""
         limite = time.time() - dias * 86400
         try:
             for nombre in os.listdir(tempfile.gettempdir()):
-                if not nombre.startswith("genvideo_preview_"):
+                if not nombre.startswith(prefijo):
                     continue
                 viejo = os.path.join(tempfile.gettempdir(), nombre)
                 if viejo == salvo:
@@ -894,11 +1052,51 @@ class Api:
         except OSError:
             pass
 
+    # -------------------------------------------- copia liviana para el beat
+
+    def _maybe_start_audio_preview_proxy(self, path):
+        """Arranca la copia del beat SOLO si el codec original no lo puede
+        tocar el <audio> del navegador (ver needs_audio_preview_proxy en
+        engine.py) -- con un mp3/aac normal no hace falta nada, se sigue
+        escuchando el original."""
+        info = engine.probe_media(self.ffmpeg_exe, path)
+        if not engine.needs_audio_preview_proxy(info.get("audio_codec")):
+            return
+        self._audio_preview_proxy_job(path)
+
+    def _audio_preview_proxy_job(self, path):
+        # Mismo criterio que la copia de video: el nombre lleva ruta + fecha
+        # de modificacion, asi que cargar el mismo beat de nuevo usa la copia
+        # ya hecha en vez de rearmarla.
+        try:
+            marca = int(os.path.getmtime(path))
+        except OSError:
+            marca = 0
+        digest = hashlib.md5(f"{path}|{marca}".encode("utf-8")).hexdigest()[:12]
+        destino = os.path.join(tempfile.gettempdir(), f"genvideo_audiopreview_{digest}.m4a")
+
+        if not os.path.exists(destino) or os.path.getsize(destino) == 0:
+            self._limpiar_copias_viejas(destino, prefijo="genvideo_audiopreview_")
+            cmd = engine.build_audio_preview_proxy_command(self.ffmpeg_exe, path, destino)
+            try:
+                subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True,
+                               creationflags=engine.CREATE_NO_WINDOW)
+            except Exception:
+                return  # sin copia: el beat sigue mudo, pero no rompe nada mas
+            if not os.path.exists(destino) or os.path.getsize(destino) == 0:
+                return
+
+        if path != self.audio_path:
+            return  # el usuario ya cambio de beat mientras se armaba
+        self.audio_preview_proxy_path = destino
+        self._notify_state_changed()
+
     def _set_audio(self, path):
         self.audio_path = path
         self.audio_kind_text = "Audio · analizando..."
         self.audio_clip_warning = None
         self.audio_peak_db = None
+        self.audio_preview_proxy_path = None  # la del beat anterior no sirve
         # El nombre del beat pasa al campo "Nombre" de la UI, no solo a la ruta
         # de salida por dentro: el usuario casi nunca lo escribia (se generaba
         # solo y el campo se veia vacio con su "Sin titulo"), asi que ahora lo
@@ -909,6 +1107,7 @@ class Api:
             self.custom_output_name = os.path.splitext(os.path.basename(path))[0]
         self._update_default_output()
         threading.Thread(target=self._measure_peak_job, args=(path,), daemon=True).start()
+        threading.Thread(target=self._maybe_start_audio_preview_proxy, args=(path,), daemon=True).start()
 
     def _measure_peak_job(self, path):
         peak = engine.measure_peak_db(self.ffmpeg_exe, path)
@@ -932,6 +1131,7 @@ class Api:
         self.media_path = None
         self.media_is_video = False
         self.media_size = None
+        self.media_was_vertical = False
         self.media_duration = None
         self.media_interlaced = False
         self.media_thumb = None
@@ -1027,6 +1227,7 @@ class Api:
         self.audio_kind_text = None
         self.audio_clip_warning = None
         self.audio_peak_db = None
+        self.audio_preview_proxy_path = None
         return {"ok": True, "state": self.get_state()}
 
     # ------------------------------------------ recorte del loop / velocidad / escala
@@ -2023,8 +2224,12 @@ class Api:
 
     def _download_job_inner(self, url):
         tmpdir = tempfile.gettempdir()
+        # "genvideo_descarga" a secas (no el "genvideo_descarga." de antes,
+        # con el punto) para que tambien agarre los sufijos numerados de
+        # _download_video (genvideo_descarga_2.mp4, etc.) -- sin esto los
+        # de descargas viejas se quedaban tirados para siempre.
         for name in os.listdir(tmpdir):
-            if name.startswith("genvideo_descarga."):
+            if name.startswith("genvideo_descarga"):
                 try:
                     os.remove(os.path.join(tmpdir, name))
                 except OSError:
@@ -2066,6 +2271,19 @@ class Api:
 
     def _download_video(self, url, tmpdir):
         from yt_dlp import YoutubeDL
+
+        # Nombre unico por descarga (antes fijo, "genvideo_descarga.<ext>"):
+        # bajar un segundo video mientras el primero seguia cargado en el
+        # previsualizador (SIN sacarlo antes) escribia otro archivo con el
+        # MISMO nombre y por lo tanto la MISMA ruta -- self.media_path
+        # cambiaba de contenido pero no de texto, y cargarFuente (live-
+        # preview.js) compara rutas para decidir si hay que recargar; con
+        # la ruta identica pensaba que ya tenia ese medio y nunca volvia a
+        # leer el archivo. El video se quedaba trabado en el anterior hasta
+        # sacarlo a mano y recien ahi descargar (eso SI dejaba la ruta en
+        # None de por medio, que es lo que de casualidad lo arreglaba).
+        self._download_counter += 1
+        nombre_salida = f"genvideo_descarga_{self._download_counter}.%(ext)s"
 
         # El porcentaje que reportaba yt-dlp RETROCEDIA a mitad de la
         # descarga (se veia 5% y volvia a 3%, y asi todo el rato): los
@@ -2130,7 +2348,7 @@ class Api:
                 "bv*[vcodec!*=av01][height<=1440]/b[height<=1440]/b"
             ),
             "format_sort": ["res", "vcodec:h264"],
-            "outtmpl": os.path.join(tmpdir, "genvideo_descarga.%(ext)s"),
+            "outtmpl": os.path.join(tmpdir, nombre_salida),
             "noplaylist": True,
             "quiet": True,
             "no_warnings": True,
@@ -2192,8 +2410,7 @@ class Api:
         self._notify_state_changed()
         self._push_download_done(True, "Video descargado ✔ listo para el loop")
 
-    @staticmethod
-    def _try_download_page_image(url):
+    def _try_download_page_image(self, url):
         """Busca la etiqueta og:image de la pagina (la misma que usan las
         previsualizaciones de link de WhatsApp/Twitter/iMessage) y
         descarga esa imagen. Devuelve la ruta local, o None si la pagina
@@ -2221,7 +2438,14 @@ class Api:
         ext = os.path.splitext(image_url.split("?", 1)[0])[1].lower()
         if ext not in engine.IMAGE_EXTS:
             ext = ".jpg"
-        path = os.path.join(tempfile.gettempdir(), f"genvideo_descarga{ext}")
+        # Nombre unico -- mismo motivo que en _download_video: un nombre
+        # fijo aca hacia que pegar dos links de imagen seguidos (sin sacar
+        # el primero) dejara la ruta identica y el previsualizador nunca
+        # recargaba el archivo nuevo.
+        self._download_counter += 1
+        path = os.path.join(
+            tempfile.gettempdir(), f"genvideo_descarga_{self._download_counter}{ext}"
+        )
         with open(path, "wb") as fh:
             fh.write(data)
         try:

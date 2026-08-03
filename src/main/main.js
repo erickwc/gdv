@@ -11,6 +11,17 @@ let mainWindow = null;
 let previewWin = null;
 const bridge = new PythonBridge();
 
+// Tamano inicial de la ventana Y piso para el resize manual (arrastrar el
+// borde, el boton verde nativo de Mac) -- ver createMainWindow. Con la
+// ventana resizable:true de nuevo (antes arrancaba trabada) no habia ningun
+// limite: se podia achicar hasta romper el layout. El colapso del panel de
+// controles (window-collapse-preview, mas abajo) SI necesita ir mas angosto
+// que esto a proposito (deja solo el panel, 365px) -- ese caso afloja el
+// minimo antes de encoger y lo repone despues, este de aca es solo para
+// cuando el usuario arrastra el borde a mano.
+const MIN_WIDTH = 1180;
+const MIN_HEIGHT = 760;
+
 // Suavizado de texto en GRIS, no ClearType. En Windows, Chromium dibuja el
 // texto con subpixeles (ClearType) y correccion de gamma: sobre fondo oscuro
 // eso ENGORDA los trazos finos y les deja un fleco de color, asi que la
@@ -37,9 +48,18 @@ app.commandLine.appendSwitch("disable-lcd-text");
 // funciona igual en Windows, Mac y Linux sin ninguna API nativa de por medio.
 function createMainWindow() {
   const win = new BrowserWindow({
-    width: 1180,
-    height: 760,
-    resizable: false,
+    width: MIN_WIDTH,
+    height: MIN_HEIGHT,
+    minWidth: MIN_WIDTH,
+    minHeight: MIN_HEIGHT,
+    // resizable:true (el default) a proposito: antes arrancaba en false y
+    // solo se destrababa como efecto secundario de agrandar el
+    // previsualizador (ver toggleExpand en app.js) -- hasta hacer eso, ni
+    // arrastrar el borde ni el boton verde nativo de Mac (maximizar)
+    // funcionaban. animateContentWidth (mas abajo, la animacion de
+    // colapsar el panel) ya se adapta solo a esto: si la ventana ya viene
+    // resizable, no la destraba ni la vuelve a trabar sola.
+    resizable: true,
     backgroundColor: "#0d0a14",
     titleBarStyle: "hidden",
     // Los botones nativos van a lados distintos segun la plataforma --
@@ -101,12 +121,36 @@ function createMainWindow() {
       win.webContents.send("exit-preview-fullscreen");
     }
   });
-  // Vuelve al tamano fijo en cuanto la ventana sale de la pantalla completa
-  // del previsualizador -- el renderer solo se encarga de destrabarla antes
-  // de entrar (ver "window-set-resizable" mas abajo y toggleExpand en
-  // app.js). Cubre las tres formas de salir: el boton, Esc, y cualquier
-  // atajo del sistema.
-  win.on("leave-html-full-screen", () => win.setResizable(false));
+  // Vuelve al tamano/posicion de antes en cuanto la ventana sale de la
+  // pantalla completa del previsualizador (ver toggleExpand en app.js).
+  // Cubre las tres formas de salir: el boton, Esc, y cualquier atajo del
+  // sistema. Ya NO vuelve a trabar resizable:false -- la ventana es
+  // redimensionable siempre (ver createMainWindow), asi que no hay nada
+  // que destrabar antes de entrar en pantalla completa ni que re-trabar
+  // al salir.
+  //
+  // "leave-html-full-screen" dispara ANTES de que termine la animacion de
+  // salida de pantalla completa nativa de Mac -- win.isFullScreen() todavia
+  // da true en ese instante, y setBounds() llamado ahi se IGNORA en
+  // silencio (asi se probo: el tamano guardado nunca se aplicaba, la
+  // ventana quedaba como el propio SO la dejara caer, a veces maximizada).
+  // Se espera a que isFullScreen() de verdad pase a false (sondeando cada
+  // 30ms, con un limite de 1s por las dudas) antes de restaurar el tamano.
+  win.on("leave-html-full-screen", () => {
+    const bounds = boundsBeforeFullscreen.get(win);
+    const intentos = 33; // ~1s a 30ms cada uno
+    let i = 0;
+    const esperar = () => {
+      if (win.isDestroyed()) return;
+      if (win.isFullScreen() && i < intentos) {
+        i += 1;
+        setTimeout(esperar, 30);
+        return;
+      }
+      if (bounds) win.setBounds(bounds);
+    };
+    esperar();
+  });
 
   // Red de seguridad contra el DESINCRONIZADO entre las dos pantallas
   // completas: la de la VENTANA y la del DOCUMENTO (#preview-surface) son
@@ -175,6 +219,16 @@ async function handlePyCall(event, method, params) {
 // volver exactamente a ese (no a un numero hardcodeado que se desincronice
 // del tamano con el que arranca la ventana).
 const widthBeforeCollapse = new WeakMap();
+
+// Tamano/posicion de la ventana justo antes de entrar en pantalla completa
+// del previsualizador -- ver window-set-resizable y "leave-html-full-screen"
+// mas abajo. Sin esto, salir de la pantalla completa en Mac podia dejar la
+// ventana MAXIMIZADA en vez de devolverla al tamano chico que el usuario
+// tenia antes: requestFullscreen() sobre el documento pone a la VENTANA
+// entera en fullscreen nativo por debajo, y macOS no siempre reconstruye
+// solo el tamano de antes al salir (mas todavia si resizable cambia justo en
+// medio de la animacion de salida).
+const boundsBeforeFullscreen = new WeakMap();
 
 // setContentSize deja fija la esquina superior izquierda, asi que al cerrar el
 // previsualizador la ventana se encogia hacia la derecha y quedaba corrida en
@@ -255,10 +309,17 @@ function registerIpcHandlers() {
     // camino: si no, un doble click rapido guardaba un ancho intermedio y al
     // reabrir la ventana volvia a un tamano cualquiera.
     if (width && !collapseAnims.has(win)) widthBeforeCollapse.set(win, current);
-    // La ventana es resizable:false (ver createMainWindow) -- en Windows eso
-    // le hace ignorar setContentSize, asi que animateContentWidth la habilita
-    // mientras dura el deslizamiento y la vuelve a trabar al terminar.
-    return animateContentWidth(win, target);
+    // minWidth (ver createMainWindow) evita que el usuario achique la
+    // ventana de mas arrastrando el borde, pero TAMBIEN bloquearia esta
+    // misma animacion: colapsar deja la ventana en solo el ancho del panel
+    // (365px), bien por debajo del minimo. Se afloja antes de encoger y se
+    // repone despues de volver a agrandar -- nunca queda mas angosta que
+    // MIN_WIDTH salvo mientras esta genuinamente colapsada.
+    if (width) win.setMinimumSize(0, MIN_HEIGHT);
+    return animateContentWidth(win, target).then((ok) => {
+      if (!width) win.setMinimumSize(MIN_WIDTH, MIN_HEIGHT);
+      return ok;
+    });
   });
 
   // Windows no deja poner en pantalla completa una ventana con
@@ -273,6 +334,10 @@ function registerIpcHandlers() {
   ipcMain.handle("window-set-resizable", (event, resizable) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win) return false;
+    // Justo antes de destrabar para entrar en pantalla completa: se guarda
+    // el tamano/posicion de AHORA (el que el usuario tenia) para que
+    // "leave-html-full-screen" pueda devolverlo tal cual al salir.
+    if (resizable) boundsBeforeFullscreen.set(win, win.getBounds());
     win.setResizable(!!resizable);
     return true;
   });

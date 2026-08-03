@@ -77,22 +77,29 @@ BLEND_MODES = {
 # Calidad/peso del video: veryfast comprime ~2x mejor que ultrafast casi a
 # la misma velocidad. El tope de bitrate evita que el grano/textura disparen
 # el peso sin limite (CRF solo, en escenas muy detalladas, puede pasar de
-# 700 MB en un clip de 3 min) -- pero un tope muy ajustado (12 Mbps) ahoga
-# al encoder en escenas con mucho movimiento o grano, perdiendo nitidez
-# frente al original. Con 18 Mbps de techo y CRF 18 hay mas margen para esas
-# escenas sin disparar el peso en el resto del video (que sigue dominado por
-# CRF, no por el tope). El peso final tambien escala con la duracion de la
-# cancion (el video hace loop hasta el final del beat) -- eso no lo controla
-# ningun ajuste de codificacion.
-# El tope se escala junto con el lienzo (ver MAX_WIDTH): a 1080p este crf daba
-# ~11 Mbps, muy por debajo de los 18 permitidos -- o sea el tope no llegaba a
-# actuar, que es justo su papel (frenar un archivo desbocado, no recortar
-# contenido normal). A 1440p son 1.78x los pixeles y el MISMO material pide
-# ~20 Mbps: dejando 18M el tope pasaria a morder siempre, metiendo a x264 en
-# modo VBV y ahogandolo. 32M/64M mantiene el mismo margen relativo que habia.
+# 700 MB en un clip de 3 min) -- pero un tope muy ajustado ahoga al encoder
+# en escenas con mucho movimiento o grano, perdiendo nitidez frente al
+# original. El peso final tambien escala con la duracion de la cancion (el
+# video hace loop hasta el final del beat) -- eso no lo controla ningun
+# ajuste de codificacion, un beat largo siempre va a pesar mas.
+#
+# CRF 18 (usado hasta aca) es practicamente sin perdida -- un beat de 3:26
+# terminaba pesando ~600 MB (~170 MB/min), mucho para algo que de ultima
+# vuelve a pasar por el recodificado de YouTube/Instagram al subirlo (que
+# tira gran parte de esa precision igual). CRF 22 sigue siendo muy buena
+# calidad (dificil de distinguir de 18 a ojo, sobre todo en un loop) y pide
+# bastante menos bitrate -- reduce el peso final de forma notoria sin tocar
+# el lienzo (MAX_WIDTH/MAX_HEIGHT), que es lo que de verdad importaba para
+# que YouTube no reencode sucio (ver el comentario ahi arriba).
+# El tope tambien se bajo, en la misma proporcion que antes (margen sobre lo
+# que CRF pide en escenas normales, para que solo actue en las que se
+# disparan): a CRF 18/1440p el material normal pedia ~20 Mbps y el tope
+# quedo en 32M; a CRF 22 pide bastante menos, asi que 20M/40M mantiene el
+# mismo margen relativo sin dejar el tope tan flojo que dispare el peso en
+# escenas cargadas de grano.
 VIDEO_QUALITY_ARGS = [
-    "-preset", "veryfast", "-crf", "18",
-    "-maxrate", "32M", "-bufsize", "64M",
+    "-preset", "veryfast", "-crf", "22",
+    "-maxrate", "20M", "-bufsize", "40M",
 ]
 
 # Para el preview del loop (request_loop_preview): se descarta apenas se ve,
@@ -179,6 +186,59 @@ def build_preview_proxy_command(ffmpeg_exe, media_path, temp_path, size):
         # largo cada salto obliga a decodificar desde muy atras.
         "-g", "30", "-keyint_min", "30",
         "-pix_fmt", "yuv420p",
+        temp_path,
+    ]
+
+
+def build_rotate_command(ffmpeg_exe, media_path, temp_path):
+    """Gira el video 90 grados en sentido horario (transpose=1) -- corrige
+    clips que llegan de costado (celular horizontal grabando un video
+    pensado en vertical, tipico en descargas de Pinterest). Solo el video
+    se recodifica con la misma calidad que la exportacion final
+    (VIDEO_QUALITY_ARGS); el audio se copia tal cual porque transpose no lo
+    toca."""
+    return [
+        ffmpeg_exe, "-y", "-i", media_path,
+        "-vf", "transpose=1",
+        "-c:v", "libx264", *VIDEO_QUALITY_ARGS,
+        "-pix_fmt", "yuv420p",
+        "-c:a", "copy",
+        temp_path,
+    ]
+
+
+# ---------------------------------------------------- copia liviana del beat
+#
+# El <audio> del previsualizador (el beat, ver startBeat en app.js) reproduce
+# el archivo ORIGINAL, sin pasar por ffmpeg -- mismo espiritu que el video,
+# pero mas critico aca: Chromium no decodifica CUALQUIER wav. Un wav de 32-bit
+# float (pcm_f32le, el que exportan por defecto FL Studio/Ableton/Logic al
+# hacer bounce) tira NotSupportedError sin mas aviso, y el beat se queda mudo
+# aunque el archivo sea perfectamente valido -- la exportacion real no lo
+# nota porque esa pasa TODO el audio por ffmpeg (audio_strategy_args).
+#
+# Codecs que Chromium sabe tocar nativos -- si el archivo ya viene en uno de
+# estos no hace falta copia: menos espera para escuchar el beat, y una
+# transcodificacion de mas siempre pierde un pelo de calidad.
+AUDIO_PREVIEW_SAFE_CODECS = {"aac", "mp3", "pcm_s16le", "pcm_u8", "flac", "vorbis", "opus"}
+
+
+def needs_audio_preview_proxy(audio_codec):
+    """True si el codec no esta en la lista de "seguros" de arriba -- incluye
+    tanto los que de verdad fallan (pcm_f32le) como cualquiera no reconocido:
+    ante la duda, se prefiere la copia (unos segundos de espera la primera
+    vez) a un beat mudo sin ningun aviso."""
+    return (audio_codec or "").lower() not in AUDIO_PREVIEW_SAFE_CODECS
+
+
+def build_audio_preview_proxy_command(ffmpeg_exe, audio_path, temp_path):
+    """Copia del beat en un formato que CUALQUIER Chromium decodifica.
+    Se recodifica el audio ENTERO (no es una porcion, como la copia de
+    video): un beat normal son unos MB en aac, un par de segundos de
+    espera la primera vez que se carga."""
+    return [
+        ffmpeg_exe, "-y", "-i", audio_path,
+        "-vn", "-c:a", "aac", "-b:a", "256k",
         temp_path,
     ]
 
