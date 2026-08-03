@@ -119,22 +119,6 @@ function hexToRgb01(hex) {
   ];
 }
 
-function rgbToHsl(r, g, b) {
-  r /= 255; g /= 255; b /= 255;
-  const max = Math.max(r, g, b), min = Math.min(r, g, b);
-  const l = (max + min) / 2;
-  if (max === min) return [0, 0, l];
-  const d = max - min;
-  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-  let h;
-  switch (max) {
-    case r: h = (g - b) / d + (g < b ? 6 : 0); break;
-    case g: h = (b - r) / d + 2; break;
-    default: h = (r - g) / d + 4;
-  }
-  return [h * 60, s, l];
-}
-
 function hslToHex(h, s, l) {
   h = (((h % 360) + 360) % 360) / 360;
   let r, g, b;
@@ -157,47 +141,6 @@ function hslToHex(h, s, l) {
   }
   const toHex = (v) => Math.round(v * 255).toString(16).padStart(2, "0");
   return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
-}
-
-// Color representativo de una imagen ya cargada (el fotograma del preview,
-// #preview-image) -- se downscalea a un canvas chico (rapido de leer) y se
-// favorecen los pixeles saturados y de brillo medio (ni negros ni blancos
-// puros, que casi siempre son fondo/letterbox horneado por ffmpeg, no "el
-// color de la foto"), mezclados con el promedio general para no quedar
-// pegado a un solo pixel ruidoso. Devuelve el matiz (0-360) o null si no
-// se pudo leer nada util (imagen vacia, todo negro, etc.).
-function extractImageHue(img) {
-  if (!img || !img.naturalWidth) return null;
-  const size = 32;
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  let data;
-  try {
-    ctx.drawImage(img, 0, 0, size, size);
-    data = ctx.getImageData(0, 0, size, size).data;
-  } catch (e) {
-    return null;
-  }
-  let sumR = 0, sumG = 0, sumB = 0, count = 0;
-  let bestScore = -1, bestColor = null;
-  for (let i = 0; i < data.length; i += 4) {
-    if (data[i + 3] < 200) continue;
-    const r = data[i], g = data[i + 1], b = data[i + 2];
-    const [, s, l] = rgbToHsl(r, g, b);
-    if (l < 0.08 || l > 0.92) continue;
-    sumR += r; sumG += g; sumB += b; count++;
-    const score = s * (1 - Math.abs(l - 0.5) * 2);
-    if (score > bestScore) {
-      bestScore = score;
-      bestColor = [r, g, b];
-    }
-  }
-  if (!count || !bestColor) return null;
-  const avg = [sumR / count, sumG / count, sumB / count];
-  const mixed = bestColor.map((v, i) => v * 0.6 + avg[i] * 0.4);
-  return rgbToHsl(mixed[0], mixed[1], mixed[2])[0];
 }
 
 // A partir de UN matiz arma las 4 variables del shader, todas oscuras/poco
@@ -388,46 +331,29 @@ if (mount) {
   });
 }
 
-// Llamado desde app.js (Preview.onReady) cada vez que llega un fotograma
-// nuevo del preview -- le saca el matiz dominante y retinta el fondo
-// suavemente hacia ese tono. img=null (o sin color util) vuelve a la
-// paleta neutra. Sin WebGL (auroraControl null) no hace nada.
-window.tintBackgroundFromImage = function (img) {
-  if (!auroraControl) return;
-  const hue = img ? extractImageHue(img) : null;
-  auroraControl.setPalette(hue == null ? NEUTRAL_AURORA_PALETTE : deriveAuroraPalette(hue));
-};
-
-// Gris neutro (ni morado ni ningun otro color marcado) para cuando no hay
-// foto/video cargado -- antes --accent quedaba fijo en el morado de marca
-// (ver :root en styles.css) todo el tiempo, incluso sin nada cargado.
-const NEUTRAL_UI_ACCENT = "#9a97a3";
-const NEUTRAL_UI_ACCENT_HOVER = "#88858f";
-const NEUTRAL_UI_ACCENT_GLOW = "rgba(154, 151, 163, 0.18)";
-
-function hexToRgbaString(hex, alpha) {
-  const [r, g, b] = hexToRgb01(hex).map((v) => Math.round(v * 255));
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+// UNICA entrada de color del aurora. Recibe un matiz ya calculado (0-360) o
+// null para volver a la paleta neutra; NO extrae color por su cuenta.
+//
+// Antes este archivo definia su propio tintBackgroundFromImage/
+// setAdaptiveAccent, con una copia de extractImageHue que empezaba con
+// `if (!img || !img.naturalWidth) return null` -- o sea, solo aceptaba
+// <img>. Servia para el fotograma fijo que mandaba app.js (Preview.onReady),
+// pero rechazaba en silencio el canvas del previsualizador en vivo, que es
+// justo la fuente que sigue al video cuadro a cuadro. Ademas pisaba los
+// globales del mismo nombre de background-tint.js segun el orden de los
+// <script>, con dos extractores compitiendo.
+//
+// Ahora hay un solo dueno del color: background-tint.js muestrea la fuente
+// (acepta <img>, <video> y <canvas>), suavemente acerca el matiz y llama
+// aca -- ver aplicarMatiz/ambilightFromSource ahi. El shader hace su propio
+// lerp de 0.03 por cuadro hacia la paleta nueva, asi que llamar seguido es
+// barato: solo mueve 4 colores destino.
+//
+// Solo existe si el aurora llego a montar: sin WebGL queda undefined, y por
+// ahi background-tint.js se da cuenta de que el fondo visible es el SVG y
+// vuelve a pintarle los blobs.
+if (auroraControl) {
+  window.setAuroraHue = function (hue) {
+    auroraControl.setPalette(hue == null ? NEUTRAL_AURORA_PALETTE : deriveAuroraPalette(hue));
+  };
 }
-
-// Foco de inputs, borde de tarjeta activa, chip de velocidad seleccionado,
-// etc. (todo lo que usa var(--accent)/var(--accent-hover)/var(--accent-glow)
-// en styles.css) -- mismo matiz que el fondo, pero como variables CSS en
-// :root en vez de uniforms de shader. Menos saturado/mas claro que el
-// accentColor del aurora (ese vive detras de todo, esto esta encima de
-// texto y necesita buen contraste en los dos temas).
-window.setAdaptiveAccent = function (img) {
-  const hue = img ? extractImageHue(img) : null;
-  const root = document.documentElement.style;
-  if (hue == null) {
-    root.setProperty("--accent", NEUTRAL_UI_ACCENT);
-    root.setProperty("--accent-hover", NEUTRAL_UI_ACCENT_HOVER);
-    root.setProperty("--accent-glow", NEUTRAL_UI_ACCENT_GLOW);
-    return;
-  }
-  const accent = hslToHex(hue, 0.4, 0.62);
-  const accentHover = hslToHex(hue, 0.4, 0.52);
-  root.setProperty("--accent", accent);
-  root.setProperty("--accent-hover", accentHover);
-  root.setProperty("--accent-glow", hexToRgbaString(accent, 0.22));
-};

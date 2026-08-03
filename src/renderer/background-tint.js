@@ -6,7 +6,7 @@
 // que llega un fotograma nuevo, igual que hacia tintBackgroundFromImage en
 // el aurora WebGL viejo (silk-aurora-background.js, ver historial de git).
 // Sin imagen (o sin color util) vuelve a los 2 colores originales del
-// diseno de Figma (violeta/lavanda).
+// diseno de Figma (azul/lavanda).
 
 function rgbToHsl(r, g, b) {
   r /= 255; g /= 255; b /= 255;
@@ -99,36 +99,71 @@ function extractImageHue(img) {
   return rgbToHsl(mixed[0], mixed[1], mixed[2])[0];
 }
 
-// Colores originales del diseno de Figma (#5500FF / #C3A7FA) -- ambos
-// caen ya en el mismo matiz (~260deg), solo cambia saturacion/luminosidad
-// (blob1 vivo y oscuro, blob2 palido y claro). deriveBlobColors() reusa
-// esas mismas 2 combinaciones de s/l, rotando solo el matiz al de la
-// imagen cargada -- asi el fondo siempre "se siente" del mismo diseno,
-// nomas con otro color.
-const NEUTRAL_BLOB_COLORS = { blob1: "#5500FF", blob2: "#C3A7FA" };
+// Los 3 manchones de color del SVG del fondo (index.html). De cada uno se
+// conserva la saturacion y el brillo que le puso el diseno y se rota SOLO el
+// matiz al de la portada, asi el fondo siempre se siente el mismo diseno
+// nomas que en otro color. Los tres caen ya de fabrica en el mismo matiz
+// (~242-255deg); lo que los distingue es la s/l: el 1 vivo y medio, el 2
+// palido y claro, el 3 profundo y oscuro.
+//
+// Estos numeros NO son decorativos: son los fill que trae el SVG pasados a
+// HSL, y son lo que ata el modo adaptativo al fondo dibujado. Si se cambia
+// el fondo por otro diseno hay que recalcularlos, o pasa esto: la app
+// arranca con el fondo nuevo, pero al cargar el primer video los manchones
+// saltan a la saturacion/brillo del diseno VIEJO y no vuelven nunca -- se ve
+// como si el fondo se hubiera cambiado solo.
+//
+// El 3 estuvo un tiempo fuera de esta lista (el <path> no tenia id), y por
+// eso se quedaba con su azul fijo mientras los otros dos seguian a la
+// portada: con una portada calida quedaba una esquina morada que no pegaba
+// con nada. Si se agrega un manchon nuevo al SVG, va aca tambien.
+const BLOBS = [
+  { id: "bg-blob-1", neutro: "#0900FF", s: 1.0, l: 0.5 },
+  { id: "bg-blob-2", neutro: "#9978FA", s: 0.929, l: 0.7255 },
+  { id: "bg-blob-3", neutro: "#0C0A5C", s: 0.804, l: 0.2 },
+];
 
-function deriveBlobColors(hue) {
-  return {
-    blob1: hslToHex(hue, 1.0, 0.5),
-    blob2: hslToHex(hue, 0.89, 0.817),
-  };
+let blobEls = null;
+
+// Devuelve los elementos solo si estan TODOS: a medio pintar (unos con el
+// color de la portada y otros con el del diseno) se ve peor que sin retintar.
+function ensureBlobEls() {
+  if (!blobEls) {
+    const els = BLOBS.map((b) => document.getElementById(b.id));
+    if (els.every(Boolean)) blobEls = els;
+  }
+  return blobEls;
 }
 
-let blob1El = null;
-let blob2El = null;
-
-function ensureBlobEls() {
-  if (!blob1El) blob1El = document.getElementById("bg-blob-1");
-  if (!blob2El) blob2El = document.getElementById("bg-blob-2");
+// Aplica el matiz al fondo que se este viendo de verdad, que son dos casos
+// distintos y excluyentes:
+//
+//   - si esta activo el fondo animado (silk-aurora-background.js, hoy
+//     comentado en index.html) monta su canvas DENTRO de .background y tapa
+//     el SVG entero, que es opaco. Ahi el color va por setAuroraHue y NO se
+//     tocan los manchones: seria trabajo invisible, y del caro -- cada
+//     escritura de fill obliga a rehacer los desenfoques (ver MIN_DELTA_HUE
+//     mas abajo);
+//   - si no (el caso de hoy, o cuando el aurora se sale por falta de WebGL)
+//     setAuroraHue nunca se define y el fondo visible es el SVG: ahi si hay
+//     que pintarle los manchones.
+//
+// hue null = sin medio (o sin color util): cada fondo vuelve a su reposo.
+function pintarFondo(hue) {
+  if (window.setAuroraHue) {
+    window.setAuroraHue(hue);
+    return;
+  }
+  const els = ensureBlobEls();
+  if (!els) return;
+  els.forEach((el, i) => {
+    const b = BLOBS[i];
+    el.setAttribute("fill", hue == null ? b.neutro : hslToHex(hue, b.s, b.l));
+  });
 }
 
 window.tintBackgroundFromImage = function (img) {
-  ensureBlobEls();
-  if (!blob1El || !blob2El) return;
-  const hue = img ? extractImageHue(img) : null;
-  const colors = hue == null ? NEUTRAL_BLOB_COLORS : deriveBlobColors(hue);
-  blob1El.setAttribute("fill", colors.blob1);
-  blob2El.setAttribute("fill", colors.blob2);
+  pintarFondo(img ? extractImageHue(img) : null);
 };
 
 // Gris neutro (sin imagen/video cargado) para el foco de inputs y demas
@@ -189,13 +224,20 @@ let hueAplicado = null;
 
 // Cuanto tiene que moverse el matiz para que valga la pena tocar el DOM. Escribir
 // el fill de los blobs no es gratis ni de lejos: cada uno vive dentro de un
-// feGaussianBlur de stdDeviation 80 sobre un area de 2000x1550 (ver el <svg> del
-// fondo en index.html), asi que cambiarlo obliga a rehacer los dos desenfoques,
+// feGaussianBlur de stdDeviation 175 sobre un area de 2388x1932 (ver el <svg>
+// del fondo en index.html), asi que cambiarlo obliga a rehacer los desenfoques,
 // y de paso --accent en :root invalida el estilo de TODO el documento. Con el
 // ambilight muestreando a 8 por segundo eso era un parpadeo de trabajo constante
 // mientras el video corria, para mover el color un cuarto de grado. Un grado y
 // medio de matiz sobre un manchon desenfocado no lo ve nadie; el video a los
 // tirones, si.
+//
+// Si se vuelve a activar el aurora (ver los <script> comentados en index.html)
+// la mitad cara desaparece: setAuroraHue solo mueve 4 colores destino y el
+// shader ya redibujaba igual cada cuadro. El freno igual conviene dejarlo por
+// lo otro, que --accent sigue invalidando el documento entero, y ahi no cuesta
+// suavidad ninguna: el aurora interpola su paleta a 0.03 por cuadro, un grado
+// y medio ni llega a distinguirse dentro de esa transicion.
 const MIN_DELTA_HUE = 1.5;
 
 function aplicarMatiz(hue) {
@@ -208,10 +250,7 @@ function aplicarMatiz(hue) {
     }
     hueAplicado = hue;
   }
-  ensureBlobEls();
-  const colors = hue == null ? NEUTRAL_BLOB_COLORS : deriveBlobColors(hue);
-  if (blob1El) blob1El.setAttribute("fill", colors.blob1);
-  if (blob2El) blob2El.setAttribute("fill", colors.blob2);
+  pintarFondo(hue);
   const root = document.documentElement.style;
   if (hue == null) {
     root.setProperty("--accent", NEUTRAL_UI_ACCENT);

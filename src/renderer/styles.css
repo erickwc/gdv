@@ -139,13 +139,22 @@ textarea {
   --panel-width: 365px;
 }
 
-/* Fondo (fondo relativo.svg, inline en index.html para que
+/* Fondo (BackgroundEstatico.svg, inline en index.html para que
    background-tint.js pueda tocar el fill de los blobs) -- position:fixed
    para no quedar recortado por el overflow:hidden de .app-root. */
 .background {
   position: fixed;
   inset: 0;
   z-index: -1;
+  /* Contraste y saturacion del fondo. Va en el contenedor y no en el canvas
+     ni en el SVG a proposito: asi vale para los dos fondos posibles (el
+     aurora WebGL y, sin WebGL, el SVG de respaldo) sin repetir la regla.
+     Estos dos numeros son la perilla -- 1 es "sin tocar", subir satura/
+     contrasta mas. El aurora deriva su paleta bastante apagada (saturacion
+     0.22-0.42, ver deriveAuroraPalette) para no pelearse con la portada, asi
+     que aca la saturacion es la que mas se nota; el contraste se va a la
+     mano rapido porque los tonos base ya son casi negros y se empastan. */
+  filter: contrast(1.2) saturate(1.5) brightness(0.6);
 }
 .background svg {
   width: 100%;
@@ -256,6 +265,28 @@ html[data-platform="darwin"] .app-titlebar {
 }
 html[data-platform="darwin"] .control-panel {
   padding-top: 40px;
+}
+
+/* Fuera de macOS los botones nativos de la ventana los dibuja el sistema
+   arriba a la DERECHA (titleBarOverlay en main.js, rama no-darwin: Windows y
+   Linux), que es justo el rincon al que .titlebar-btn se manda solo con su
+   margin-left:auto -- terminaba pisado por la X. Aca se lo manda al arranque
+   de la franja, del lado opuesto a los botones del sistema: como
+   .app-titlebar empieza exactamente donde termina el panel
+   (left:var(--panel-width)), el margen se mide desde la linea divisora.
+   Los 16px son el inset con el que respira todo lo demas (el padding-right
+   y el padding-top de esta misma franja, el padding-left de .quick-fields,
+   los titulos de seccion): asi queda a la misma distancia del borde que del
+   techo, en vez de pegado a la orilla. Con el previsualizador cerrado la
+   franja pasa a left:0 y los mismos 16px lo separan del borde de la ventana.
+   La condicion va por :not(darwin) y no por ="win32" porque la que importa no
+   es la plataforma sino de que lado quedan esos botones, y eso en main.js lo
+   decide esa misma bifurcacion: Linux tiene el problema identico.
+   macOS queda intacto a proposito -- ahi los semaforos estan a la izquierda,
+   la derecha esta libre y el boton sigue yendo a la esquina (ver el
+   comentario de .app-titlebar, que explica por que se eligio ese rincon). */
+html:not([data-platform="darwin"]) .titlebar-btn {
+  margin-left: 16px;
 }
 
 .app-shell {
@@ -1091,7 +1122,7 @@ input[type="text"].preset-inline-input {
   display: none;
 }
 
-/* El aviso de "Ventana transparente detectada" entra y sale con el mismo
+/* El aviso de "Ventana detectada" entra y sale con el mismo
    despliegue difuminado del panel de texturas (.layer-controls): antes
    aparecia de golpe con [hidden] y empujaba la seccion de un salto. Mismo
    truco: la clase .is-collapsed (no [hidden], que es display:none y mata la
@@ -1599,10 +1630,11 @@ input[type="text"].preset-inline-input {
   gap: 12px;
   border-radius: 12px;
   border: 1px solid var(--divider);
-  /* El mismo gris de la app (el del fondo, fondo relativo.svg). El anterior
-     (#17161b) tenia el canal azul por encima de los otros dos y se leia como
-     un azul oscuro, fuera de la paleta. */
-  background: #221f1f;
+  /* El mismo gris de la app (el <rect> de fondo del SVG en index.html). El
+     anterior (#17161b) tenia el canal azul por encima de los otros dos y se
+     leia como un azul oscuro, fuera de la paleta. Si se cambia el SVG del
+     fondo, este valor lo sigue. */
+  background: #1b1a1a;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
 }
 

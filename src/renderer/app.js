@@ -442,13 +442,10 @@ function renderTemplateInfo(state) {
   const el = $("#template-info");
   const hay = !!(state.template_path && state.template_box);
   if (hay) {
-    const [x, y, w, h] = state.template_box;
-    // El tamano de salida lo dice Python (ver canvas_size en get_state), no
-    // esta escrito aca: asi la linea no vuelve a mentir si cambia el lienzo.
-    const [cw, ch] = state.canvas_size || [];
-    const salida = cw && ch ? ` · salida ${cw}x${ch}` : "";
-    el.textContent =
-      `Ventana transparente detectada: ${w}x${h} en (${x}, ${y})${salida}`;
+    // El nombre del archivo CON extension: el `name` que manda list_templates
+    // viene sin ella (splitext, ver api.py), asi que se saca del path.
+    const archivo = String(state.template_path).split(/[\\/]/).pop();
+    el.textContent = `Ventana detectada: ${archivo}`;
   }
   // Aparece y desaparece con el mismo despliegue que el panel de texturas
   // (.layer-controls): la clase .is-collapsed en vez del atributo [hidden],
