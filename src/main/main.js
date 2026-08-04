@@ -136,6 +136,17 @@ function createMainWindow() {
   // ventana quedaba como el propio SO la dejara caer, a veces maximizada).
   // Se espera a que isFullScreen() de verdad pase a false (sondeando cada
   // 30ms, con un limite de 1s por las dudas) antes de restaurar el tamano.
+  // Mientras se espera (arriba): la animacion nativa de Mac por si sola deja
+  // la ventana en lo que el SO decida (a veces maximizada) ANTES de que
+  // esperar() consiga aplicar setBounds() -- el usuario veia eso como un
+  // "corte" en la previsualizacion (un tamano de golpe, despues otro) en vez
+  // de una sola transicion prolija. Se le avisa al renderer para que oculte
+  // el contenido del previsualizador apenas empieza a salir (fullscreenchange
+  // ya lo hace solo, ver app.js) y "preview-resize-settled" cuando esto
+  // termina de verdad, para que lo vuelva a mostrar recien con el tamano
+  // final. El hueco entre esos dos momentos deja de verse -- sigue
+  // ocupando lo mismo, pero ahora en negro en vez de con la imagen mal
+  // encajada a mitad de camino.
   win.on("leave-html-full-screen", () => {
     const bounds = boundsBeforeFullscreen.get(win);
     const intentos = 33; // ~1s a 30ms cada uno
@@ -148,6 +159,7 @@ function createMainWindow() {
         return;
       }
       if (bounds) win.setBounds(bounds);
+      if (!win.isDestroyed()) win.webContents.send("preview-resize-settled");
     };
     esperar();
   });

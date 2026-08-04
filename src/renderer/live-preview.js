@@ -78,7 +78,17 @@ window.LivePreview = (() => {
     // otro modo el video saltaba al principio solo, a media reproduccion.
     const mismoMedio = !!logica && logica === rutaLogica && mediaEsVideo && esVideo;
     const tiempoPrevio = mismoMedio && fuente ? fuente.currentTime : 0;
-    const veniaAndando = mismoMedio && reproduciendo();
+    // Si se estaba reproduciendo, el medio NUEVO tambien arranca solo --
+    // antes esto miraba mismoMedio (arriba), asi que cargar un archivo
+    // DISTINTO por completo (otra descarga, soltar/pegar otro archivo) con
+    // el preview andando lo dejaba pausado en el primer cuadro sin avisar
+    // nada: quedaba clavado ahi hasta que el usuario pausara y volviera a
+    // darle play a mano. La app esta pensada para armar mas de un video en
+    // la misma sesion, asi que cambiar de medio en el medio de una
+    // reproduccion no puede frenarla en seco. Con un medio distinto no
+    // corresponde restaurar tiempoPrevio (es metraje de otro archivo, ver
+    // mas abajo) -- play() arranca del principio del recorte, como toca.
+    const veniaAndando = reproduciendo();
     rutaFuente = ruta;
     rutaLogica = logica || ruta;
     esVideo = mediaEsVideo;
@@ -131,12 +141,12 @@ window.LivePreview = (() => {
     fuente.setAttribute("aria-hidden", "true");
     document.body.appendChild(fuente);
     fuente.addEventListener(esVideo ? "loadeddata" : "load", () => pedirDibujo(), { once: true });
-    if (mismoMedio) {
+    if (veniaAndando) {
       const el = fuente;
       el.addEventListener("loadeddata", () => {
         if (el !== fuente) return;
-        el.currentTime = tiempoPrevio;
-        if (veniaAndando) play();
+        if (mismoMedio) el.currentTime = tiempoPrevio;
+        play();
       }, { once: true });
     }
     fuente.src = urlDeArchivo(ruta);
@@ -523,6 +533,32 @@ window.LivePreview = (() => {
     return { inicio, fin: fin > inicio ? fin : (fuente && fuente.duration) || 0 };
   }
 
+  // Pisa el recorte AL INSTANTE, sin esperar el viaje de ida y vuelta a
+  // Python: set_trim (api.py) no avisa onStateChanged (a proposito, es un
+  // slider de arrastre y notificar en cada frame seria carisimo), asi que
+  // sin esto el previsualizador solo se enteraba cuando Preview.
+  // schedulePreview() volvia a pedir get_state(), 80ms despues de soltar la
+  // asa como minimo. bucle() ya relee recorte() en CADA cuadro (nunca lo
+  // guarda en cache), asi que mutar el estado que ya tenemos alcanza para
+  // que el PROXIMO cuadro salga con el corte nuevo -- pero eso solo cubre
+  // el momento en que el video LLEGA al final del recorte y da la vuelta.
+  // Si el punto donde esta ahora mismo el video quedo AFUERA del recorte
+  // nuevo (por ejemplo, se angosto el recorte por el otro lado, o se corrio
+  // lejos de donde esta el cabezal), nada lo hacia saltar hasta la proxima
+  // vuelta -- se seguia viendo el fotograma viejo, fuera del recorte, hasta
+  // pausar y volver a darle play (play() SI busca inicio si hace falta, ver
+  // mas abajo). Se replica esa misma busqueda aca.
+  function setTrim(inicio, fin) {
+    if (!estado) return;
+    estado.trim_start = inicio;
+    estado.trim_end = fin;
+    if (fuente && esVideo && (fuente.currentTime < inicio || fuente.currentTime >= fin - 0.02)) {
+      fuente.currentTime = inicio;
+      if (!reproduciendo()) dibujarCuandoLlegue();
+    }
+    if (!reproduciendo()) pedirDibujo();
+  }
+
   function velocidad() {
     const txt = (estado && estado.speed) || "1x";
     const n = parseFloat(String(txt).replace("x", ""));
@@ -666,10 +702,30 @@ window.LivePreview = (() => {
   const AMBILIGHT_MS = 120;
   let ambilightTimer = null;
 
+  // Mismos codecs que CHEAP_DECODE_CODECS en engine.py. El comentario de
+  // arriba ("leerlo es el camino barato de siempre") vale para el TAMANO del
+  // sample, pero no cubre esto: el drawImage(video,...) previo al
+  // getImageData tiene que sacar el cuadro de la memoria del decodificador,
+  // y contra un decodificador de SOFTWARE ya al limite (VP9/AV1 sin
+  // aceleracion, ver _download_video en api.py) esa sincronizacion le hace
+  // competencia real -- medido, un clip VP9 que solo rendia 24fps limpios
+  // caia a ~16fps con el ambilight muestreando encima. Mientras no haya
+  // copia liviana lista (preview_path todavia es el original) para un medio
+  // asi, mejor pausar el ambilight que trabarle el video.
+  const AMBILIGHT_CHEAP_CODECS = new Set(["h264", "mpeg4", "mjpeg"]);
+
+  function ambilightConviene() {
+    if (!estado || !esVideo) return true; // imagen, o sin dato: nada que competir
+    const codec = estado.media_video_codec;
+    if (!codec || AMBILIGHT_CHEAP_CODECS.has(codec)) return true;
+    return !!(estado.preview_path && estado.preview_path !== estado.media_path);
+  }
+
   function arrancarAmbilight() {
     if (ambilightTimer !== null) return;
     ambilightTimer = setInterval(() => {
       if (!canvas || canvas.hidden || !medidasFuente()) return;
+      if (!ambilightConviene()) return;
       if (window.ambilightFromSource) window.ambilightFromSource(fuente);
     }, AMBILIGHT_MS);
   }
@@ -738,7 +794,7 @@ window.LivePreview = (() => {
     init, applyState, setPreparedTextures, play, pause, redraw: pedirDibujo,
     isPlaying: reproduciendo, progress: progreso, seek: buscar,
     seekSeconds: buscarSegundos, currentTime: tiempoActual, duration: duracion,
-    dataUri, element: elemento, ready: listo,
+    dataUri, element: elemento, ready: listo, setTrim,
     sourceUrl: urlDeLaFuente, composeInto: componerEnLienzo,
   };
 })();

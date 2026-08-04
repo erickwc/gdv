@@ -136,9 +136,21 @@ PREVIEW_QUALITY_ARGS_NVENC = ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr
 # El tamano lo decide preview_proxy_size: lo MINIMO que puede cubrir el lienzo
 # sin que el previsualizador tenga que agrandar nada. La exportacion NO usa esta
 # copia, sigue leyendo el archivo original.
+#
+# Pero el tamano no es lo UNICO que hace caro decodificar cuadro a cuadro: un
+# clip bajado de YouTube casi siempre viene en VP9 (o AV1) en vez de H.264, y
+# esta Mac decodifica esos dos por software, sin aceleracion de hardware salvo
+# chips M3+ (mismo motivo por el que _download_video evita AV1 del lado de
+# yt-dlp). Un video que YA entra en el lienzo (2560x1440, por ejemplo) se
+# salteaba la copia por completo -- "ya es chico, para que copiarlo" -- pero
+# seguia siendo VP9 a esa resolucion, con el mismo tironeo del comentario de
+# arriba. CHEAP_DECODE_CODECS es la lista de lo que se decodifica barato tal
+# cual viene; cualquier otra cosa fuerza la copia (al MISMO tamano si hace
+# falta) solo para cambiarle el codec a H.264.
+CHEAP_DECODE_CODECS = {"h264", "mpeg4", "mjpeg"}
 
 
-def preview_proxy_size(media_size, canvas=(MAX_WIDTH, MAX_HEIGHT)):
+def preview_proxy_size(media_size, video_codec=None, canvas=(MAX_WIDTH, MAX_HEIGHT)):
     """Tamano de la copia, o None si no vale la pena hacerla.
 
     La regla es "lo mas chica posible SIN que haya que agrandarla despues". El
@@ -157,7 +169,9 @@ def preview_proxy_size(media_size, canvas=(MAX_WIDTH, MAX_HEIGHT)):
         return None
     factor = max(canvas[0] / w, canvas[1] / h)
     if factor >= 1:
-        return None  # ya es igual o mas chico que lo que hace falta
+        if video_codec and video_codec not in CHEAP_DECODE_CODECS:
+            return (w, h)  # mismo tamano: la copia es solo para cambiar de codec
+        return None  # ya es igual o mas chico, y el codec ya es barato
     # Pares: yuv420p no admite lados impares.
     return (max(2, round(w * factor / 2) * 2), max(2, round(h * factor / 2) * 2))
 
@@ -328,7 +342,7 @@ def template_canvas_box(template_path, box):
 
 def probe_media(ffmpeg_exe, media_path):
     """Lee la cabecera del archivo y devuelve un dict con duration,
-    audio_codec, sample_rate, video_size (w, h)."""
+    audio_codec, sample_rate, video_size (w, h), video_codec."""
     proc = subprocess.run(
         [ffmpeg_exe, "-i", media_path],
         stdin=subprocess.DEVNULL,
@@ -337,7 +351,8 @@ def probe_media(ffmpeg_exe, media_path):
         text=True,
         creationflags=CREATE_NO_WINDOW,
     )
-    info = {"duration": None, "audio_codec": None, "sample_rate": None, "video_size": None}
+    info = {"duration": None, "audio_codec": None, "sample_rate": None,
+            "video_size": None, "video_codec": None}
     match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", proc.stdout)
     if match:
         h, m, s = match.groups()
@@ -346,6 +361,9 @@ def probe_media(ffmpeg_exe, media_path):
     if match:
         info["audio_codec"] = match.group(1).lower()
         info["sample_rate"] = int(match.group(2))
+    match = re.search(r"Video:\s*(\w+)", proc.stdout)
+    if match:
+        info["video_codec"] = match.group(1).lower()
     match = re.search(r"Video:.*?\s(\d{2,5})x(\d{2,5})", proc.stdout)
     if match:
         info["video_size"] = (int(match.group(1)), int(match.group(2)))

@@ -99,6 +99,7 @@ class Api:
         self.media_path = None
         self.media_is_video = False
         self.media_size = None
+        self.media_video_codec = None  # ver CHEAP_DECODE_CODECS en engine.py
         self.media_was_vertical = False  # tamano ORIGINAL, no el actual -- ver rotate_media
         self.media_duration = None
         self.media_interlaced = False
@@ -201,6 +202,9 @@ class Api:
         # Sufijo unico para el PNG de cada imagen pegada como portada -- ver
         # clipboard_image_path (la ruta no puede repetirse).
         self._cover_paste_counter = 0
+        # Mismo motivo que _cover_paste_counter, para paste_from_clipboard
+        # (pegar una imagen como MEDIO principal, no como portada).
+        self._media_paste_counter = 0
         # None = todavia no se probo: _loop_preview_job intenta NVENC (GPU)
         # primero y cae a libx264 si falla, y recuerda el resultado aca para
         # no volver a perder tiempo probando NVENC en cada preview si esta
@@ -250,6 +254,11 @@ class Api:
                 os.path.basename(self.media_path) if self.media_path else None),
             "media_is_video": self.media_is_video,
             "media_size": self.media_size,
+            # Para que el previsualizador sepa si el codec de ESTE medio es
+            # caro de decodificar (ver CHEAP_DECODE_CODECS en engine.py) --
+            # el ambilight lo usa para saber si conviene pausarse mientras
+            # no haya copia liviana lista, ver live-preview.js.
+            "media_video_codec": self.media_video_codec,
             # Tamano ORIGINAL (no el actual): ver rotate_media/renderChips.
             "media_was_vertical": self.media_was_vertical,
             "media_duration": self.media_duration,
@@ -361,10 +370,18 @@ class Api:
         # el dict. Eso hacia que la plantilla recien soltada pareciera no
         # agregarse (hasta que, por suerte de timing, un intento ganaba la
         # carrera). Con el lock, refresh/set/delete quedan serializados.
+        #
+        # SIN os.path.exists() (a proposito): esto se llama en CADA refresh
+        # (onStateChanged dispara list_templates() todo el tiempo), asi que
+        # filtrar por existencia aca borraba una plantilla de disco externo
+        # apenas el disco se desconectaba un instante -- y como este dict es
+        # la fuente de template_library al guardar, la perdida quedaba
+        # permanente. Si el archivo de verdad no esta, falla solo al leerlo
+        # (la miniatura, o al exportar), sin tocar lo guardado.
         with self._template_lock:
             self._template_paths = {
                 display: path for display, path in self._template_paths.items()
-                if os.path.dirname(path) != engine.TEMPLATES_DIR and os.path.exists(path)
+                if os.path.dirname(path) != engine.TEMPLATES_DIR
             }
             if os.path.isdir(engine.TEMPLATES_DIR):
                 for name in sorted(os.listdir(engine.TEMPLATES_DIR)):
@@ -393,22 +410,47 @@ class Api:
         que A desapareciera de la galeria para siempre: nunca quedaba
         escrita en ningun lado, solo vivia en memoria mientras la app
         seguia abierta -- exactamente lo que el usuario reporto como "las
-        plantillas no se quedan guardadas"."""
+        plantillas no se quedan guardadas".
+
+        NO se filtra por os.path.exists() aca: el usuario guarda sus
+        plantillas/texturas en un disco externo, y justo despues de
+        prender la Mac ese disco puede tardar en montarse -- si se
+        descartara la entrada por "no existe" en ese momento, quedaba
+        BORRADA para siempre en cuanto algo mas (agregar/quitar otra)
+        volviera a guardar la galeria ya filtrada. os.path.exists() solo
+        importa al usar el archivo de verdad (leer la miniatura, exportar);
+        ahi ya falla solo, sin arruinar lo guardado. Sacar la entrada de la
+        galeria es cosa del usuario, con el boton de eliminar -- nunca
+        automatico."""
         library = self.config_data.get("template_library") or []
         with self._template_lock:
             for path in library:
-                if os.path.exists(path):
-                    display = os.path.splitext(os.path.basename(path))[0]
-                    self._template_paths[display] = path
+                display = os.path.splitext(os.path.basename(path))[0]
+                self._template_paths[display] = path
         saved = self.config_data.get("template")
-        if saved and os.path.exists(saved):
+        if saved:
             self.set_template(saved)
 
     def set_template(self, path):
+        # Chequeo aparte ANTES de intentar leerla: sin esto, un archivo que
+        # no existe (tipico de un disco externo desconectado) caia en el
+        # except de abajo y mostraba la excepcion cruda de Python
+        # ("[Errno 2] No such file or directory: ...") tal cual en la UI --
+        # confuso para alguien que no programa. file_missing=True le avisa al
+        # frontend que este mensaje puntual se puede hacer desaparecer solo
+        # despues de un rato (ver toggleTemplate en app.js), a diferencia de
+        # otros errores (PNG sin zona transparente, etc.) que se quedan hasta
+        # que el usuario haga otra cosa.
+        if not os.path.exists(path):
+            return {
+                "ok": False,
+                "error": f"No se pudo encontrar tu archivo :(\nRuta: {path}",
+                "file_missing": True,
+            }
         try:
             box = engine.detect_template_window(path)
-        except Exception as exc:
-            return {"ok": False, "error": f"No se pudo leer la plantilla: {exc}"}
+        except Exception:
+            return {"ok": False, "error": "No se pudo leer la plantilla, intenta con una nueva (ɔ◔‿◔)"}
         if box is None:
             return {
                 "ok": False,
@@ -446,8 +488,8 @@ class Api:
         if os.path.dirname(path) == engine.TEMPLATES_DIR:
             try:
                 os.remove(path)
-            except OSError as exc:
-                return {"ok": False, "error": str(exc)}
+            except OSError:
+                return {"ok": False, "error": "El archivo no se pudo borrar (ϑ`'-'´)ϑ"}
         with self._template_lock:
             display = next((d for d, p in self._template_paths.items() if p == path), None)
             if display:
@@ -463,10 +505,18 @@ class Api:
     # ------------------------------------------------------------ texturas
 
     def _refresh_available_textures(self):
+        # SIN os.path.exists() (a proposito, ver el mismo comentario en
+        # _refresh_template_list): esto corre en CADA refresh de estado, asi
+        # que filtrar por existencia aca borraba una textura de disco
+        # externo apenas el disco se desconectaba un instante -- y como este
+        # dict alimenta la galeria (y potencialmente lo que se guarda al
+        # tocar cualquier otra), la perdida quedaba permanente. Si el
+        # archivo de verdad no esta, falla solo al leerlo (miniatura,
+        # exportar), sin arruinar lo guardado.
         with self._texture_paths_lock:
             self._texture_paths = {
                 display: path for display, path in self._texture_paths.items()
-                if os.path.dirname(path) != engine.TEXTURES_DIR and os.path.exists(path)
+                if os.path.dirname(path) != engine.TEXTURES_DIR
             }
             if os.path.isdir(engine.TEXTURES_DIR):
                 for name in sorted(os.listdir(engine.TEXTURES_DIR)):
@@ -541,14 +591,22 @@ class Api:
         # misma textura dos veces, y esa copia de mas no se podia ni ver ni
         # apagar desde la galeria (ver _dedupe_layers). Asi se cura sola al
         # abrir la app.
-        utiles = [
-            dict(state) for state in layers_data
-            if state.get("path") and os.path.exists(state["path"])
-        ]
+        #
+        # NO se filtra por os.path.exists() aca (a proposito, ver el mismo
+        # comentario en _restore_template_from_config): un disco externo
+        # recien montado en el boot de la Mac puede tardar en aparecer, y
+        # filtrar en ese momento + guardar el resultado (como hacia esto
+        # antes) borraba la textura de config.json PARA SIEMPRE -- exacto
+        # lo que el usuario reporto ("apague la mac... las texturas... no
+        # estaban"). Si el archivo de verdad no esta disponible, falla solo
+        # al intentar usarlo (miniatura, exportar) sin arruinar lo guardado.
+        utiles = [dict(state) for state in layers_data if state.get("path")]
         self.texture_layers = self._dedupe_layers(utiles)
         # Y se deja curado en el archivo, no solo en memoria: si no, el config
         # se quedaba con las repetidas hasta que algo mas lo reescribiera, y
-        # leerlo confundia (mostraba dos capas donde la app usaba una).
+        # leerlo confundia (mostraba dos capas donde la app usaba una). Esto
+        # SI es seguro guardarlo de una: dedupe_layers solo saca copias
+        # exactas de la MISMA ruta, nunca una que solo parezca faltar.
         if len(self.texture_layers) != len(layers_data):
             self._persist_texture_layers()
         # add_texture_layer() registra el archivo en _texture_paths (asi
@@ -608,6 +666,17 @@ class Api:
                      if c.get("path") and self._same_file_key(c["path"]) == clave), -1)
 
     def add_texture_layer(self, path):
+        # Chequeo aparte ANTES de _texture_is_readable, mismo motivo que en
+        # set_template: un archivo que no existe (disco externo
+        # desconectado) daba el mismo "no se pudo leer" generico que un
+        # archivo realmente corrupto, sin decir POR QUE. file_missing=True
+        # avisa al frontend que este mensaje se puede borrar solo.
+        if not os.path.exists(path):
+            return {
+                "ok": False,
+                "error": f"No se pudo encontrar tu archivo :(\nRuta: {path}",
+                "file_missing": True,
+            }
         if not self._texture_is_readable(path):
             return {"ok": False, "error": "No se pudo leer esa textura (¿imagen o video válido?)."}
         display = os.path.splitext(os.path.basename(path))[0]
@@ -710,12 +779,23 @@ class Api:
                 "opacity": preset.get("texture_opacity", 47),
                 "scale": preset.get("texture_scale", 100),
             }] if legacy_path else []
+        # Se agregan TODAS (exista o no el archivo ahora mismo) -- lo unico
+        # que os.path.exists() decide aca es si va al aviso de "faltantes".
+        # Antes, la que no existiera en ESE instante se descartaba y la
+        # linea de abajo (_persist_texture_layers) guardaba esa lista ya
+        # recortada: aplicar un preset con el disco externo desconectado
+        # borraba esa textura del preset para siempre en el primer guardado
+        # que tocara texture_layers. Mismo caso que el de plantillas
+        # (_restore_template_from_config) y el de arranque
+        # (_restore_textures_from_config) -- si el archivo de verdad no
+        # esta, falla solo al usarlo, sin arruinar lo guardado.
         self.texture_layers = []
         for state in textures_data:
             path = state.get("path")
-            if path and os.path.exists(path):
-                self.texture_layers.append(dict(state))
-            elif path:
+            if not path:
+                continue
+            self.texture_layers.append(dict(state))
+            if not os.path.exists(path):
                 missing.append(os.path.basename(path))
         # Un preset guardado antes del arreglo de las repetidas puede traer la
         # misma textura dos veces -- ver _dedupe_layers.
@@ -840,6 +920,7 @@ class Api:
         self.media_is_video = True
         self.preview_proxy_path = None  # la del clip anterior no sirve
         self.media_size = None
+        self.media_video_codec = None  # lo pone en firme _probe_video_job
         self.media_duration = None
         self.media_interlaced = False
         self.media_thumb = None
@@ -864,6 +945,7 @@ class Api:
         if path != self.media_path or not self.media_is_video:
             return  # el usuario ya cambio de medio
         self.media_size = info["video_size"]
+        self.media_video_codec = info["video_codec"]
         self.media_duration = info["duration"]
         self.media_interlaced = interlaced
         self.trim_start = 0.0
@@ -962,6 +1044,10 @@ class Api:
         if self.media_size:
             w, h = self.media_size
             self.media_size = (h, w)
+        # build_rotate_command siempre saca h264 (VIDEO_QUALITY_ARGS), sea cual
+        # sea el codec de entrada -- si el original forzaba una copia liviana
+        # por codec caro (VP9/AV1), este resultado ya no la necesita por eso.
+        self.media_video_codec = "h264"
         thumb_img = engine.extract_video_thumb(self.ffmpeg_exe, temp_path)
         if thumb_img is not None:
             self.media_thumb = _image_to_data_uri(thumb_img)
@@ -987,13 +1073,16 @@ class Api:
     # ------------------------------------------ copia liviana para el preview
 
     def _maybe_start_preview_proxy(self, path):
-        """Arranca la copia escalada si el clip es mas grande de lo que el
-        previsualizador necesita. Con un clip que ya entra no se hace nada: el
-        original se decodifica barato y una copia solo gastaria disco y tiempo
-        (ademas de perder calidad al recomprimir)."""
+        """Arranca la copia si el clip es mas grande de lo que el
+        previsualizador necesita, O si el codec es caro de decodificar aunque
+        el tamano ya entre (ver CHEAP_DECODE_CODECS en engine.py -- un clip de
+        YouTube en VP9/AV1 se tironea igual, tamano aparte). Sin ninguna de
+        las dos cosas no se hace nada: el original se decodifica barato y una
+        copia solo gastaria disco y tiempo (ademas de perder calidad al
+        recomprimir)."""
         if not self.media_size:
             return
-        destino = engine.preview_proxy_size(self.media_size)
+        destino = engine.preview_proxy_size(self.media_size, self.media_video_codec)
         if not destino:
             return
         threading.Thread(target=self._preview_proxy_job, args=(path, destino),
@@ -1131,6 +1220,7 @@ class Api:
         self.media_path = None
         self.media_is_video = False
         self.media_size = None
+        self.media_video_codec = None
         self.media_was_vertical = False
         self.media_duration = None
         self.media_interlaced = False
@@ -1309,7 +1399,20 @@ class Api:
             return {"ok": False, "empty": True}
         if isinstance(data, list):
             return self.ingest_paths([p for p in data if isinstance(p, str)])
-        path = os.path.join(tempfile.gettempdir(), "genvideo_imagen_pegada.png")
+        # Nombre NUEVO en cada pegada, no uno fijo (era "genvideo_imagen_pegada.png"
+        # a secas): media_path termina en el src de <img>/<video> del
+        # previsualizador (live-preview.js), que compara rutas para decidir si
+        # hay que recargar -- con la ruta identica, pegar una segunda imagen
+        # sobreescribia el archivo pero la preview (y la portada, que reusa ese
+        # mismo fotograma) se quedaban con la primera. Exportar salia bien
+        # igual porque ffmpeg lee el archivo del disco directo, sin pasar por
+        # ahi -- mismo bug que _cover_paste_counter/_download_counter ya
+        # arreglaban en sus propios flujos.
+        self._media_paste_counter += 1
+        path = os.path.join(
+            tempfile.gettempdir(),
+            f"genvideo_imagen_pegada_{self._media_paste_counter}.png",
+        )
         try:
             data.convert("RGB").save(path, "PNG")
         except Exception as exc:
@@ -2154,13 +2257,10 @@ class Api:
         elif self.cancel_requested:
             payload = {"ok": False, "cancelled": True, "message": "Generación cancelada."}
         else:
-            detail = ""
-            if self._last_ffmpeg_error:
-                # Ultimas 2 lineas alcanzan para el mensaje corto de la UI --
-                # el resto del tail queda en _last_ffmpeg_error por si hace
-                # falta mirarlo con mas detalle (consola/logs).
-                detail = ": " + " / ".join(self._last_ffmpeg_error.splitlines()[-2:])
-            payload = {"ok": False, "message": f"Error al generar el video (código {returncode}){detail}."}
+            # El detalle tecnico (codigo de salida, tail de ffmpeg) ya no se
+            # muestra en la UI -- queda en _last_ffmpeg_error por si hace
+            # falta mirarlo con mas detalle (consola/logs).
+            payload = {"ok": False, "message": "Hubo un problema al exportar\ninténtalo de nuevo. ˘﹏˘"}
         self._emit("onJobDone", payload)
 
     def _on_job_error(self, message):
@@ -2266,7 +2366,7 @@ class Api:
         if looks_like_image_link:
             message = 'Acá no se puede insertar link de imágenes, debes de copiar la imagen y pegarla :)'
         else:
-            message = f"No se pudo descargar: {yt_dlp_error}"
+            message = "No se pudo descargar\nIntenta con un nuevo enlace"
         self._push_download_done(False, message)
 
     def _download_video(self, url, tmpdir):

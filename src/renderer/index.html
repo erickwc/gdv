@@ -461,6 +461,13 @@
           <span id="preview-loading-text">Generando vista previa...</span>
         </div>
         <button class="preview-expand-btn" id="preview-expand" hidden title="Agrandar"></button>
+        <!-- Marca de agua de la app: la "H" y el credito, siempre encima del
+             previsualizador (fotograma real de video/imagen, de color
+             impredecible) -- ver .preview-watermark-logo en styles.css para
+             como se mantienen visibles sin importar que hay debajo. -->
+        <img class="preview-watermark-logo" aria-hidden="true"
+          src="img/app-logo-h.png" alt="" />
+        <p class="preview-watermark-credit">powered by prodbykassy &amp; gioesbeats</p>
       </div>
     </main>
 

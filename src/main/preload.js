@@ -27,6 +27,14 @@ contextBridge.exposeInMainWorld("api", {
   onExitPreviewFullscreen: (callback) => {
     ipcRenderer.on("exit-preview-fullscreen", () => callback());
   },
+  // Avisa cuando la ventana termino de verdad de volver a su tamano de
+  // antes al salir de pantalla completa (ver leave-html-full-screen en
+  // main.js) -- entre el click/Esc y este momento hay un hueco donde la
+  // ventana pasa por un tamano intermedio que no es el final; app.js oculta
+  // el previsualizador en ese hueco y lo revela recien aca.
+  onPreviewResizeSettled: (callback) => {
+    ipcRenderer.on("preview-resize-settled", () => callback());
+  },
   showPreviewWindow: (dataUri) => ipcRenderer.invoke("preview-show", dataUri),
   showPreviewVideo: (src) => ipcRenderer.invoke("preview-show-video", src),
   hidePreviewWindow: () => ipcRenderer.invoke("preview-hide"),

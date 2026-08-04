@@ -11,6 +11,20 @@ function $$(sel) {
   return Array.from(document.querySelectorAll(sel));
 }
 
+// Todo error que se muestra en un elemento de texto (status-text,
+// download-status, cover-drop-hint) se borra solo despues de un rato, en vez
+// de quedarse pegado hasta que otra accion lo pise. El timer se guarda EN el
+// elemento (no en una variable compartida) para que dos elementos distintos
+// no se cancelen el timer entre si, y el chequeo de texto antes de borrar
+// evita pisar un mensaje MAS NUEVO que haya aparecido mientras tanto.
+function showTimedError(el, text, ms = 6000) {
+  el.textContent = text;
+  clearTimeout(el._errorTimer);
+  el._errorTimer = setTimeout(() => {
+    if (el.textContent === text) el.textContent = "";
+  }, ms);
+}
+
 let lastState = null;
 let templatesCache = { templates: [], active: null };
 let availableTextures = [];
@@ -229,6 +243,11 @@ function render(state) {
   // nuevo solo, unos segundos despues de arrancar, sin que el usuario
   // tocara nada.
   const teniaBeat = !!(lastState && (lastState.audio_preview_path || lastState.audio_path));
+  // audio_path (NO audio_preview_path) a proposito: es el que identifica el
+  // archivo de verdad, y no cambia cuando termina de armarse la copia en
+  // aac (ver el comentario de arriba) -- asi que sirve para saber si lo que
+  // llego es un beat REALMENTE distinto, mas abajo.
+  const audioAntes = lastState && lastState.audio_path;
   lastState = state;
   // Se cargo otro medio: el resultado del export anterior deja de mostrarse
   // (cover_available es justo esa senal, ver api.py).
@@ -261,6 +280,16 @@ function render(state) {
   // pedido explicito, cargar el beat con todo pausado no dispara nada.
   const hayBeatAhora = !!(state.audio_preview_path || state.audio_path);
   if (!teniaBeat && hayBeatAhora && LivePreview.isPlaying()) {
+    LivePreview.seek(0);
+    startBeat(true);
+  } else if (teniaBeat && hayBeatAhora && beatSonando && state.audio_path !== audioAntes) {
+    // Se reemplazo el beat por uno DISTINTO (no la copia en aac del mismo,
+    // que no cambia audio_path -- ver arriba) mientras ya habia uno
+    // sonando: el elemento <audio> se queda con el archivo VIEJO cargado
+    // (sigue "reproduciendo", asi que el vigilante de mas abajo tampoco lo
+    // nota) hasta que el usuario pausa y le da play a mano. beatSonando y
+    // no LivePreview.isPlaying() por el mismo motivo que el vigilante: es
+    // el que dice si el beat DEBERIA estar sonando.
     LivePreview.seek(0);
     startBeat(true);
   }
@@ -352,8 +381,8 @@ function handleResult(result) {
     render(result.state);
   }
   if (result && result.ignored && result.ignored.length) {
-    $("#status-text").textContent =
-      "Ignorado (no es imagen, video ni audio): " + result.ignored.join(", ");
+    showTimedError($("#status-text"),
+      "Ignorado (no es imagen, video ni audio): " + result.ignored.join(", "));
   }
 }
 
@@ -459,7 +488,7 @@ function renderTemplateInfo(state) {
 function browseTemplate() {
   pywebview.api.browse_template().then((result) => {
     if (!result.ok && !result.cancelled) {
-      $("#status-text").textContent = result.error || "No se pudo usar esa plantilla.";
+      showTimedError($("#status-text"), result.error || "No se pudo usar esa plantilla. (⌣.⌣)");
     }
     refreshTemplates().then(refresh);
   });
@@ -473,7 +502,7 @@ function toggleTemplate(path, active) {
   }
   pywebview.api.set_template(path).then((result) => {
     if (!result.ok) {
-      $("#status-text").textContent = result.error || "No se pudo usar esa plantilla.";
+      showTimedError($("#status-text"), result.error || "No se pudo usar esa plantilla. (⌣.⌣)");
     }
     refreshTemplates().then(refresh);
   });
@@ -481,7 +510,11 @@ function toggleTemplate(path, active) {
 
 function deleteTemplateFile(path, name) {
   if (!confirm(`¿Eliminar la plantilla "${name}"?`)) return;
-  pywebview.api.delete_template_file(path).then(() => {
+  pywebview.api.delete_template_file(path).then((r) => {
+    // Igual que en texturas: esto discartaba el resultado entero, asi que
+    // un borrado que fallaba (permiso denegado, archivo en uso) no avisaba
+    // nada.
+    if (!r.ok) showTimedError($("#status-text"), r.error || "No se pudo eliminar la plantilla.");
     refreshTemplates().then(refresh);
   });
 }
@@ -511,7 +544,15 @@ function browseTexture() {
   pywebview.api.browse_texture_file().then((path) => {
     if (!path) return;
     markPresetModified();
-    pywebview.api.add_texture_layer(path).then(() => {
+    pywebview.api.add_texture_layer(path).then((r) => {
+      if (!r.ok) {
+        // Antes se descartaba esta respuesta entera -- una textura que
+        // fallaba (archivo movido, corrupto) no avisaba nada, quedaba como
+        // si no hubiera pasado nada.
+        showTimedError($("#status-text"), r.error || "No se pudo usar esa textura.");
+        refreshAvailableTextures().then(refresh);
+        return;
+      }
       selectedTexturePath = path;
       refreshAvailableTextures().then(refresh);
     });
@@ -532,7 +573,15 @@ function browseTexture() {
 function toggleTextureLayer(path, layerIndex) {
   if (layerIndex === -1) {
     markPresetModified();
-    pywebview.api.add_texture_layer(path).then(() => {
+    pywebview.api.add_texture_layer(path).then((r) => {
+      if (!r.ok) {
+        // Antes se descartaba esta respuesta entera -- una textura que
+        // fallaba (archivo movido, corrupto) no avisaba nada, quedaba como
+        // si no hubiera pasado nada.
+        showTimedError($("#status-text"), r.error || "No se pudo usar esa textura.");
+        refresh();
+        return;
+      }
       selectedTexturePath = path;
       refresh();
     });
@@ -557,7 +606,7 @@ function deleteTextureFile(path) {
   if (!confirm(`¿Quitar la textura "${name}" de la app y de las capas que la usan?`)) return;
   pywebview.api.delete_texture_file(path).then((r) => {
     if (!r.ok) {
-      $("#status-text").textContent = r.error || "No se pudo eliminar la textura.";
+      showTimedError($("#status-text"), r.error || "No se pudo eliminar la textura.");
       return;
     }
     markPresetModified();
@@ -768,7 +817,7 @@ function buildPresetRow(name) {
       }
       pywebview.api.rename_preset(name, newName).then((r) => {
         if (!r.ok) {
-          $("#status-text").textContent = r.error;
+          showTimedError($("#status-text"), r.error);
           return;
         }
         if (currentPresetName === name) currentPresetName = newName;
@@ -817,7 +866,11 @@ function buildPresetRow(name) {
   delBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     if (!confirm(`¿Eliminar el preset "${name}"?`)) return;
-    pywebview.api.delete_preset(name).then(() => {
+    pywebview.api.delete_preset(name).then((r) => {
+      if (!r.ok) {
+        showTimedError($("#status-text"), r.error || "No se pudo eliminar el preset.");
+        return;
+      }
       if (currentPresetName === name) currentPresetName = null;
       refresh();
     });
@@ -830,7 +883,7 @@ function buildPresetRow(name) {
 function applyPreset(name) {
   pywebview.api.apply_preset(name).then((r) => {
     if (!r.ok) {
-      $("#status-text").textContent = r.error || "No se pudo aplicar el preset.";
+      showTimedError($("#status-text"), r.error || "No se pudo aplicar el preset.");
       return;
     }
     currentPresetName = name;
@@ -854,10 +907,13 @@ function applyPreset(name) {
     // availableTextures todavia no incluia esa textura. Se veia como si la
     // textura hubiera desaparecido al aplicar el preset.
     refreshAvailableTextures().then(refresh);
-    $("#status-text").textContent = r.missing && r.missing.length
-      ? `Preset "${name}" aplicado — no se encontró la ${r.missing.join("/")} guardada`
-      : `Preset aplicado: ${name}`;
-    $("#status-text").style.color = r.missing && r.missing.length ? "var(--red)" : "var(--accent)";
+    if (r.missing && r.missing.length) {
+      showTimedError($("#status-text"), `Preset "${name}" aplicado — no se encontró la ${r.missing.join("/")} guardada`);
+      $("#status-text").style.color = "var(--red)";
+    } else {
+      $("#status-text").textContent = `Preset aplicado: ${name}`;
+      $("#status-text").style.color = "var(--accent)";
+    }
   });
 }
 
@@ -980,7 +1036,7 @@ function overwriteCurrentPreset() {
   const name = currentPresetName;
   pywebview.api.save_preset(name).then((r) => {
     if (!r.ok) {
-      $("#status-text").textContent = r.error;
+      showTimedError($("#status-text"), r.error);
       return;
     }
     clearPresetModified();
@@ -1026,7 +1082,7 @@ function confirmSaveNewPreset() {
   }
   pywebview.api.save_preset(name).then((r) => {
     if (!r.ok) {
-      $("#status-text").textContent = r.error;
+      showTimedError($("#status-text"), r.error);
       return;
     }
     currentPresetName = name;
@@ -1096,7 +1152,7 @@ function beginGeneration() {
       // Se re-habilita: quedo deshabilitado desde el click (ver arriba),
       // pero esta generacion en particular no arranco de verdad.
       $("#generate-btn").disabled = !(lastState && lastState.ready);
-      $("#status-text").textContent = r.error || "No se pudo iniciar la generación.";
+      showTimedError($("#status-text"), r.error || "No se pudo iniciar la generación.");
       return;
     }
     setGeneratingUI(true);
@@ -1134,14 +1190,19 @@ window.onJobDone = (payload) => {
     setExportResult(payload.filename || payload.message || "video exportado");
     return;
   }
-  $("#status-text").textContent = payload.message;
-  $("#status-text").style.color = payload.cancelled ? "" : "var(--red)";
+  if (payload.cancelled) {
+    $("#status-text").textContent = payload.message;
+    $("#status-text").style.color = "";
+  } else {
+    showTimedError($("#status-text"), payload.message);
+    $("#status-text").style.color = "var(--red)";
+  }
 };
 
 window.onJobError = (payload) => {
   setGeneratingUI(false);
   $("#progress-bar").hidden = true;
-  $("#status-text").textContent = "Error inesperado.";
+  showTimedError($("#status-text"), "Error inesperado.");
   $("#status-text").style.color = "var(--red)";
   alert(payload.message);
 };
@@ -1184,7 +1245,7 @@ let downloading = false;
 function startDownload(url) {
   if (downloading) return;
   if (!/^https?:\/\//i.test(url)) {
-    $("#download-status").textContent = "Pega un link válido (que empiece con https://).";
+    showTimedError($("#download-status"), "Pega un link válido (que empiece con https://).");
     $("#download-status").style.color = "var(--red)";
     return;
   }
@@ -1196,7 +1257,7 @@ function startDownload(url) {
     if (!r.ok) {
       downloading = false;
       $("#link-input").disabled = false;
-      $("#download-status").textContent = r.error;
+      showTimedError($("#download-status"), r.error);
       $("#download-status").style.color = "var(--red)";
     }
   });
@@ -1216,7 +1277,7 @@ window.onDownloadDone = (payload) => {
     refresh();
     return;
   }
-  $("#download-status").textContent = payload.message;
+  showTimedError($("#download-status"), payload.message);
   $("#download-status").style.color = "var(--red)";
 };
 
@@ -1306,7 +1367,11 @@ window.addEventListener("pywebviewready", () => {
     const btn = e.currentTarget;
     btn.disabled = true;
     pywebview.api.rotate_media().then((r) => {
-      if (r.ok) render(r.state);
+      if (r.ok) {
+        render(r.state);
+      } else {
+        showTimedError($("#status-text"), r.error || "No se pudo girar el video.");
+      }
       btn.disabled = false;
     });
   });
@@ -1331,9 +1396,9 @@ window.addEventListener("pywebviewready", () => {
         }
         coverSource = "image";
         coverImagePath = null;
-        $("#cover-drop-hint").textContent = r && r.error
+        showTimedError($("#cover-drop-hint"), r && r.error
           ? r.error
-          : "El portapapeles no tiene ninguna imagen.";
+          : "El portapapeles no tiene ninguna imagen.");
         renderCoverModal();
       });
       return;
@@ -1348,11 +1413,11 @@ window.addEventListener("pywebviewready", () => {
     }
     pywebview.api.paste_from_clipboard().then((result) => {
       if (result && result.empty) {
-        $("#status-text").textContent = "El portapapeles no tiene una imagen ni archivos.";
+        showTimedError($("#status-text"), "El portapapeles no tiene una imagen ni archivos.");
         return;
       }
       if (result && !result.ok) {
-        $("#status-text").textContent = result.error || "No se pudo pegar.";
+        showTimedError($("#status-text"), result.error || "No se pudo pegar.");
         return;
       }
       handleResult(result);
@@ -1577,7 +1642,7 @@ window.addEventListener("pywebviewready", () => {
     const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
     const path = files.map((f) => window.api.getPathForFile(f)).find((p) => p && isCoverImage(p));
     if (!path) {
-      $("#cover-drop-hint").textContent = "Eso no es una imagen.";
+      showTimedError($("#cover-drop-hint"), "Eso no es una imagen.");
       return;
     }
     setCoverImage(path);
@@ -1809,6 +1874,9 @@ function scheduleMirror(delay = 450) {
 
 const Preview = (() => {
   let timer = null;
+  // Salida de seguridad para el ocultamiento durante el resize de salir de
+  // pantalla completa -- ver el fullscreenchange de mas abajo.
+  let previewSettlingTimeout = null;
 
   // Ya no le pide un fotograma a ffmpeg: el previsualizador se compone en vivo
   // en el canvas (ver live-preview.js), asi que un cambio se ve en el cuadro
@@ -1959,6 +2027,36 @@ const Preview = (() => {
       btn.title = isFull ? "Salir de pantalla completa" : "Agrandar";
       // (Volver a trabar el tamano de la ventana lo hace el proceso
       // principal con "leave-html-full-screen" -- ver main.js.)
+      //
+      // Al SALIR: la pagina ya se re-acomodo a "no pantalla completa", pero
+      // la VENTANA de macOS todavia esta a mitad de su propia animacion
+      // nativa (tarda un rato en volver al tamano de antes, ver
+      // leave-html-full-screen en main.js) -- mientras tanto el lienzo se
+      // reacomoda contra un ancho de ventana que todavia no es el final, y
+      // eso se ve como que la imagen "se corta" un instante antes de
+      // asentarse bien. Se oculta el contenido apenas se detecta la salida
+      // y se revela recien con "preview-resize-settled" (mandado por el
+      // proceso principal una vez que el tamano de la ventana YA es el
+      // definitivo) -- entrando no hace falta: ahi la ventana crece hacia
+      // pantalla completa, que es donde tiene que terminar de cualquier
+      // forma, no hay tamano intermedio "incorrecto" que ocultar.
+      const surface = $("#preview-surface");
+      clearTimeout(previewSettlingTimeout);
+      if (isFull) {
+        surface.classList.remove("preview-settling");
+      } else {
+        surface.classList.add("preview-settling");
+        // Salida de seguridad: si por lo que sea "preview-resize-settled" no
+        // llega (el evento de Electron que lo dispara, leave-html-full-screen,
+        // no siempre corre igual -- por ejemplo si la pantalla completa se
+        // pidio/solto sin gesto real del usuario), sin esto el previsualizador
+        // se quedaba oculto PARA SIEMPRE en vez de mostrarse mal encajado un
+        // instante -- peor que el bug original. 1200ms cubre con margen el
+        // tope de ~1s que ya tiene esperar() en main.js.
+        previewSettlingTimeout = setTimeout(() => {
+          surface.classList.remove("preview-settling");
+        }, 1200);
+      }
     });
     // Esc estando agrandado = volver al previsualizador normal, igual que F11.
     // El navegador lo hace solo, pero solo si el foco esta donde el espera: si
@@ -1981,6 +2079,14 @@ const Preview = (() => {
     if (window.api && window.api.onExitPreviewFullscreen) {
       window.api.onExitPreviewFullscreen(() => {
         if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      });
+    }
+    // Revela el previsualizador (ver el .preview-settling de arriba) una
+    // vez que la ventana YA tiene su tamano final -- no antes.
+    if (window.api && window.api.onPreviewResizeSettled) {
+      window.api.onPreviewResizeSettled(() => {
+        clearTimeout(previewSettlingTimeout);
+        $("#preview-surface").classList.remove("preview-settling");
       });
     }
   }
@@ -2568,7 +2674,7 @@ function saveCoverNow(sourceTime, mode, sourceImage, imageFocus) {
   pywebview.api.save_cover(null, mode, sourceImage || null,
                            coverLayers.template, coverLayers.textures,
                            imageFocus || null, sourceTime).then((r) => {
-    if (!r.ok) $("#status-text").textContent = r.error || "No se pudo guardar la portada.";
+    if (!r.ok) showTimedError($("#status-text"), r.error || "No se pudo guardar la portada.");
   });
 }
 
@@ -3305,10 +3411,18 @@ const LoopSlider = (() => {
     }
     redraw();
     updateReadout();
+    // Al instante, sin esperar el redondeo por Python (notify(), recien al
+    // soltar la asa): asi el previsualizador ya recorta mientras arrastras,
+    // no solo despues.
+    if (window.LivePreview) window.LivePreview.setTrim(start, end);
   }
 
   function notify() {
     pywebview.api.set_trim(start, end);
+    // Al instante -- ver el mismo llamado en applyDrag(). Repetirlo aca
+    // cubre los otros dos caminos que llegan a notify() sin pasar por el
+    // arrastre (escribir un tiempo a mano en los campos de start/end).
+    if (window.LivePreview) window.LivePreview.setTrim(start, end);
     // Mover el recorte es LA senal de que ya hay un pedazo de loop que
     // vale la pena componer -- ver scheduleLoopPreview.
     loopTrimDefined = true;

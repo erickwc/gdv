@@ -326,15 +326,18 @@ html:not([data-platform="darwin"]) .titlebar-btn {
   flex-shrink: 0;
 }
 
-/* 40px arriba y abajo (en vez de 24) = la altura de .app-titlebar: el
-   contenido del previsualizador queda por debajo de la franja arrastrable y
-   de los botones nativos, y sigue centrado a ojo. */
+/* 40px arriba (en vez de 24) = la altura de .app-titlebar: el contenido del
+   previsualizador queda por debajo de la franja arrastrable y de los
+   botones nativos. Abajo va sin padding (antes tambien 40px, simetrico) --
+   la marca de agua (.preview-watermark-logo/-credit, ancladas al borde de
+   .preview-surface) tiene que llegar hasta el borde real de abajo, como en
+   la referencia que paso el usuario. */
 .preview-panel {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  padding: 40px 24px;
+  padding: 40px 24px 0px 24px;
 }
 
 /* ------------------------------------------------ secciones del panel */
@@ -1114,6 +1117,10 @@ input[type="text"].preset-inline-input {
   font-size: 11px;
   line-height: 1.45;
   color: var(--muted);
+  /* #download-status trae mensajes de 2 lineas a proposito (ver
+     _download_job_inner en api.py) -- mismo motivo que .status-text, y
+     seguro para el resto de los .hint porque ninguno mete un \n propio. */
+  white-space: pre-line;
 }
 
 /* #download-status vive dentro de .quick-fields (flex column con gap) --
@@ -1184,6 +1191,11 @@ input[type="text"].preset-inline-input {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  /* Los mensajes de "archivo no encontrado" traen un \n a proposito (mensaje
+     arriba, "Ruta: ..." abajo, ver set_template en api.py) -- sin esto el
+     salto de linea se perdia (whitespace normal lo colapsa a un espacio) y
+     las dos lineas se pegaban en una sola. */
+  white-space: pre-line;
 }
 
 /* Tarjeta de resultado: hereda todo de .chip (borde, fondo, padding, la fila
@@ -1270,6 +1282,17 @@ input[type="text"].preset-inline-input {
   justify-content: center;
 }
 
+/* Al salir de pantalla completa la VENTANA todavia esta a mitad de su propia
+   animacion nativa un instante (ver leave-html-full-screen en main.js) --
+   sin esto el lienzo se reacomodaba contra un ancho de ventana que todavia
+   no era el final y se veia como que la imagen "se cortaba" antes de
+   asentarse. visibility (no display) para no correr el layout: el hueco
+   sigue ocupando lo mismo, solo que vacio (se ve el fondo oscuro de la app)
+   hasta que app.js saca esta clase con "preview-resize-settled". */
+.preview-surface.preview-settling > * {
+  visibility: hidden;
+}
+
 /* El canvas del previsualizador en vivo se comporta igual que el <img> que
    reemplaza: su tamano intrinseco es el del lienzo (2560x1440, ver
    live-preview.js), asi que con los max-* de aca entra completo y centrado,
@@ -1297,7 +1320,6 @@ input[type="text"].preset-inline-input {
    un monitor 16:9 el lienzo (que tambien es 16:9) queda clavado de borde a
    borde. Sin radio: una esquina redondeada en pantalla completa no tiene
    sentido, y ademas con la caja al 100% recortaria el hueco vacio en vez de
-   la imagen. */
    la imagen. */
 #preview-surface:fullscreen #preview-image,
 #preview-surface:fullscreen #live-preview,
@@ -1423,6 +1445,59 @@ input[type="text"].preset-inline-input {
 }
 .preview-expand-btn:hover {
   background: rgba(0, 0, 0, 0.72);
+}
+
+/* Marca de agua de la app (H + credito), siempre encima del previsualizador
+   -- que puede ser CUALQUIER fotograma de video/imagen, de color
+   impredecible (ver el comentario de .preview-expand-btn arriba, mismo
+   problema). A diferencia de ese boton, aca no va vidrio ni placa propia
+   -- el pedido era una marca discreta al 30% de opacidad, no una insignia
+   -- asi que el trabajo de seguir siendo legible lo hace una sombra suave
+   en vez de un fondo. pointer-events:none para no robarle clicks al
+   dropzone/loop de abajo. */
+/* Medidas sacadas por diferencia de pixeles contra la referencia del
+   usuario (2360x1520 a resolucion 2x = 1180x760 CSS, mismo metodo que la
+   carpeta del dropzone): el logo mide 19px de alto ahi, con el borde
+   derecho un poco METIDO en el padding de .preview-panel (no pegado al
+   borde de .preview-surface) -- de ahi el right negativo, a proposito. */
+.preview-watermark-logo {
+  position: absolute;
+  right: -5px;
+  bottom: 18px;
+  height: 19px;
+  width: auto;
+  opacity: 0.3;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.6));
+  pointer-events: none;
+}
+
+.preview-watermark-credit {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 6px;
+  margin: 0;
+  text-align: center;
+  font-family: var(--font-ui);
+  font-size: 7px;
+  font-weight: 700;
+  color: #ffffff;
+  opacity: 0.35;
+  /* Texto fino: el mismo truco de sombra suave que el logo no alcanzaba
+     (probado a mano contra un fondo claro) -- dos capas, una pegada al
+     trazo y otra mas difusa, para que no dependa de una sola sombra ancha
+     que se diluye. */
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.85), 0 1px 4px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+
+/* En pantalla completa se esconde: ahi el fotograma llena la pantalla de
+   borde a borde (ver el otro #preview-surface:fullscreen de arriba) y una
+   marca de agua clavada en la esquina de un video/imagen a pantalla
+   completa se siente mas invasiva que en el recuadro chico del panel. */
+#preview-surface:fullscreen .preview-watermark-logo,
+#preview-surface:fullscreen .preview-watermark-credit {
+  display: none;
 }
 
 /* Pastilla de "generando" (arriba a la izquierda, del lado opuesto al boton
