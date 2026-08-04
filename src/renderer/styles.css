@@ -130,7 +130,7 @@ textarea {
      quedaban como una linea gris sucia. Al 18% se comporta igual que
      --divider (las lineas que separan las secciones): toma el color de lo
      que tenga detras en vez de imponer el suyo, con cualquier portada. */
-  --field-border: rgba(255, 255, 255, 0.18);
+  --field-border: rgb(189 189 189 / 18%);
   --divider: rgba(255, 255, 255, 0.12);
   --muted: rgba(255, 255, 255, 0.5);
   /* Ancho del panel de controles -- la franja arrastrable de arriba
@@ -146,20 +146,72 @@ textarea {
   position: fixed;
   inset: 0;
   z-index: -1;
-  /* Contraste y saturacion del fondo. Va en el contenedor y no en el canvas
-     ni en el SVG a proposito: asi vale para los dos fondos posibles (el
-     aurora WebGL y, sin WebGL, el SVG de respaldo) sin repetir la regla.
-     Estos dos numeros son la perilla -- 1 es "sin tocar", subir satura/
-     contrasta mas. El aurora deriva su paleta bastante apagada (saturacion
-     0.22-0.42, ver deriveAuroraPalette) para no pelearse con la portada, asi
-     que aca la saturacion es la que mas se nota; el contraste se va a la
-     mano rapido porque los tonos base ya son casi negros y se empastan. */
-  filter: contrast(1.2) saturate(1.5) brightness(0.6);
 }
+/* Contraste/saturacion/brillo SOLO del SVG de respaldo (antes vivian en
+   .background y valian tambien para .spotify-bg-layer -- pero brightness(0.6)
+   estaba pensado para ese SVG oscuro y morado, y apagaba de mas al fondo
+   nuevo, que necesita el efecto contrario: leerse "encendido", no en
+   penumbra. Cada capa tiene ahora su propio filtro, calibrado por separado. */
 .background svg {
   width: 100%;
   height: 100%;
   display: block;
+  filter: contrast(1.2) saturate(1.5) brightness(0.6);
+}
+
+/* Fondo animado "estilo Spotify" (ver spotify-style-background.js) -- capa
+   OPACA que cubre el SVG entero de arriba (asi funciona igual que el aurora
+   WebGL viejo: si este script no esta cargado, no se crea .spotify-bg-layer
+   y el SVG de abajo se ve tal cual). vmin y no % en el tamano de los
+   manchones: asi el desenfoque relativo al lienzo se mantiene igual sin
+   importar la proporcion de la ventana (angosta o panoramica). */
+.spotify-bg-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: #000; /* negro puro, no el #0d0a14 de <html> -- ver mix-blend-mode abajo */
+  /* Empuja saturacion e intensidad ANTES del blend (ver .spotify-bg-blob):
+     los colores que saca extractPalette ya son bastante vivos, pero
+     mezclados con negro (screen) y encima desenfocados, sin este empujon
+     se leian iguales de apagados que el SVG viejo -- justo lo que se pidio
+     arreglar. */
+  filter: saturate(6) brightness(0.35);
+}
+/* Piso fijo de color, siempre cubriendo toda la capa -- ver el comentario
+   largo en iniciarAnimacionColor (spotify-style-background.js) sobre por
+   que hace falta: los 4 manchones se mueven cada uno por su cuenta (ver
+   MOTION) y en ciertos momentos del vaivien pueden quedar lejos entre si,
+   dejando huecos donde no hay ningun manchon encima -- y ahi se veia el
+   negro puro de .spotify-bg-layer sin filtrar, la sensacion de "a veces se
+   pone oscuro en algunas partes" que se reporto. Opacity baja: tiene que
+   rellenar el hueco, no aplastar el brillo mas vivo de los manchones
+   encima. mix-blend-mode:screen, igual que los manchones, para que se
+   combine con ellos en vez de taparlos. */
+.spotify-bg-wash {
+  position: absolute;
+  inset: 0;
+  opacity: 0.5;
+  mix-blend-mode: screen;
+}
+.spotify-bg-blob {
+  position: absolute;
+  width: 105vmin;
+  height: 105vmin;
+  margin-left: -52.5vmin; /* centra el manchon en su left/top (ver CENTROS en el JS) */
+  margin-top: -52.5vmin;
+  border-radius: 50%;
+  /* screen (no el alpha normal de antes): sobre el negro puro de arriba,
+     blanco/negro no aporta nada y el COLOR se ve a pleno -- y donde dos
+     manchones se solapan se SUMAN en vez de taparse, que es lo que hace que
+     el centro del fondo se sienta iluminado en vez de una mancha opaca con
+     negro alrededor. */
+  mix-blend-mode: screen;
+  filter: blur(18vmin);
+  /* will-change: promueve el manchon a su propia capa de GPU -- el blur pesado
+     de arriba se calcula UNA vez y de ahi en mas solo se reposiciona, en vez
+     de rehacerse en cada cuadro de la animacion (ver iniciarAnimacionPosicion). */
+  will-change: transform;
+  pointer-events: none;
 }
 
 /* ------------------------------------------------------------ layout */
@@ -468,17 +520,27 @@ input[type="text"]:not(.num-entry),
   text-overflow: ellipsis;
 }
 
-/* El dropdown de Preset mide menos porque a su lado va el boton de
-   guardar (24px + gap 16px): asi el borde derecho del conjunto queda
-   alineado con el de los inputs de abajo en vez de sobresalir. */
+/* El dropdown de Preset mide menos porque a su lado va el boton de guardar
+   (24px + gap 8px, ver #preset-controls mas abajo): asi el borde derecho
+   del conjunto queda alineado con el de los inputs de abajo (236px) en vez
+   de sobresalir. Se probo el boton flotando ADENTRO del campo (position:
+   absolute) pero se volvio atras -- se pidio dejar el boton como estaba,
+   solo mas pegado (gap 16px -> 8px) y con otro icono (ver bookmark en
+   ICONS, app.js). */
 .preset-dropdown-trigger {
-  width: 196px;
+  width: 204px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   cursor: pointer;
   text-align: left;
+}
+
+/* Ver el comentario de arriba: 8px en vez de los 16px de .control-row, para
+   que el campo y el boton de guardar se sientan un solo conjunto. */
+#preset-controls {
+  gap: 8px;
 }
 
 /* Dentro de la tarjeta de Texturas los campos ocupan el ancho que queda
@@ -1304,6 +1366,22 @@ input[type="text"].preset-inline-input {
   max-height: 100%;
   border-radius: 12px;
   object-fit: contain;
+  /* Sombra tipo "tarjeta flotando" (Apple Music/TV+): 3 capas, cada una
+     cubriendo una distancia distinta -- una sola sombra grande y difusa se ve
+     plana, esto da la sensacion de que el fotograma esta LEVANTADO del fondo.
+     De mas cerca a mas lejos:
+       1) contacto: chica y oscura, pegada al borde -- define el canto.
+       2) elevacion: la sombra "de verdad", grande y difusa.
+       3) resplandor de color: usa --accent-glow (el mismo matiz que ya sigue
+          a la portada, ver setAdaptiveAccent) en vez de negro -- efecto
+          "vidrio de color" en vez de una sombra gris generica, que es lo que
+          hace que se sienta "de la portada" y no solo "un cuadro con sombra".
+     -15px/-25px de spread negativo: sin esto la sombra sale del mismo
+     rectangulo del fotograma y se ve como un marco, no como algo debajo. */
+  box-shadow:
+    0 8px 10px -6px rgba(0, 0, 0, 0.45),
+    0 40px 70px -20px rgba(0, 0, 0, 0.55),
+    0 25px 90px -15px var(--accent-glow);
 }
 
 /* Se puede clickear para pausar/reproducir, igual que el <video>. */
@@ -1327,6 +1405,9 @@ input[type="text"].preset-inline-input {
   width: 100%;
   height: 100%;
   border-radius: 0;
+  /* Misma logica que el radio de arriba: en pantalla completa no hay fondo
+     alrededor contra el que "flotar", la sombra de la tarjeta no pinta nada. */
+  box-shadow: none;
 }
 
 /* Se puede clickear para pausar/reproducir (ver initLoopPreviewControls). */
@@ -1460,34 +1541,35 @@ input[type="text"].preset-inline-input {
    carpeta del dropzone): el logo mide 19px de alto ahi, con el borde
    derecho un poco METIDO en el padding de .preview-panel (no pegado al
    borde de .preview-surface) -- de ahi el right negativo, a proposito. */
+/* Ahora es un <button> (antes <img> suelta, pointer-events:none) -- abre
+   #credits-modal. border/background/padding en cero para que sea solo el
+   logo, sin caja de boton alrededor; el hover/focus le mueve la opacity
+   (ver mas abajo) porque un fondo detras del logo, a esta escala y sobre un
+   fotograma de color impredecible, se veia como una mancha. */
 .preview-watermark-logo {
   position: absolute;
   right: -5px;
   bottom: 18px;
   height: 19px;
-  width: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
   opacity: 0.3;
-  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.6));
-  pointer-events: none;
+  transition: opacity 0.15s ease;
 }
-
-.preview-watermark-credit {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 6px;
-  margin: 0;
-  text-align: center;
-  font-family: var(--font-ui);
-  font-size: 7px;
-  font-weight: 700;
-  color: #ffffff;
-  opacity: 0.35;
-  /* Texto fino: el mismo truco de sombra suave que el logo no alcanzaba
-     (probado a mano contra un fondo claro) -- dos capas, una pegada al
-     trazo y otra mas difusa, para que no dependa de una sola sombra ancha
-     que se diluye. */
-  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.85), 0 1px 4px rgba(0, 0, 0, 0.6);
+.preview-watermark-logo:hover,
+.preview-watermark-logo:focus-visible {
+  opacity: 0.6;
+}
+.preview-watermark-logo:focus-visible {
+  outline: none;
+}
+.preview-watermark-logo img {
+  display: block;
+  height: 100%;
+  width: auto;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.6));
   pointer-events: none;
 }
 
@@ -1495,8 +1577,7 @@ input[type="text"].preset-inline-input {
    borde a borde (ver el otro #preview-surface:fullscreen de arriba) y una
    marca de agua clavada en la esquina de un video/imagen a pantalla
    completa se siente mas invasiva que en el recuadro chico del panel. */
-#preview-surface:fullscreen .preview-watermark-logo,
-#preview-surface:fullscreen .preview-watermark-credit {
+#preview-surface:fullscreen .preview-watermark-logo {
   display: none;
 }
 
@@ -1698,13 +1779,13 @@ input[type="text"].preset-inline-input {
 .glass-window {
   position: fixed;
   z-index: 50;
-  width: 340px;
+  width: 280px;
   padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
   border-radius: 12px;
-  border: 1px solid var(--divider);
+  border: 1px solid rgb(121 121 121 / 12%);
   /* El mismo gris de la app (el <rect> de fondo del SVG en index.html). El
      anterior (#17161b) tenia el canal azul por encima de los otros dos y se
      leia como un azul oscuro, fuera de la paleta. Si se cambia el SVG del
@@ -1738,6 +1819,96 @@ input[type="text"].preset-inline-input {
 .glass-window-close:hover {
   background: rgba(255, 255, 255, 0.1);
   color: #ffffff;
+}
+
+/* Fondo atenuado de #credits-modal (ver index.html) -- a diferencia de
+   cover-modal (un popover sin backdrop propio, cuelga de un boton del
+   panel) esta es una ventana de verdad, centrada, con su fondo que se
+   puede clickear para cerrar (ver el listener en app.js). */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  /* Entrada animada -- arranca invisible, .open (agregada por JS un cuadro
+     despues de sacar [hidden], ver openCreditsModal en app.js) la trae a
+     opacity:1. Sin esto aparecia de golpe. */
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+.modal-backdrop.open {
+  opacity: 1;
+}
+
+/* .glass-window ya pone el gris oscuro/borde/sombra -- aca solo lo que
+   necesita ESTA ventana en particular: centrada (position:relative en vez
+   de fixed con top/left a mano, ya que el backdrop de arriba la centra
+   solo con flex) y el texto de los creditos centrado tambien, como la
+   referencia de Spotify que se pidio imitar. */
+.credits-modal {
+  position: relative;
+  align-items: flex-start;
+  /* text-align: center; */
+  /* padding: 28px 32px; */
+  /* Acompaña la entrada del backdrop con un escalado/deslizamiento chico --
+     mismo timing (0.18s) para que las dos terminen juntas. */
+  transform: scale(0.96) translateY(6px);
+  transition: transform 0.18s ease;
+}
+.modal-backdrop.open .credits-modal {
+  transform: scale(1) translateY(0);
+}
+.credits-studio {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #ffffff;
+}
+.credits-modal .glass-window-title {
+  /* Pegado a HYRO STUDIO (el gap de 12px entre hijos de .glass-window
+     quedaba muy separado para una pareja titulo/subtitulo) -- margen
+     negativo en vez de tocar el gap de .glass-window, que tambien separa
+     el titulo de .credits-list de abajo, y esa distancia si tiene que
+     quedar como estaba. */
+  margin-top: -8px;
+  font-size: 12px;
+  /* letter-spacing: 0.08em; */
+  /* text-transform: uppercase; */
+  /* Gris (var(--muted), el mismo de .chip-kind/.credits-handle) y no blanco
+     -- que "Desarrollado por" lea como una etiqueta, no como otro nombre. */
+  color: var(--muted);
+}
+
+.credits-list {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.credits-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.credits-name {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  /* font-weight: 400; */
+  color: #ffffff;
+  text-align: left;
+}
+.credits-handle {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  /* var(--muted) fijo y no var(--accent) -- pedido explicito: --accent lo
+     retinta background-tint.js con el color de la portada cargada (ver
+     setAdaptiveAccent), y con un fotograma calido esto se ponia naranja en
+     vez de quedarse gris. */
+  color: var(--muted);
 }
 
 /* Cada pregunta del modal ("De dónde", "Qué guardar") con su titulito. */

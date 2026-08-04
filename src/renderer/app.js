@@ -57,8 +57,9 @@ const ICONS = {
     + '<path d="M4 15l4 -4c.928 -.893 2.072 -.893 3 0l3 3" />'
     + '<path d="M14 14l1 -1c.31 -.298 .644 -.497 .987 -.596" />'
     + '<path d="M18.42 15.61a2.1 2.1 0 0 1 2.97 2.97l-3.39 3.42h-3v-3l3.42 -3.39" />',
-  music: '<path d="M3 17a3 3 0 1 0 6 0a3 3 0 0 0 -6 0" /><path d="M13 17a3 3 0 1 0 6 0a3 3 0 0 0 -6 0" />'
-    + '<path d="M9 17v-13h10v13" /><path d="M9 8h10" />',
+  // Icono de "Guardar preset" (antes SAVE_ICON_SVG, un disquete propio en
+  // 16x16) -- se pidio cambiar por un bookmark, del mismo set que el resto.
+  bookmark: '<path d="M9 4h6a2 2 0 0 1 2 2v14l-5 -3l-5 3v-14a2 2 0 0 1 2 -2" />',
   // Los dos del boton de agrandar, tal como los mando el usuario (sin el
   // <path> del recuadro transparente que traen al principio, que no dibuja
   // nada -- ninguno de los de aca lo lleva): arrows-maximize para el estado
@@ -152,15 +153,8 @@ function iconSvgFilled(name, size = 16) {
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="currentColor">${ICONS_FILLED[name] || ""}</svg>`;
 }
 
-// Icono de "Guardar preset" (rediseno) -- viewBox 16x16 propio, no encaja
-// en el molde 24x24/stroke=currentColor de ICONS/iconSvg, asi que va
-// literal en vez de sumarse ahi.
-const SAVE_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">'
-  + '<path d="M9.33268 2.66663V5.33329H5.33268V2.66663M3.99935 2.66663H10.666L13.3327 5.33329V12C13.3327 12.3536 13.1922 12.6927 12.9422 12.9428C12.6921 13.1928 12.353 13.3333 11.9993 13.3333H3.99935C3.64573 13.3333 3.30659 13.1928 3.05654 12.9428C2.80649 12.6927 2.66602 12.3536 2.66602 12V3.99996C2.66602 3.64634 2.80649 3.3072 3.05654 3.05715C3.30659 2.8071 3.64573 2.66663 3.99935 2.66663ZM6.66602 9.33329C6.66602 9.68691 6.80649 10.0261 7.05654 10.2761C7.30659 10.5262 7.64573 10.6666 7.99935 10.6666C8.35297 10.6666 8.69211 10.5262 8.94216 10.2761C9.19221 10.0261 9.33268 9.68691 9.33268 9.33329C9.33268 8.97967 9.19221 8.64053 8.94216 8.39048C8.69211 8.14044 8.35297 7.99996 7.99935 7.99996C7.64573 7.99996 7.30659 8.14044 7.05654 8.39048C6.80649 8.64053 6.66602 8.97967 6.66602 9.33329Z" stroke="white" stroke-linecap="round" stroke-linejoin="round"/>'
-  + '</svg>';
-
-// Icono de "Añadir" de Plantillas/Texturas (mismo caso que SAVE_ICON_SVG:
-// viewBox propio de 23x23, no entra en el molde de ICONS/iconSvg) -- va con
+// Icono de "Añadir" de Plantillas/Texturas -- viewBox propio de 23x23, no
+// entra en el molde de 24x24/stroke=currentColor de ICONS/iconSvg. Va con
 // stroke=currentColor para que el color lo ponga el CSS (.btn-add lo fija en
 // blanco, ver styles.css). Sin el clipPath del archivo original: era el
 // recuadro rotado que exporta Figma, no recortaba nada visible.
@@ -179,13 +173,9 @@ function fillStaticIcons() {
   $("#crop-mode-trigger").innerHTML = iconSvg("resize");
   $("#loop-preview-play").innerHTML = iconSvgFilled("playerPlay");
   $("#loop-preview-toggle").innerHTML = iconSvgFilled("playerPause");
-  // "Guardar preset": tenia (por error) el mismo icono de carpeta que
-  // antes usaba el boton de ruta de salida (ya quitado, ver conversacion
-  // del rediseno -- #output-label solo se abre clickeando el texto ahora);
-  // un preset se GUARDA, asi que le toca un icono de guardar (disquete,
-  // icono propio del rediseno -- ver SAVE_ICON_SVG).
   $$(".preset-dropdown-chevron").forEach((el) => (el.innerHTML = iconSvg("chevronDown")));
-  $("#preset-save").innerHTML = SAVE_ICON_SVG;
+  // Bookmark (antes un disquete propio, SAVE_ICON_SVG -- ver conversacion).
+  $("#preset-save").innerHTML = iconSvg("bookmark");
   $("#preset-save-confirm").innerHTML = iconSvgFilled("check");
   $("#preset-save-cancel").innerHTML = iconSvgFilled("close");
   $("#preset-save-choice-cancel").innerHTML = iconSvgFilled("close");
@@ -1723,7 +1713,43 @@ window.addEventListener("pywebviewready", () => {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !$("#cover-modal").hidden) closeCoverModal();
   });
+
+  // Ventanita de creditos (ver #credits-modal en index.html) -- sin boton de
+  // cerrar propio (se pidio sacarlo): se cierra con click afuera o Escape,
+  // ver openCreditsModal/closeCreditsModal mas abajo.
+  $("#credits-trigger").addEventListener("click", openCreditsModal);
+  $("#credits-modal-backdrop").addEventListener("click", (e) => {
+    if (e.target === e.currentTarget) closeCreditsModal(); // solo el fondo, no la tarjeta
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("#credits-modal-backdrop").hidden) closeCreditsModal();
+  });
 });
+
+// Entrada/salida animada (ver .modal-backdrop/.modal-backdrop.open en
+// styles.css) -- [hidden] es display:none, que no anima nada, asi que hay
+// que sacarlo primero y agregar .open recien en el cuadro SIGUIENTE (el
+// forceReflow de en medio): agregarla en el mismo tick que se saca hidden
+// colapsa los dos estados (arranca ya en el de "abierto") y no hay nada que
+// transicionar.
+let creditsCloseTimer = null;
+
+function openCreditsModal() {
+  if (creditsCloseTimer) { clearTimeout(creditsCloseTimer); creditsCloseTimer = null; }
+  const bd = $("#credits-modal-backdrop");
+  bd.hidden = false;
+  void bd.offsetWidth; // forceReflow
+  bd.classList.add("open");
+}
+
+function closeCreditsModal() {
+  const bd = $("#credits-modal-backdrop");
+  if (bd.hidden) return;
+  bd.classList.remove("open");
+  // 180ms = duracion de la transicion en CSS -- recien ahi vuelve el
+  // display:none, para no cortar la animacion de salida a la mitad.
+  creditsCloseTimer = setTimeout(() => { bd.hidden = true; creditsCloseTimer = null; }, 180);
+}
 
 // ------------------------------------- cerrar/abrir el previsualizador
 //
@@ -1869,6 +1895,9 @@ function scheduleMirror(delay = 450) {
     if (window.setHalftoneBackgroundImage) {
       img.decode().then(() => window.setHalftoneBackgroundImage(img)).catch(() => {});
     }
+    if (window.setSpotifyBackgroundImage) {
+      img.decode().then(() => window.setSpotifyBackgroundImage(img)).catch(() => {});
+    }
   }, delay);
 }
 
@@ -1931,6 +1960,7 @@ const Preview = (() => {
       // proximo medio no arranque interpolando desde el color del anterior.
       if (window.ambilightFromSource) window.ambilightFromSource(null);
       if (window.setHalftoneBackgroundImage) window.setHalftoneBackgroundImage(null);
+      if (window.setSpotifyBackgroundImage) window.setSpotifyBackgroundImage(null);
     }
   }
 

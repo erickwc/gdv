@@ -700,7 +700,6 @@ window.LivePreview = (() => {
   // saca el mismo matiz (es el que pone el color; la plantilla y el grano casi
   // no lo mueven) y leerlo es el camino barato de siempre.
   const AMBILIGHT_MS = 120;
-  let ambilightTimer = null;
 
   // Mismos codecs que CHEAP_DECODE_CODECS en engine.py. El comentario de
   // arriba ("leerlo es el camino barato de siempre") vale para el TAMANO del
@@ -709,25 +708,49 @@ window.LivePreview = (() => {
   // y contra un decodificador de SOFTWARE ya al limite (VP9/AV1 sin
   // aceleracion, ver _download_video en api.py) esa sincronizacion le hace
   // competencia real -- medido, un clip VP9 que solo rendia 24fps limpios
-  // caia a ~16fps con el ambilight muestreando encima. Mientras no haya
-  // copia liviana lista (preview_path todavia es el original) para un medio
-  // asi, mejor pausar el ambilight que trabarle el video.
+  // caia a ~16fps con el ambilight muestreando cada 120ms encima.
+  //
+  // Antes, mientras no hubiera copia liviana lista (preview_path todavia era
+  // el original), esto apagaba el ambilight DEL TODO -- probado con un clip
+  // VP9 real: el fondo quedaba clavado en el primer cuadro (a veces varios
+  // minutos, lo que tarde la copia en armarse), aunque el video ya estuviera
+  // mostrando otra escena de otro color por completo. Ahora en vez de
+  // apagarlo sigue muestreando, solo que mucho mas espaciado (1 de cada 5
+  // veces) -- 5x menos sincronizaciones con el decodificador de por medio,
+  // que es lo que compite, asi que el costo medido de arriba baja a algo
+  // bastante mas chico que 24->16fps y el fondo deja de quedarse pegado.
+  const AMBILIGHT_MS_CODEC_CARO = AMBILIGHT_MS * 5;
+  let ambilightTimer = null;
+
   const AMBILIGHT_CHEAP_CODECS = new Set(["h264", "mpeg4", "mjpeg"]);
 
-  function ambilightConviene() {
+  // true = ritmo normal (120ms); false = codec caro sin copia lista todavia,
+  // ritmo espaciado (ver AMBILIGHT_MS_CODEC_CARO).
+  function ambilightAlRitmoNormal() {
     if (!estado || !esVideo) return true; // imagen, o sin dato: nada que competir
     const codec = estado.media_video_codec;
     if (!codec || AMBILIGHT_CHEAP_CODECS.has(codec)) return true;
     return !!(estado.preview_path && estado.preview_path !== estado.media_path);
   }
 
+  // setTimeout que se reprograma solo (no setInterval) para poder elegir la
+  // demora del PROXIMO muestreo cada vez, segun si para ese momento ya hay
+  // copia liviana o no -- con un intervalo fijo no hay forma de acelerar en
+  // cuanto la copia este lista sin esperar a que expire el timer viejo.
+  function programarAmbilight() {
+    const demora = ambilightAlRitmoNormal() ? AMBILIGHT_MS : AMBILIGHT_MS_CODEC_CARO;
+    ambilightTimer = setTimeout(() => {
+      if (canvas && !canvas.hidden && medidasFuente()) {
+        if (window.ambilightFromSource) window.ambilightFromSource(fuente);
+        if (window.setSpotifyBackgroundImage) window.setSpotifyBackgroundImage(fuente);
+      }
+      programarAmbilight();
+    }, demora);
+  }
+
   function arrancarAmbilight() {
     if (ambilightTimer !== null) return;
-    ambilightTimer = setInterval(() => {
-      if (!canvas || canvas.hidden || !medidasFuente()) return;
-      if (!ambilightConviene()) return;
-      if (window.ambilightFromSource) window.ambilightFromSource(fuente);
-    }, AMBILIGHT_MS);
+    programarAmbilight();
   }
 
   function init() {

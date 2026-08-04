@@ -248,11 +248,22 @@ def needs_audio_preview_proxy(audio_codec):
 def build_audio_preview_proxy_command(ffmpeg_exe, audio_path, temp_path):
     """Copia del beat en un formato que CUALQUIER Chromium decodifica.
     Se recodifica el audio ENTERO (no es una porcion, como la copia de
-    video): un beat normal son unos MB en aac, un par de segundos de
-    espera la primera vez que se carga."""
+    video).
+
+    PCM 16-bit (WAV) y NO aac: medido con beats reales de 2:30-2:50, la
+    copia en aac tardaba 10-14s (compresion con perdida, CPU real de por
+    medio) contra 0.15s en pcm_s16le (es solo reformatear samples, sin
+    codificar nada). Esos 10-14s eran el bug de verdad detras de "algunos
+    beats no suenan": el usuario los escucha en fila, cambia de beat antes
+    de que la copia en aac termine, se descarta en silencio (ver el chequeo
+    de mas abajo en _audio_preview_proxy_job) y ese beat queda mudo para
+    siempre salvo que vuelva a el y esta vez espere. A 0.15s ese hueco
+    practicamente desaparece. El archivo pesa mas que el aac de antes, pero
+    vive en el temp del sistema y se limpia solo a los 7 dias (ver
+    _limpiar_copias_viejas) -- cambio razonable por evitar el mute."""
     return [
         ffmpeg_exe, "-y", "-i", audio_path,
-        "-vn", "-c:a", "aac", "-b:a", "256k",
+        "-vn", "-c:a", "pcm_s16le",
         temp_path,
     ]
 

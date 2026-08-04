@@ -1162,7 +1162,9 @@ class Api:
         except OSError:
             marca = 0
         digest = hashlib.md5(f"{path}|{marca}".encode("utf-8")).hexdigest()[:12]
-        destino = os.path.join(tempfile.gettempdir(), f"genvideo_audiopreview_{digest}.m4a")
+        # .wav y no .m4a: la copia se genera en pcm_s16le, no aac (ver el
+        # comentario en build_audio_preview_proxy_command).
+        destino = os.path.join(tempfile.gettempdir(), f"genvideo_audiopreview_{digest}.wav")
 
         if not os.path.exists(destino) or os.path.getsize(destino) == 0:
             self._limpiar_copias_viejas(destino, prefijo="genvideo_audiopreview_")

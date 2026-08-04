@@ -66,9 +66,16 @@
        background-tint.js. -->
   <script src="background-tint.js"></script>
 
-  <!-- Fondos ANIMADOS, desactivados a proposito: hoy el fondo es el SVG
-       estatico de arriba. Se dejan enteros y funcionando por si se quieren
-       volver, no hay nada mas que hacer que descomentar la linea.
+  <!-- Fondo animado "estilo Spotify" (manchones grandes y desenfocados con
+       varios colores REALES de la portada, no un solo matiz rotado como el
+       SVG de arriba -- ver spotify-style-background.js). Standalone, igual
+       que halftone-background.js: expone setSpotifyBackgroundImage y lo
+       llaman los mismos 3 lugares de siempre (app.js x2, live-preview.js). -->
+  <script src="spotify-style-background.js"></script>
+
+  <!-- Otros fondos ANIMADOS, desactivados a proposito. Se dejan enteros y
+       funcionando por si se quieren volver, no hay nada mas que hacer que
+       descomentar la linea.
        El aurora monta su canvas dentro de .background y tapa el SVG; al
        hacerlo expone setAuroraHue, y con eso solo background-tint.js ya se
        da cuenta y le manda el matiz a el en vez de pintar los blobs. -->
@@ -108,6 +115,9 @@
         <div class="quick-fields">
           <div class="output-field">
             <label class="output-field-label" for="preset-trigger">Preset</label>
+            <!-- gap:8px (no el 16px de .control-row -- ver la regla propia
+                 de #preset-controls en styles.css), para que el campo y el
+                 boton de guardar se sientan un solo conjunto. -->
             <div class="control-row" id="preset-controls">
               <div class="preset-dropdown" id="preset-dropdown">
                 <button type="button" class="preset-dropdown-trigger" id="preset-trigger">
@@ -166,9 +176,10 @@
         <section class="section" id="content-section" hidden>
           <h2>Contenido del video</h2>
           <div class="chip-row" id="chip-row">
-            <!-- Sin icono a la izquierda (lo pidio el usuario): el nombre del
-                 archivo y la linea de abajo ("Video · 3:30 · 1920x1080" /
-                 "Audio · ...") ya dicen de que se trata. -->
+            <!-- Sin icono a la izquierda (se probo, ver conversacion, y se
+                 volvio atras): el nombre del archivo y la linea de abajo
+                 ("Video · 3:30 · 1920x1080" / "Audio · ...") ya dicen de
+                 que se trata. -->
             <div class="chip" id="media-chip" hidden>
               <div class="chip-info">
                 <span class="chip-name">nombre_del_archivo.mp4</span>
@@ -187,7 +198,7 @@
                 <span class="chip-name">cancion.mp3</span>
                 <span class="chip-kind">Audio · 3:24</span>
               </div>
-              <button class="btn btn-icon" title="Quitar"></button>
+              <button class="btn btn-icon" id="remove-audio-btn" title="Quitar"></button>
             </div>
           </div>
         </section>
@@ -461,15 +472,41 @@
           <span id="preview-loading-text">Generando vista previa...</span>
         </div>
         <button class="preview-expand-btn" id="preview-expand" hidden title="Agrandar"></button>
-        <!-- Marca de agua de la app: la "H" y el credito, siempre encima del
+        <!-- Marca de agua de la app: la "H", siempre encima del
              previsualizador (fotograma real de video/imagen, de color
              impredecible) -- ver .preview-watermark-logo en styles.css para
-             como se mantienen visibles sin importar que hay debajo. -->
-        <img class="preview-watermark-logo" aria-hidden="true"
-          src="img/app-logo-h.png" alt="" />
-        <p class="preview-watermark-credit">powered by prodbykassy &amp; gioesbeats</p>
+             como se mantiene visible sin importar que hay debajo. Ya NO
+             lleva el texto "powered by..." al lado (ver conversacion) --
+             ahora el logo ES el boton que abre #credits-modal. -->
+        <button class="preview-watermark-logo" id="credits-trigger" title="Créditos">
+          <img src="img/app-logo-h.png" alt="" />
+        </button>
       </div>
     </main>
+
+    <!-- "Ventanita de creditos" (pedido explicito, estilo Spotify) -- se
+         abre con el logo de arriba. Mismo vidrio oscuro que el resto de los
+         modales de la app (.glass-window, ver cover-modal) pero CENTRADA
+         con su propio fondo atenuado (#credits-modal-backdrop): a
+         diferencia de cover-modal (un popover que cuelga de un boton del
+         panel) esta es una ventana de verdad, con su propio backdrop que se
+         puede clickear para cerrar. -->
+    <div class="modal-backdrop" id="credits-modal-backdrop" hidden>
+      <div class="glass-window credits-modal" id="credits-modal">
+        <p class="credits-studio">HYRO STUDIO</p>
+        <h3 class="glass-window-title">Desarrollado por</h3>
+        <div class="credits-list">
+          <div class="credits-entry">
+            <span class="credits-name">Kassy</span>
+            <span class="credits-handle">@prodbykassy</span>
+          </div>
+          <div class="credits-entry">
+            <span class="credits-name">Gioes</span>
+            <span class="credits-handle">@gioesbeats</span>
+          </div>
+        </div>
+      </div>
+    </div>
 
     </div>
   </div>
