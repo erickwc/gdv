@@ -877,6 +877,7 @@ class Api:
         self._invalidate_loop_preview()
         self.media_path = path
         self.media_is_video = False
+        self.preview_proxy_path = None  # la del video anterior no sirve (ver _set_video)
         self.media_size = (width, height)
         self.media_was_vertical = False  # el boton de girar es solo para video
         self.media_duration = None
@@ -1048,6 +1049,13 @@ class Api:
         # sea el codec de entrada -- si el original forzaba una copia liviana
         # por codec caro (VP9/AV1), este resultado ya no la necesita por eso.
         self.media_video_codec = "h264"
+        # La copia liviana del video ANTERIOR (si el codec de entrada la
+        # forzaba) apunta a un archivo que ya no corresponde a este media_path
+        # nuevo -- sin este reset, get_state() seguia devolviendo esa ruta
+        # vieja en preview_path (preview_proxy_path or media_path), y el
+        # previsualizador (que arranca por preview_path, ver applyState en
+        # live-preview.js) se quedaba mostrando el cuadro de antes de girar.
+        self.preview_proxy_path = None
         thumb_img = engine.extract_video_thumb(self.ffmpeg_exe, temp_path)
         if thumb_img is not None:
             self.media_thumb = _image_to_data_uri(thumb_img)
@@ -1304,11 +1312,25 @@ class Api:
 
         Ojo con la cuenta: crop_rect son fracciones, y una fraccion cuadrada
         (0.5 x 0.5) NO es un cuadrado salvo que la foto lo sea -- hay que
-        pasar por los pixeles reales. Sin foto, o con video, devuelve 1.0:
-        la caja cuadrada de siempre."""
-        if self.media_is_video or not self.media_path or not self.media_size:
+        pasar por los pixeles reales. Sin medio, devuelve 1.0: la caja
+        cuadrada de siempre.
+
+        Con VIDEO no hay "Ajustar imagen" (show_focus en get_state es false
+        para video, y crop_rect no aplica -- ver current_crop), pero antes
+        esto igual devolvia 1.0 fijo para cualquier video, sin importar su
+        proporcion real: un video panoramico (16:9, o mas ancho todavia,
+        como un reel horizontal) quedaba metido a la fuerza en una caja
+        cuadrada y perdia los costados, en el preview Y en la exportacion
+        real (las dos pasan por esta misma funcion). Ahora la proporcion del
+        VIDEO ORIGINAL hace de "recorte": la caja de composicion toma esa
+        forma y el video entra completo, sin recortar nada -- mismo efecto
+        que el modo "Vertical" de las fotos, pero automatico, porque video
+        no tiene el selector de modo que las fotos si tienen."""
+        if not self.media_path or not self.media_size:
             return 1.0
         w, h = self.media_size
+        if self.media_is_video:
+            return max(1.0, w) / max(1.0, h)
         _, _, fw, fh = self.crop_rect
         px_w = max(1.0, w * fw)
         px_h = max(1.0, h * fh)

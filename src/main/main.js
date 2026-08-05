@@ -1,7 +1,9 @@
 "use strict";
 
 const path = require("path");
-const { app, BrowserWindow, ipcMain, screen } = require("electron");
+const fs = require("fs");
+const os = require("os");
+const { app, BrowserWindow, ipcMain, screen, session } = require("electron");
 
 const { PythonBridge } = require("./pythonBridge");
 const dialogs = require("./dialogs");
@@ -182,6 +184,148 @@ function createMainWindow() {
   return win;
 }
 
+// ------------------------------------------ Instagram: fotos sin recortar
+//
+// El og:image de un post de Instagram viene con un recorte cuadrado FIRMADO
+// en la propia URL de la CDN (el parametro oh/oe es una firma que cubre
+// TODA la query string -- probado a mano contra una URL real: tocar
+// cualquier parte, hasta el propio recorte, devuelve "URL signature
+// mismatch"). No hay forma de pedir otra version de esa imagen por ese
+// camino -- por eso Python (_try_download_page_image, api.py) siempre
+// entregaba el cuadrado recortado para las fotos de Instagram.
+//
+// La foto SIN recortar si esta en el DOM ya renderizado: Instagram le pone
+// un cartel de "Iniciar sesion" ENCIMA del contenido a quien no tiene
+// sesion, pero no lo bloquea -- probado contra un post real, el contenido
+// de verdad (fotos, comentarios) carga igual, con sesion o sin ella. Por
+// eso esta funcion abre una ventana de Electron OCULTA (no headless de
+// verdad -- es el mismo Chromium de la app, asi que carga y ejecuta JS
+// como cualquier pestana), espera a que Instagram termine de pintar, y lee
+// las fotos directo del DOM (ver instagram-extract.js para el detalle de
+// COMO se identifican, que no es tan simple como "buscar <article>").
+//
+// Solo para POSTS DE FOTO (url con /p/, filtradas en app.js): un reel o un
+// post con video ya se descarga bien por el camino de siempre (yt-dlp, ver
+// _download_video en api.py) y no hace falta tocarlo -- por eso esta
+// funcion devuelve {ok:false} apenas encuentra un <video> en el articulo,
+// para que el llamador (startDownload en app.js) caiga de vuelta a
+// download_from_link sin haber gastado nada mas que el intento.
+//
+// El script que se inyecta en la ventana oculta vive en su PROPIO archivo
+// (instagram-extract.js), leido como texto -- no como template literal
+// adentro de esta funcion: un regex con \d en un template literal se rompe
+// en silencio (Node se come la barra al parsear el string, antes de que
+// executeJavaScript lo vea), asi que hacia falta separarlo del todo.
+const instagramExtractScript = fs.readFileSync(
+  path.join(__dirname, "instagram-extract.js"), "utf-8"
+);
+
+async function resolveInstagramPhotos(url) {
+  // Sesion PROPIA y efimera (no la default de la app) -- dos motivos:
+  //   1. asi el bloqueo de red de abajo (accounts.meta.com) queda scopeado a
+  //      esta ventana, no afecta a mainWindow ni a nada mas de la app.
+  //   2. de paso, no acumula cookies de Instagram entre una descarga y la
+  //      siguiente -- cada resolucion arranca de cero.
+  const ses = session.fromPartition(`instagram-scrape-${Date.now()}`, { cache: false });
+  // El dialogo NATIVO de Windows Hello/llave de acceso (probado DOS veces:
+  // le seguia apareciendo al usuario en medio de una descarga incluso con
+  // el bloqueo de red de abajo puesto). Iba a dos frentes que no alcanzaban
+  // por separado:
+  //   - navigator.credentials por JS (instagram-block-webauthn.js): con
+  //     contextIsolation, Chromium le da a cada "mundo" (preload vs pagina)
+  //     su PROPIO wrapper de los objetos del DOM -- sobreescribir la
+  //     propiedad desde el preload no se refleja del lado de la pagina.
+  //   - bloquear accounts.meta.com por red: navigator.credentials.get() es
+  //     una llamada del navegador AL SISTEMA OPERATIVO, no necesariamente
+  //     pasa por un pedido de red a ese dominio antes de mostrar el dialogo
+  //     -- "accounts.meta.com" que se ve en el cartel de Windows es el
+  //     "relying party id" que va DENTRO del pedido WebAuthn, no una URL
+  //     que haya que visitar primero.
+  // Lo que si funciona: Permissions-Policy, una politica que Chromium hace
+  // cumplir a nivel de MOTOR (no de JS de la pagina, no de un mundo
+  // aislado) -- publickey-credentials-get/-create en "()" (lista vacia de
+  // origenes permitidos) apaga la API entera para el documento, pase lo
+  // que pase en su JS. Se inyecta como si el propio servidor la hubiera
+  // mandado, en la respuesta de CUALQUIER pedido (instagram.com incluido,
+  // que es de donde sale el pedido de verdad).
+  ses.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        "Permissions-Policy": ["publickey-credentials-get=(), publickey-credentials-create=()"],
+      },
+    });
+  });
+  // El bloqueo de red se deja igual (defensa extra, no hace nada malo):
+  // esta ventana nunca necesita iniciar sesion contra accounts.meta.com.
+  ses.webRequest.onBeforeRequest(
+    { urls: ["*://accounts.meta.com/*", "*://*.accounts.meta.com/*"] },
+    (details, callback) => callback({ cancel: true })
+  );
+
+  const win = new BrowserWindow({
+    show: false,
+    // sandbox:true ademas de contextIsolation/nodeIntegration:false -- esta
+    // ventana carga una pagina de VERDAD de un sitio de terceros (a
+    // diferencia de mainWindow, que solo carga el index.html propio), asi
+    // que el aislamiento tiene que ser el maximo: nada de lo que corra ahi
+    // (el JS de Instagram) puede tocar Node ni el resto de la app.
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      session: ses,
+      // Defensa extra, aunque el bloqueo de red de arriba es el que de
+      // verdad importa (ver el comentario grande ahi).
+      preload: path.join(__dirname, "instagram-block-webauthn.js"),
+    },
+  });
+  // El user-agent de la app lleva el nombre del programa metido adentro
+  // ("generador-de-video-electron/0.1.0 ... Electron/43.1.0") -- nada
+  // parecido a un navegador de verdad, y esta ventana SI necesita parecerlo
+  // (carga una pagina de un sitio ajeno, no la propia). Con el user-agent
+  // de Electron sin mas, la pagina volvia sin la foto (probado: 8s de
+  // sondeo sin encontrar <article> nunca, contra ~1-2s con un Chrome
+  // comun) -- un Chrome de escritorio corriente resuelve esto.
+  win.webContents.setUserAgent(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+  );
+  try {
+    // Entrar directo al post (un link "en frio", sin ninguna cookie/sesion
+    // asentada antes) devolvia el cartel de login SIN el contenido de
+    // atras -- pasar primero por la portada, dejar que ponga sus cookies, y
+    // recien ahi ir al post imita mejor una visita real.
+    await win.loadURL("https://www.instagram.com/");
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    if (win.isDestroyed()) return { ok: false };
+    await win.loadURL(url);
+    if (win.isDestroyed()) return { ok: false };
+    // Instagram es una SPA pesada: el HTML inicial no trae las fotos, las
+    // carga por su cuenta despues -- el contenido tarda un tiempo VARIABLE
+    // en aparecer (probado: 2.5s fijos a veces alcanzaban, a veces no,
+    // mismo post). El sondeo (cada 400ms hasta 8s) esta DENTRO del script
+    // inyectado, no de este lado -- ver instagram-extract.js.
+    return await win.webContents.executeJavaScript(instagramExtractScript);
+  } catch (e) {
+    return { ok: false };
+  } finally {
+    if (!win.isDestroyed()) win.destroy();
+  }
+}
+
+// La URL resuelta arriba SI se puede descargar directo (no lleva firma
+// invalidable por nada que hagamos -- es la imagen real, no un recorte
+// generado al vuelo). fetch nativo: Electron 43 trae Node lo bastante
+// nuevo como para no necesitar el modulo https a mano.
+async function downloadInstagramPhoto(imageUrl) {
+  const res = await fetch(imageUrl);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const buffer = Buffer.from(await res.arrayBuffer());
+  const destino = path.join(os.tmpdir(), `genvideo_ig_${Date.now()}.jpg`);
+  fs.writeFileSync(destino, buffer);
+  return destino;
+}
+
 // Los 4 metodos que en la version pywebview abrian un dialogo nativo
 // (self._window.create_file_dialog) ya no existen en api.py -- el dialogo
 // lo abre Electron aca, y despues se llama al metodo "puro" de Python que
@@ -222,6 +366,25 @@ async function handlePyCall(event, method, params) {
     const chosen = await dialogs.showSaveOutputDialog(win, state.output_path);
     if (!chosen) return state.output_path;
     return bridge.call("set_chosen_output", [chosen]);
+  }
+
+  // Los dos de Instagram: ver resolveInstagramPhotos/downloadInstagramPhoto
+  // mas arriba. Ninguno pasa por Python en el camino de "encontrar la foto"
+  // -- recien download_instagram_photo, que YA tiene el archivo listo en
+  // disco, llama a ingest_paths (el mismo metodo que usa browse_media unas
+  // lineas mas arriba) para sumarlo al estado de siempre.
+  if (method === "resolve_instagram_photos") {
+    return resolveInstagramPhotos(params[0]);
+  }
+
+  if (method === "download_instagram_photo") {
+    let destino;
+    try {
+      destino = await downloadInstagramPhoto(params[0]);
+    } catch (e) {
+      return { ok: false, error: "No se pudo descargar la foto." };
+    }
+    return bridge.call("ingest_paths", [[destino]]);
   }
 
   return bridge.call(method, params);

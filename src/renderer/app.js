@@ -1232,11 +1232,20 @@ window.onTextureAdded = function (path) {
 // en download_from_link (api.py), que ademas cubre el caso desde Python.
 let downloading = false;
 
+// Solo posts de FOTO (/p/) -- un reel (/reel/) es siempre video y ya baja
+// bien por yt-dlp (ver download_from_link en api.py), no hace falta
+// interceptarlo. Ver resolveInstagramPhotos en main.js para el porque.
+const INSTAGRAM_POST_RE = /instagram\.com\/p\//i;
+
 function startDownload(url) {
   if (downloading) return;
   if (!/^https?:\/\//i.test(url)) {
     showTimedError($("#download-status"), "Pega un link válido (que empiece con https://).");
     $("#download-status").style.color = "var(--red)";
+    return;
+  }
+  if (INSTAGRAM_POST_RE.test(url)) {
+    startInstagramDownload(url);
     return;
   }
   downloading = true;
@@ -1248,6 +1257,78 @@ function startDownload(url) {
       downloading = false;
       $("#link-input").disabled = false;
       showTimedError($("#download-status"), r.error);
+      $("#download-status").style.color = "var(--red)";
+    }
+  });
+}
+
+// Camino aparte para posts de Instagram: primero se resuelve QUE fotos trae
+// el post (resolve_instagram_photos, en main.js -- una ventana de Electron
+// oculta que renderiza la pagina de verdad), y recien con eso se sabe si
+// hay que mostrar el selector o ya se puede descargar directo. Si la
+// resolucion no encuentra fotos (es un reel, o Instagram cambio algo y la
+// lectura fallo) cae al camino de siempre, que ya sabe bajar video.
+function startInstagramDownload(url) {
+  downloading = true;
+  $("#link-input").disabled = true;
+  $("#download-status").textContent = "Buscando fotos del post...";
+  $("#download-status").style.color = "";
+  const seguirConElCaminoDeSiempre = () => {
+    pywebview.api.download_from_link(url).then((r) => {
+      if (!r.ok) {
+        downloading = false;
+        $("#link-input").disabled = false;
+        showTimedError($("#download-status"), r.error);
+        $("#download-status").style.color = "var(--red)";
+      }
+      // ok:true deja downloading=true -- lo baja onDownloadDone, igual que
+      // en el camino normal.
+    });
+  };
+  pywebview.api.resolve_instagram_photos(url).then((r) => {
+    if (!r || !r.ok || !r.photos || !r.photos.length) {
+      // needsLogin: el post pide iniciar sesion (contenido con restriccion
+      // de edad, privado, etc. -- ver el comentario grande en
+      // instagram-extract.js) -- sin cuenta no hay forma de leer nada de
+      // ese post, ni ahora ni reintentando. Corta ACA (no cae al camino de
+      // siempre): ese solo iba a traer una vista previa recortada e
+      // incompleta, que se sentia como que la app fallo -- mejor avisar
+      // claro que la publicacion no se puede bajar (culpa de la
+      // restriccion que puso Instagram, no de la app) y no ofrecer un
+      // resultado a medias. El texto NO nombra el login a proposito (pedido
+      // de Erick): la app no le va a pedir que inicie sesion, asi que
+      // ofrecerselo por escrito solo lo mandaria a un camino que no existe.
+      if (r && r.needsLogin) {
+        $("#download-status").textContent = "Algo salió mal, No pudimos descargar este contenido.";
+        $("#download-status").style.color = "var(--muted)";
+        downloading = false;
+        $("#link-input").disabled = false;
+        return;
+      }
+      seguirConElCaminoDeSiempre();
+      return;
+    }
+    $("#download-status").textContent = "";
+    if (r.photos.length === 1) {
+      chooseInstagramPhoto(r.photos[0].src);
+      return;
+    }
+    showInstagramPhotoPicker(r.photos);
+  }).catch(seguirConElCaminoDeSiempre);
+}
+
+function chooseInstagramPhoto(imageUrl) {
+  closeInstagramPicker();
+  $("#download-status").textContent = "Descargando foto...";
+  pywebview.api.download_instagram_photo(imageUrl).then((r) => {
+    downloading = false;
+    $("#link-input").disabled = false;
+    if (r && r.ok) {
+      $("#link-input").value = "";
+      $("#download-status").textContent = "";
+      handleResult(r);
+    } else {
+      showTimedError($("#download-status"), (r && r.error) || "No se pudo descargar la foto.");
       $("#download-status").style.color = "var(--red)";
     }
   });
@@ -1724,6 +1805,14 @@ window.addEventListener("pywebviewready", () => {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !$("#credits-modal-backdrop").hidden) closeCreditsModal();
   });
+  // Selector de fotos de Instagram: cerrar sin elegir (click afuera, Escape)
+  // cuenta como CANCELADO -- ver closeInstagramPicker.
+  $("#ig-picker-backdrop").addEventListener("click", (e) => {
+    if (e.target === e.currentTarget) closeInstagramPicker(true);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("#ig-picker-backdrop").hidden) closeInstagramPicker(true);
+  });
 });
 
 // Entrada/salida animada (ver .modal-backdrop/.modal-backdrop.open en
@@ -1749,6 +1838,46 @@ function closeCreditsModal() {
   // 180ms = duracion de la transicion en CSS -- recien ahi vuelve el
   // display:none, para no cortar la animacion de salida a la mitad.
   creditsCloseTimer = setTimeout(() => { bd.hidden = true; creditsCloseTimer = null; }, 180);
+}
+
+// Selector de fotos de un post de Instagram con varias (ver
+// startInstagramDownload) -- mismo vidrio y misma animacion de entrada/
+// salida que #credits-modal-backdrop (.modal-backdrop es generica, ver
+// styles.css), con miniaturas en vez de texto.
+let igPickerCloseTimer = null;
+
+function showInstagramPhotoPicker(photos) {
+  const grid = $("#ig-picker-grid");
+  grid.innerHTML = "";
+  photos.forEach((p) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ig-picker-thumb";
+    btn.style.backgroundImage = `url("${p.src}")`;
+    btn.addEventListener("click", () => chooseInstagramPhoto(p.src));
+    grid.appendChild(btn);
+  });
+  if (igPickerCloseTimer) { clearTimeout(igPickerCloseTimer); igPickerCloseTimer = null; }
+  const bd = $("#ig-picker-backdrop");
+  bd.hidden = false;
+  void bd.offsetWidth; // forceReflow
+  bd.classList.add("open");
+}
+
+// cancelado: a diferencia de closeCreditsModal, cerrar el selector SIN
+// elegir foto (click afuera, Escape) tiene que soltar el candado de
+// "descargando" -- si no, el campo del link se quedaba deshabilitado para
+// siempre (nada mas iba a avisarle que la descarga termino).
+function closeInstagramPicker(cancelado) {
+  const bd = $("#ig-picker-backdrop");
+  if (bd.hidden) return;
+  bd.classList.remove("open");
+  igPickerCloseTimer = setTimeout(() => { bd.hidden = true; igPickerCloseTimer = null; }, 180);
+  if (cancelado) {
+    downloading = false;
+    $("#link-input").disabled = false;
+    $("#download-status").textContent = "";
+  }
 }
 
 // ------------------------------------- cerrar/abrir el previsualizador
@@ -2430,16 +2559,23 @@ function positionPreviewOverlays() {
   const top = Math.round(box.top - surface.top);
   const bottom = Math.round(surface.bottom - box.bottom);
 
+  // 20px y no los 12 de antes -- pedido explicito: los controles quedaban
+  // pegados al borde del recuadro del medio (la barra de play/volumen
+  // tocaba el costado izquierdo Y derecho, sin nada de aire). Un solo
+  // numero para los 4 (controles, boton de agrandar, pastilla de
+  // "generando") para que todos respiren igual.
+  const MARGEN_OVERLAY = 20;
+
   const controls = $("#loop-preview-controls");
   if (!controls.hidden) {
-    controls.style.left = `${left}px`;
-    controls.style.right = `${right}px`;
-    controls.style.bottom = `${bottom + 12}px`;
+    controls.style.left = `${left + MARGEN_OVERLAY}px`;
+    controls.style.right = `${right + MARGEN_OVERLAY}px`;
+    controls.style.bottom = `${bottom + MARGEN_OVERLAY}px`;
   }
   // Dentro de la esquina de arriba a la derecha DEL MEDIO.
   const expand = $("#preview-expand");
-  expand.style.right = `${right + 12}px`;
-  expand.style.top = `${top + 12}px`;
+  expand.style.right = `${right + MARGEN_OVERLAY}px`;
+  expand.style.top = `${top + MARGEN_OVERLAY}px`;
 
   // La pastilla de "generando", en la esquina de arriba a la IZQUIERDA del
   // medio: espejo exacto del boton de agrandar. Antes colgaba de la zona
@@ -2447,8 +2583,8 @@ function positionPreviewOverlays() {
   // medio centrado por object-fit quedaba flotando bastante arriba del
   // fotograma, desalineada del boton que tiene enfrente.
   const loading = $("#preview-loading");
-  loading.style.left = `${left + 12}px`;
-  loading.style.top = `${top + 12}px`;
+  loading.style.left = `${left + MARGEN_OVERLAY}px`;
+  loading.style.top = `${top + MARGEN_OVERLAY}px`;
 }
 
 // El beat puede estar sonando sin que el canvas se mueva: con una foto de medio

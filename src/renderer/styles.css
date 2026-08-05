@@ -1516,8 +1516,11 @@ input[type="text"].preset-inline-input {
    oscuro, no por una linea. Hay que apagarlo a mano porque la regla que
    comparte con el play del loop le pone 1px solid. */
 .preview-expand-btn {
-  right: 12px;
-  top: 12px;
+  /* 20px, no 12 -- ver MARGEN_OVERLAY en positionPreviewOverlays (app.js),
+     que pisa esto en cuanto hay un recuadro de medio que medir. Este valor
+     de aca es solo el respaldo del primerisimo instante. */
+  right: 20px;
+  top: 20px;
   border: none;
   background: rgba(0, 0, 0, 0.6);
   backdrop-filter: blur(12px) saturate(140%);
@@ -1648,9 +1651,10 @@ input[type="text"].preset-inline-input {
    la mantiene a la vista hasta que sueltes. */
 .loop-preview-controls {
   position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: 12px;
+  /* 20px, no 12 -- mismo respaldo/motivo que .preview-expand-btn arriba. */
+  left: 20px;
+  right: 20px;
+  bottom: 20px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1699,6 +1703,11 @@ input[type="text"].preset-inline-input {
   background: none;
   -webkit-appearance: none;
   appearance: none;
+  /* Antes esto solo estaba en el ::-webkit-slider-thumb (la perillita) --
+     pasando el mouse por el resto del riel (que es la mayor parte del
+     ancho, y donde tambien se puede clickear para saltar) quedaba con la
+     flecha comun. Aca alcanza a todo el control, perilla incluida (hereda). */
+  cursor: pointer;
 }
 .loop-preview-seek::-webkit-slider-runnable-track {
   height: 4px;
@@ -1909,6 +1918,71 @@ input[type="text"].preset-inline-input {
      setAdaptiveAccent), y con un fotograma calido esto se ponia naranja en
      vez de quedarse gris. */
   color: var(--muted);
+}
+
+/* Selector de fotos de un post de Instagram con varias -- mismo patron que
+   .credits-modal (posicion relative, el backdrop centra por flex) pero con
+   su PROPIA animacion de entrada, mas marcada: pedido explicito, la de
+   .credits-modal (scale 0.96, casi imperceptible) no se notaba. */
+.ig-picker-modal {
+  position: relative;
+  /* 420px para 4 columnas -- ver .ig-picker-grid. Con el ancho viejo (320,
+     pensado para 3) las miniaturas hubieran salido mas chicas de lo que
+     valia la pena. */
+  width: 420px;
+  transform: scale(0.85) translateY(14px);
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.modal-backdrop.open .ig-picker-modal {
+  transform: scale(1) translateY(0);
+}
+
+.ig-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  /* Scroll si el carrusel trae mas fotos de las que entran en 4 filas, en
+     vez de estirar el modal fuera de la ventana. */
+  max-height: 320px;
+  overflow-y: auto;
+  /* Barra fina y apagada -- "que no se note" (pedido explicito), pero sigue
+     ahi para avisar que hay mas fotos abajo. scrollbar-width es Firefox;
+     los ::-webkit-scrollbar de abajo son los que de verdad pintan algo en
+     Electron (Chromium). */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+}
+.ig-picker-grid::-webkit-scrollbar {
+  width: 6px;
+}
+.ig-picker-grid::-webkit-scrollbar-track {
+  background: transparent;
+}
+.ig-picker-grid::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+.ig-picker-grid::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.ig-picker-thumb {
+  aspect-ratio: 1;
+  border-radius: 8px;
+  border: 1px solid var(--field-border);
+  background-color: var(--field-bg);
+  background-size: cover;
+  background-position: center;
+  cursor: pointer;
+  padding: 0;
+}
+.ig-picker-thumb:hover {
+  border-color: var(--accent);
+}
+.ig-picker-thumb:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
 /* Cada pregunta del modal ("De dónde", "Qué guardar") con su titulito. */
