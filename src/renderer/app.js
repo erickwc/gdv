@@ -1167,6 +1167,18 @@ window.onDownloadStatus = (payload) => {
   $("#download-status").style.color = payload.color || "";
 };
 
+// Campanita al terminar de exportar bien -- Audio nuevo en cada llamado (no
+// un elemento fijo reusado): con dos exportaciones seguidas la anterior
+// podria no haber terminado de sonar todavia, y reusar el mismo elemento la
+// cortaria de golpe para arrancar la nueva desde 0.
+function playExportDoneSound() {
+  try {
+    const audio = new Audio("sfx/export-done.wav");
+    audio.volume = 0.55;
+    audio.play().catch(() => {}); // autoplay bloqueado, sin audio de salida, etc. -- no es critico
+  } catch (e) {}
+}
+
 window.onJobDone = (payload) => {
   setGeneratingUI(false);
   // Salio bien: lo cuenta la tarjeta de resultado, no el texto ni la barra
@@ -1178,6 +1190,7 @@ window.onJobDone = (payload) => {
     $("#status-text").style.color = "";
     $("#save-cover-btn").hidden = !payload.cover_available;
     setExportResult(payload.filename || payload.message || "video exportado");
+    playExportDoneSound();
     return;
   }
   if (payload.cancelled) {
@@ -1237,10 +1250,34 @@ let downloading = false;
 // interceptarlo. Ver resolveInstagramPhotos en main.js para el porque.
 const INSTAGRAM_POST_RE = /instagram\.com\/p\//i;
 
+// Plataformas apagadas a pedido: el link se rechaza de entrada, con aviso, en
+// vez de intentar bajarlo. La maquinaria de Instagram (startInstagramDownload
+// aca, resolveInstagramPhotos en main.js, instagram-extract.js, el selector de
+// fotos) queda INTACTA pero sin camino que llegue -- volver a habilitarlas es
+// sacar el bloque de abajo en startDownload, nada mas.
+//
+// Se compara el HOST y no la URL entera: un link de YouTube que llevara la
+// palabra "tiktok" en algun parametro no tiene por que quedar bloqueado.
+const PLATAFORMAS_SIN_SOPORTE = /(^|\.)(instagram\.com|instagr\.am|tiktok\.com)$/i;
+
+function esPlataformaSinSoporte(url) {
+  try {
+    return PLATAFORMAS_SIN_SOPORTE.test(new URL(url).hostname);
+  } catch (e) {
+    return false; // no es una URL parseable: lo resuelve el chequeo de https://
+  }
+}
+
 function startDownload(url) {
   if (downloading) return;
   if (!/^https?:\/\//i.test(url)) {
     showTimedError($("#download-status"), "Pega un link válido (que empiece con https://).");
+    $("#download-status").style.color = "var(--red)";
+    return;
+  }
+  if (esPlataformaSinSoporte(url)) {
+    showTimedError($("#download-status"),
+      "Lo sentimos de momento no tenemos\nsoporte con esta plataforma :(");
     $("#download-status").style.color = "var(--red)";
     return;
   }
@@ -2258,8 +2295,15 @@ const Preview = (() => {
 // pero mostrando el video real (FASE 1 de la generacion, ver
 // request_loop_preview en api.py) -- SIN la fase 2, lenta, de repetir +
 // mezclar con el audio completo, asi que no afecta el tiempo de export.
+// encodeURI() deja "#" y "?" sin escapar a proposito (validos en una URL ya
+// armada) -- pero esto parte de una RUTA cruda: un nombre con "#" (una
+// tonalidad musical, "A#min", tipico en beats) cortaba la URL ahi mismo y
+// el beat quedaba mudo en el previsualizador sin ningun error, aunque
+// exportara bien (Python usa la ruta cruda, sin este problema). Mismo
+// arreglo que urlDeArchivo en live-preview.js -- ver el comentario ahi.
 function buildFileUrl(path) {
-  return `file:///${encodeURI(path.replace(/\\/g, "/"))}`;
+  const limpia = path.replace(/\\/g, "/");
+  return `file:///${encodeURI(limpia).replace(/#/g, "%23").replace(/\?/g, "%3F")}`;
 }
 
 // Ruta del ultimo fragmento que compuso ffmpeg. Ya no se usa para ver el loop

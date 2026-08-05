@@ -62,8 +62,18 @@ window.LivePreview = (() => {
     return punto !== -1 && VIDEO_EXTS.includes(ruta.slice(punto).toLowerCase());
   }
 
+  // encodeURI() deja "#" y "?" SIN escapar a proposito -- son validos en una
+  // URL ya armada (fragmento/query) -- pero aca lo que entra es una RUTA
+  // CRUDA de archivo, no una URL: un nombre con "#" (una tonalidad musical,
+  // "A#min", tipico en nombres de beats/proyectos de musica) cortaba la URL
+  // justo ahi y el resto de la ruta se perdia como fragmento, sin avisar
+  // ningun error -- el archivo quedaba "cargado" para la app (Python lee la
+  // ruta cruda, sin este problema) pero mudo/negro en el previsualizador.
+  // Se escapan los dos a mano, DESPUES de encodeURI() (no antes: haria
+  // doble-escape del "%" que agrega).
   function urlDeArchivo(ruta) {
-    return `file:///${encodeURI(ruta.replace(/\\/g, "/"))}`;
+    const limpia = ruta.replace(/\\/g, "/");
+    return `file:///${encodeURI(limpia).replace(/#/g, "%23").replace(/\?/g, "%3F")}`;
   }
 
   // ------------------------------------------------------------ el medio

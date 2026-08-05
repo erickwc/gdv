@@ -41,6 +41,22 @@ AUDIO_EXTS = {".mp3", ".wav", ".flac", ".aac", ".m4a", ".ogg", ".wma", ".opus"}
 CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 IS_MAC = sys.platform == "darwin"
 
+# Argumentos extra para subprocess.run/Popen que bajan la prioridad del
+# proceso -- pensado para trabajo de FONDO (hoy solo la copia liviana del
+# previsualizador, ver _preview_proxy_job en api.py) que no tiene por que
+# competirle CPU real a una exportacion que arranque mientras tanto. Medido:
+# exportar CON esa copia corriendo a la par tardaba 1.6x mas que sola, en un
+# M1 Pro de 10 nucleos -- el sistema operativo reparte CPU por igual entre
+# los dos procesos de ffmpeg sin este empujon. En Windows no existe nice();
+# el equivalente es la CLASE de prioridad del proceso entero, via
+# creationflags (por eso esto reemplaza a CREATE_NO_WINDOW ahi, no lo suma).
+if os.name == "nt":
+    LOW_PRIORITY_KWARGS = {
+        "creationflags": CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS,
+    }
+else:
+    LOW_PRIORITY_KWARGS = {"preexec_fn": lambda: os.nice(10)}
+
 # En Mac, el Python de python.org no trae certificados SSL configurados y
 # toda conexion HTTPS falla (CERTIFICATE_VERIFY_FAILED) -- sin esto la
 # descarga por link con yt-dlp dependeria de que yt-dlp encuentre certifi

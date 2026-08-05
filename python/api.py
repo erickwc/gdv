@@ -109,6 +109,12 @@ class Api:
         # build_preview_proxy_command en engine.py). None = se usa el original:
         # o el clip ya es chico, o la copia todavia se esta armando.
         self.preview_proxy_path = None
+        # Handle del ffmpeg que arma esa copia, mientras esta corriendo (ver
+        # _preview_proxy_job/_cancel_preview_proxy_process) -- para poder
+        # matarlo si deja de tener sentido: cambio el medio de nuevo, o
+        # arranco una exportacion real, que NUNCA usa esta copia (sale
+        # siempre de media_path) y no tiene por que compartir CPU con ella.
+        self._preview_proxy_process = None
         self.media_display_name = None  # titulo de yt-dlp, si se descargo por link
         self.trim_range = None        # (start, end) calculado al generar, o None (clip completo)
         self.trim_start = 0.0
@@ -877,6 +883,7 @@ class Api:
         self._invalidate_loop_preview()
         self.media_path = path
         self.media_is_video = False
+        self._cancel_preview_proxy_process()  # la del medio anterior ya no sirve para nada
         self.preview_proxy_path = None  # la del video anterior no sirve (ver _set_video)
         self.media_size = (width, height)
         self.media_was_vertical = False  # el boton de girar es solo para video
@@ -919,6 +926,7 @@ class Api:
         self._invalidate_loop_preview()
         self.media_path = path
         self.media_is_video = True
+        self._cancel_preview_proxy_process()  # la del clip anterior ya no sirve para nada
         self.preview_proxy_path = None  # la del clip anterior no sirve
         self.media_size = None
         self.media_video_codec = None  # lo pone en firme _probe_video_job
@@ -1055,6 +1063,7 @@ class Api:
         # vieja en preview_path (preview_proxy_path or media_path), y el
         # previsualizador (que arranca por preview_path, ver applyState en
         # live-preview.js) se quedaba mostrando el cuadro de antes de girar.
+        self._cancel_preview_proxy_process()  # la del original ya no corresponde a este giro
         self.preview_proxy_path = None
         thumb_img = engine.extract_video_thumb(self.ffmpeg_exe, temp_path)
         if thumb_img is not None:
@@ -1116,17 +1125,53 @@ class Api:
             try:
                 # stdin=DEVNULL: sin esto ffmpeg puede quedarse esperando en la
                 # tuberia de JSON-RPC hacia Electron (ver _run_ffmpeg).
-                subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True,
-                               creationflags=engine.CREATE_NO_WINDOW)
+                # LOW_PRIORITY_KWARGS (ver engine.py) no alcanzaba solo:
+                # medido, exportar con esta copia corriendo a la par
+                # tardaba 1.6x mas IGUAL (esta Mac tiene nucleos de sobra,
+                # asi que bajarle la prioridad o los hilos no le hacia
+                # ceder terreno de verdad). Popen (no run) para poder
+                # matarlo de afuera -- ver _cancel_preview_proxy_process,
+                # que start_generation llama ANTES de arrancar el export
+                # real, que nunca usa esta copia.
+                proc = subprocess.Popen(
+                    cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, **engine.LOW_PRIORITY_KWARGS)
+                self._preview_proxy_process = proc
+                proc.wait()
             except Exception:
                 return  # sin copia: el previsualizador sigue con el original
-            if not os.path.exists(destino) or os.path.getsize(destino) == 0:
+            finally:
+                if self._preview_proxy_process is proc:
+                    self._preview_proxy_process = None
+            # Matado a proposito (cambio de medio, exportacion real) o
+            # fallo de verdad: en los dos casos el archivo a medio escribir
+            # no sirve, mismo chequeo que ya habia.
+            if proc.returncode != 0 or not os.path.exists(destino) or os.path.getsize(destino) == 0:
                 return
 
         if path != self.media_path or not self.media_is_video:
             return  # el usuario ya cambio de medio mientras se armaba
         self.preview_proxy_path = destino
         self._notify_state_changed()
+
+    def _cancel_preview_proxy_process(self):
+        """Mata la copia liviana si todavia se esta armando. Se llama antes
+        de arrancar una exportacion real (nunca la usa, no tiene por que
+        competirle CPU) y al cambiar de medio (el resultado ya no va a
+        servir para nada, terminar de armarlo es trabajo tirado). terminate()
+        y no kill(): le da chance a ffmpeg de cerrar el archivo ordenado, y
+        wait(timeout=..) por si no llega a reaccionar."""
+        proc = self._preview_proxy_process
+        if not proc or proc.poll() is not None:
+            return
+        try:
+            proc.terminate()
+            proc.wait(timeout=2)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
     @staticmethod
     def _limpiar_copias_viejas(salvo, dias=7, prefijo="genvideo_preview_"):
@@ -2057,6 +2102,14 @@ class Api:
         return {"ok": True}
 
     def _run_ffmpeg_job(self):
+        # Antes que nada: la copia liviana del previsualizador nunca la usa
+        # la exportacion (sale siempre de media_path), asi que si todavia se
+        # estaba armando no tiene sentido que le siga compitiendo CPU real a
+        # esta generacion -- medido, exportar con esa copia corriendo a la
+        # par tardaba 1.6x mas. Va aca (hilo de fondo) y no en
+        # start_generation: terminate()+wait(timeout=2) podria demorar la
+        # respuesta del click "Generar video" hasta 2s.
+        self._cancel_preview_proxy_process()
         temp_unit = None
         temp_list = None
         self._generation_counter += 1
