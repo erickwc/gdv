@@ -154,6 +154,14 @@ function pintarFondo(hue) {
     window.setAuroraHue(hue);
     return;
   }
+  // Con el fondo de kawarp montado pasa lo mismo que con el aurora: su canvas
+  // cubre el SVG entero, asi que escribirle los fill a los manchones seria
+  // trabajo invisible -- y del caro (ver MIN_DELTA_HUE mas abajo: cada fill
+  // obliga a rehacer un feGaussianBlur de stdDeviation 175 sobre 2388x1932).
+  // Ojo: se corta solo el pintado del SVG, NO el --accent de :root, que lo
+  // sigue necesitando la UI (ver aplicarMatiz) -- por eso el return va aca y
+  // no mas arriba, en aplicarMatiz.
+  if (window.kawarpFondoActivo) return;
   const els = ensureBlobEls();
   if (!els) return;
   els.forEach((el, i) => {

@@ -8,31 +8,52 @@
 
 /* ------------------------------------------------------------ tipografia */
 
-/* Open Sauce Two, una sola familia para toda la app (antes Figtree, y antes
-   Google Sans -- ese CSS esta en el commit 3a907db).
+/* Stack Sans Text (antes Open Sauce Two, antes Figtree, y antes Google Sans
+   -- esos CSS estan en el historial de git, el de Open Sauce Two en el
+   commit 3a907db). Licencia OFL, paquete descargado entero en
+   C:\Users\erick\Downloads\Stack_Sans_Text -- ver el OFL.txt de ahi.
 
-   DOS caras nada mas, y a proposito: son las unicas dos que usa el diseno.
-   La carpeta fonts/ trae el paquete entero (300 a 900), pero declarar una
-   cara que nadie pide es peso muerto que igual se descarga.
+   TRES caras, no dos: las mismas 300/400 de siempre para el cuerpo del
+   diseno, mas 700 para .credits-studio ("HYRO STUDIO" en el modal de
+   creditos), que hasta ahora pedia ese peso SIN declararlo -- practica que
+   esta seccion de comentario venia advirtiendo que arriba de 600 el motor
+   INVENTA la negrita (engorda los trazos a mano) y el texto sale deformado.
+   Stack Sans Text trae un Bold de verdad en el paquete, asi que se declara
+   en vez de seguir dejando que se sintetice.
      300  Light    -- el peso de toda la interfaz (ver --peso-ui en :root)
-     400  Regular  -- "Generar video", el unico texto mas marcado
+     400  Regular  -- "Generar video", el unico texto mas marcado del cuerpo
+     700  Bold     -- SOLO .credits-studio, ver arriba
 
-   Ninguna es italica: el paquete no la trae. Y cuidado con pedir un peso que
-   no este declarado aca: si se pide 600 o mas, el motor lo INVENTA (negrita
-   sintetica, engorda los trazos a mano) y el texto sale deformado. Entre 400
-   y 500 no inventa nada -- se queda con la cara de 400 -- pero igual conviene
-   escribir el peso que de verdad se va a ver. */
+   La carpeta fonts/ trae solo estas tres caras (no el paquete completo:
+   ExtraLight/Medium/SemiBold quedaron afuera, nadie las pide y declarar una
+   cara sin uso es peso muerto que se descarga igual). Ninguna es italica: el
+   paquete no la trae. */
 @font-face {
-  font-family: "Open Sauce Two";
-  src: url("fonts/open-sauce-two-latin-300-normal.ttf") format("truetype");
+  font-family: "Stack Sans Text";
+  src: url("fonts/SlackSansText-Light.ttf") format("truetype");
+  font-weight: 200;
+  font-style: normal;
+  font-display: block;
+}
+
+   @font-face {
+  font-family: "Stack Sans Text";
+  src: url("fonts/stack-sans-text-300-normal.ttf") format("truetype");
   font-weight: 300;
   font-style: normal;
   font-display: block;
 }
 @font-face {
-  font-family: "Open Sauce Two";
-  src: url("fonts/open-sauce-two-latin-400-normal.ttf") format("truetype");
+  font-family: "Stack Sans Text";
+  src: url("fonts/stack-sans-text-400-normal.ttf") format("truetype");
   font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Stack Sans Text";
+  src: url("fonts/stack-sans-text-700-normal.ttf") format("truetype");
+  font-weight: 700;
   font-style: normal;
   font-display: block;
 }
@@ -114,10 +135,10 @@ textarea {
      cambia la interfaz entera. Antes cada regla nombraba su familia y su
      peso a mano (23 declaraciones repartidas), y probar otra fuente obligaba
      a tocarlas todas. */
-  --font-ui: "Open Sauce Two", sans-serif;
-  /* Peso base para texto corrido (labels, inputs, hints). El unico otro peso
-     declarado es 400 -- si aca se pone cualquier otra cosa, no hay cara que
-     lo cubra (ver el bloque de @font-face arriba). */
+  --font-ui: "Stack Sans Text", sans-serif;
+  /* Peso base para texto corrido (labels, inputs, hints). Los otros pesos
+     declarados son 400 y 700 -- si aca se pone cualquier otra cosa, no hay
+     cara que lo cubra (ver el bloque de @font-face arriba). */
   --peso-ui: 300;
   --accent: #9a97a3;
   --accent-hover: #88858f;
@@ -156,7 +177,7 @@ textarea {
   width: 100%;
   height: 100%;
   display: block;
-  filter: contrast(1.2) saturate(1.5) brightness(0.6);
+  /* filter: contrast(1.2) saturate(1) brightness(0.6); */
 }
 
 /* Fondo animado "estilo Spotify" (ver spotify-style-background.js) -- capa
@@ -175,7 +196,8 @@ textarea {
      mezclados con negro (screen) y encima desenfocados, sin este empujon
      se leian iguales de apagados que el SVG viejo -- justo lo que se pidio
      arreglar. */
-  filter: saturate(6) brightness(0.35);
+  /* filter: saturate(2.5); */
+  filter: saturate(5);
 }
 /* Piso fijo de color, siempre cubriendo toda la capa -- ver el comentario
    largo en iniciarAnimacionColor (spotify-style-background.js) sobre por
@@ -193,6 +215,78 @@ textarea {
   opacity: 0.5;
   mix-blend-mode: screen;
 }
+
+/* ------------------------------------------- fondo animado con kawarp
+   La capa ACTIVA hoy (ver kawarp-background.js): el fondo es la portada misma,
+   deformada y difuminada por WebGL, en un canvas que cubre el SVG entero. Los
+   manchones de .spotify-bg-* de arriba quedan de respaldo, sin usarse.
+
+   OJO -- por que tocar el filter de .spotify-bg-layer no hace nada: con kawarp
+   activo esa capa NI SE CREA, asi que su saturate/brightness no se aplica a
+   nada. Las perillas del fondo que se ve son las variables de aca abajo. */
+.kawarp-bg-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+
+  /* PERILLAS DEL FONDO. Se leen desde kawarp-background.js al arrancar, asi
+     que se ajustan aca y se reabre la app (Electron carga el JS del renderer
+     una sola vez). Para probar en vivo sin reabrir: abrir DevTools, cambiar la
+     variable y llamar a window.releerPerillasDelFondo().
+
+     Van como variables y no como filter: CSS no puede tocar lo que dibuja un
+     canvas de WebGL -- un filter aca se aplicaria ENCIMA del resultado, no a
+     como se genera. Estos numeros, en cambio, entran al shader. */
+
+  /* Cuanto se empujan los colores de la portada. 1 = tal cual; arriba de ~2.5
+     empieza a verse irreal. */
+  --fondo-saturacion: 2.6;
+  /* Pasadas del desenfoque Kawase (1-40): mas pasadas = masas mas grandes y
+     suaves. Cuesta poco porque corre sobre texturas de 128x128, no sobre el
+     lienzo entero. */
+  --fondo-desenfoque: 12;
+  /* Cuanto se deforma la portada (0-1). En 0 queda la foto difuminada quieta;
+     en 1, el vaiven organico completo. */
+  --fondo-deformacion: 0.85;
+  /* Velocidad del movimiento. Bajo a proposito: el fondo tiene que respirar,
+     no llamar la atencion. */
+  --fondo-velocidad: 2.2;
+  /* Zoom DENTRO del shader. Es distinto del scale del canvas de mas abajo:
+     este agranda la imagen de origen, ese otro recorta el borde del lienzo. */
+  --fondo-zoom: 1.15;
+}
+.kawarp-bg-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  /* Un pelo mas grande que la capa: la deformacion puede dejar el patron
+     estirado justo en el borde del lienzo, y asi ese borde queda fuera de
+     vista. */
+  transform: scale(1.06);
+}
+
+/* Velo oscuro encima del fondo -- lo que le da el arriba-claro/abajo-oscuro de
+   Spotify. Sin esto el color llegaba igual de intenso a los cuatro bordes y el
+   conjunto se leia plano, como una foto desenfocada; de paso levanta el
+   contraste del texto del panel. Esto SI es CSS puro: va como una capa aparte
+   encima del canvas, no como filtro de el. En los manchones va ademas sin
+   mix-blend-mode a proposito: ellos usan screen (suman luz) y aca hace falta
+   lo contrario, restarla. */
+.kawarp-bg-overlay,
+.spotify-bg-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.12),
+    rgba(0, 0, 0, 0.34) 55%,
+    rgba(0, 0, 0, 0.62)
+  );
+  pointer-events: none;
+}
+
 .spotify-bg-blob {
   position: absolute;
   width: 105vmin;
@@ -272,12 +366,14 @@ textarea {
   border: none;
   border-radius: 6px;
   background: none;
-  color: var(--muted);
+  /* Blanco puro fijo -- pedido explicito: todos los iconos de la app en el
+     mismo blanco base, sin un color aparte que "se prenda" al pasar el
+     cursor (antes var(--muted), gris, y blanco solo en :hover). */
+  color: #ffffff;
   cursor: pointer;
 }
 .titlebar-btn:hover {
   background: rgba(255, 255, 255, 0.1);
-  color: #ffffff;
 }
 
 /* Previsualizador cerrado: queda solo el panel de controles y la ventana se
@@ -433,6 +529,13 @@ h2 {
   width: 81px;
   flex-shrink: 0;
 }
+/* Las pastillas de velocidad, contra el borde derecho de la fila -- pedido
+   explicito. h2 ya tiene ancho fijo (arriba) y no crece, asi que el
+   margin-left:auto es lo unico que hace falta para empujar esto al otro
+   extremo (mismo truco que .section-title-row .num-entry-sm mas abajo). */
+#speed-control {
+  margin-left: auto;
+}
 
 .section-title-row {
   display: flex;
@@ -445,6 +548,16 @@ h2 {
    con solo space-between quedaban repartidos por todo el ancho. */
 .section-title-row .num-entry-sm {
   margin-left: auto;
+}
+
+/* Los dos numeros de "Recorte del loop" (inicio/fin) y el guion entre
+   medio, agrupados -- ver el comentario en index.html sobre por que hace
+   falta el div propio. gap chico: son una sola unidad ("de esta parte a
+   esta otra"), no dos campos sueltos. */
+.trim-range-inputs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 /* -------------------------------------------------- filas label+control */
@@ -761,7 +874,8 @@ select:focus,
 
 .preset-dropdown-chevron {
   display: inline-flex;
-  color: var(--muted);
+  /* Blanco puro, igual que el resto de los iconos (antes var(--muted)). */
+  color: #ffffff;
   flex-shrink: 0;
 }
 
@@ -776,12 +890,13 @@ select:focus,
   white-space: nowrap;
 }
 
-/* Renombrar / eliminar de cada preset -- el icono suelto (16px, stroke 1,
+/* Renombrar / eliminar de cada preset -- el icono suelto (16px, stroke 1.5,
    ver iconSvg en app.js) y nada mas. Esta clase no tenia ni una regla, asi
    que el navegador les pintaba su boton gris por defecto: esa caja clara con
-   borde era lo que se veia, no el icono. En gris apagado para que la fila se
-   lea como un nombre y no como una barra de botones; blanco al pasar el
-   cursor, igual que la X de la ventana de portada. */
+   borde era lo que se veia, no el icono. Blanco puro fijo (pedido explicito,
+   igual que el resto de los iconos): antes era gris apagado y pasaba a
+   blanco solo al pasar el cursor -- ahora esa distincion la hace nomas el
+   fondo que aparece en :hover, no un cambio de color. */
 .preset-dropdown-item-icon {
   display: flex;
   align-items: center;
@@ -793,12 +908,11 @@ select:focus,
   border: none;
   border-radius: 6px;
   background: none;
-  color: var(--muted);
+  color: #ffffff;
   cursor: pointer;
 }
 .preset-dropdown-item-icon:hover {
   background: rgba(255, 255, 255, 0.1);
-  color: #ffffff;
 }
 
 /* Renombrar en linea: el campo ocupa la fila entera. Necesita el
@@ -808,10 +922,20 @@ input[type="text"].preset-inline-input {
   width: 100%;
 }
 
-/* Boton "Guardar preset" -- misma caja que un input, cuadrado. */
+/* Boton "Guardar preset". Ancho fijo (24px, cuadrado) pero alto SIN fijar --
+   antes tambien tenia height:24px (heredado igual de .btn-icon si se
+   quitara sin mas: hay que pisarlo con algo, no alcanza con no declarar
+   height aca), y quedaba ~1.6px mas bajo que el campo de al lado
+   (.preset-dropdown-trigger, cuyo alto lo pone el padding/line-height de
+   siempre, no un numero fijo) y se veia mas chico -- pedido explicito,
+   arreglarlo. Sin numero magico: height:auto + align-self:stretch lo
+   estira a la altura real de la fila (la que marca el campo, el mas alto
+   de los dos), asi que si el tamano de letra de los campos cambia esto
+   sigue coincidiendo solo. */
 #preset-save {
   width: 24px;
-  height: 24px;
+  height: auto;
+  align-self: stretch;
   padding: 0;
   flex-shrink: 0;
 }
@@ -899,22 +1023,38 @@ input[type="text"].preset-inline-input {
    miniatura ensucia la grilla. */
 .gallery-card-delete {
   position: absolute;
-  top: 2px;
-  right: 2px;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  display: none;
+  top: 4px;
+  right: 4px;
+  width: 24px;
+  height: 24px;
+  padding: 4px;
+  display: flex;
   align-items: center;
   justify-content: center;
+
   border: none;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.65);
-  color: #ffffff;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.795);
+  backdrop-filter: blur(12px);
+
+  color: #fff;
   cursor: pointer;
+
+  /* Estado oculto */
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px) scale(0.9);
+
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease,
+    visibility 0.2s;
 }
 .gallery-card:hover .gallery-card-delete {
   display: flex;
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0) scale(1);
 }
 
 /* El nombre del archivo vive en el title= de la tarjeta (tooltip) -- el
@@ -1052,12 +1192,13 @@ input[type="text"].preset-inline-input {
 .chip .btn-icon {
   border: none;
   background: none;
-  color: var(--muted);
+  /* Blanco puro fijo -- antes gris apagado que pasaba a blanco en :hover
+     (ver el mismo cambio en .titlebar-btn/.preset-dropdown-item-icon). */
+  color: #ffffff;
 }
 .chip .btn-icon:hover {
   border: none;
   background: none;
-  color: #ffffff;
 }
 
 /* Tooltip propio -- no title= nativo: en esta ventana (titleBarStyle:
@@ -1069,7 +1210,11 @@ input[type="text"].preset-inline-input {
    ::after y no un <span> aparte: nace y muere con el propio boton, sin
    marcado extra ni JS que lo posicione. transition-delay (no un setTimeout
    en JS) da el mismo retraso de "dejar el cursor quieto" que un tooltip de
-   verdad, sin logica aparte. */
+   verdad, sin logica aparte.
+
+   Retraso y duracion, los dos mas rapidos que el punto medio de 0.2s/0.12s
+   (pedido explicito, "lo necesito mas rapido"): sin llegar al extremo de
+   0s/0.02s que se sintio "de golpe" en una vuelta anterior. */
 [data-tooltip] {
   position: relative;
 }
@@ -1090,14 +1235,37 @@ input[type="text"].preset-inline-input {
   white-space: nowrap;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.12s ease, transform 0.12s ease;
+  transition: opacity 0.08s ease, transform 0.08s ease;
   z-index: 50;
 }
 [data-tooltip]:hover::after,
 [data-tooltip]:focus-visible::after {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
-  transition-delay: 0.4s;
+  transition-delay: 0.1s;
+}
+
+/* Variante para un boton pegado al borde de ARRIBA de la ventana
+   (#preview-toggle-btn): el tooltip generico aparece hacia arriba
+   (bottom: calc(100% + 8px) en la regla de base) y ahi se saldria de la
+   ventana. Da vuelta las mismas dos propiedades, nada mas. */
+.tooltip-below[data-tooltip]::after {
+  bottom: auto;
+  top: calc(100% + 8px);
+  transform: translateX(-50%) translateY(-4px);
+}
+.tooltip-below[data-tooltip]:hover::after,
+.tooltip-below[data-tooltip]:focus-visible::after {
+  transform: translateX(-50%) translateY(0);
+}
+/* Las tarjetas de galeria tienen MENOS aire abajo que un boton comun (36px
+   entre el marco y "Estilo"/la proxima seccion, contra los 8px+alto de
+   sobra de un boton suelto) -- medido, con el offset de siempre el tooltip
+   le llegaba a tapar la primera linea de "Estilo" cuando hay una textura
+   elegida. 2px en vez de 8px: sigue leyendose separado del marco, pero deja
+   los ~2px de aire que hacian falta. */
+.gallery-card.tooltip-below[data-tooltip]::after {
+  top: calc(100% + 2px);
 }
 
 .chip-info {
@@ -1189,30 +1357,6 @@ input[type="text"].preset-inline-input {
    vacio seguiria sumando un gap de 12px de aire fantasma bajo el campo. */
 .hint-inline:empty {
   display: none;
-}
-
-/* El aviso de "Ventana detectada" entra y sale con el mismo
-   despliegue difuminado del panel de texturas (.layer-controls): antes
-   aparecia de golpe con [hidden] y empujaba la seccion de un salto. Mismo
-   truco: la clase .is-collapsed (no [hidden], que es display:none y mata la
-   transicion) e interpolate-size para poder animar hacia height:auto sin
-   clavar un max-height a ojo. */
-#template-info {
-  overflow: hidden;
-  interpolate-size: allow-keywords;
-  --despliegue-info: 240ms cubic-bezier(0.2, 0.7, 0.3, 1);
-  transition:
-    height var(--despliegue-info), margin-top var(--despliegue-info),
-    opacity 160ms ease, filter 200ms ease;
-}
-#template-info.is-collapsed {
-  height: 0;
-  opacity: 0;
-  /* Difuminado al entrar/salir, igual que el panel de texturas. */
-  filter: blur(4px);
-  /* .section reparte con gap:12px y un elemento de alto 0 sigue contando: sin
-     esto quedaria un hueco fantasma debajo de la galeria. */
-  margin-top: -12px;
 }
 
 /* --------------------------------------------- pie del panel (estado) */
@@ -1379,8 +1523,8 @@ input[type="text"].preset-inline-input {
      -15px/-25px de spread negativo: sin esto la sombra sale del mismo
      rectangulo del fotograma y se ve como un marco, no como algo debajo. */
   box-shadow:
-    0 8px 10px -6px rgba(0, 0, 0, 0.45),
-    0 40px 70px -20px rgba(0, 0, 0, 0.55),
+    0 8px 12px -6px rgba(0, 0, 0, 0.247),
+    0 40px 70px -20px rgba(0, 0, 0, 0.199),
     0 25px 90px -15px var(--accent-glow);
 }
 
@@ -1803,6 +1947,17 @@ input[type="text"].preset-inline-input {
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
 }
 
+/* Vidrio de verdad, solo en la ventana de portada -- pedido explicito:
+   mismo blur/transparencia que .preset-dropdown-list, para que las dos
+   flotantes de la app se sientan iguales. Las otras dos que usan
+   .glass-window (credits-modal, ig-picker-modal) se quedan con el gris
+   opaco de arriba -- no se pidio cambiarlas. */
+.cover-modal {
+  background: rgba(18, 16, 24, 0.62);
+  backdrop-filter: blur(10px) saturate(130%);
+  -webkit-backdrop-filter: blur(10px) saturate(130%);
+}
+
 .glass-window-title {
   margin: 0;
   font-size: 13px;
@@ -1822,12 +1977,12 @@ input[type="text"].preset-inline-input {
   border: none;
   border-radius: 6px;
   background: none;
-  color: var(--muted);
+  /* Blanco puro fijo -- antes gris apagado que pasaba a blanco en :hover. */
+  color: #ffffff;
   cursor: pointer;
 }
 .glass-window-close:hover {
   background: rgba(255, 255, 255, 0.1);
-  color: #ffffff;
 }
 
 /* Fondo atenuado de #credits-modal (ver index.html) -- a diferencia de

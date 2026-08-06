@@ -98,9 +98,19 @@ class Api:
 
         self.media_path = None
         self.media_is_video = False
-        self.media_size = None
+        # Tamano COMO VIENE EL ARCHIVO. Lo que consume el resto de la app es
+        # la propiedad media_size (mas abajo), que ya tiene el giro aplicado.
+        self.media_size_raw = None
+        # Girar/espejar son propiedades del proyecto, NO un archivo nuevo:
+        # el click es instantaneo (no hay ffmpeg de por medio), el
+        # previsualizador las aplica al dibujar (ver dibujarMedio en
+        # live-preview.js) y se hornean recien al exportar (ver
+        # build_transform_filters en engine.py), que ya recodifica igual.
+        # Antes cada click recodificaba el clip entero y habia que esperarlo.
+        self.media_rotation = 0       # 0/90/180/270, en sentido horario
+        self.media_flip_h = False     # espejo izquierda-derecha
+        self.media_flip_v = False     # espejo arriba-abajo
         self.media_video_codec = None  # ver CHEAP_DECODE_CODECS en engine.py
-        self.media_was_vertical = False  # tamano ORIGINAL, no el actual -- ver rotate_media
         self.media_duration = None
         self.media_interlaced = False
         self.media_thumb = None       # data URI o None
@@ -180,9 +190,6 @@ class Api:
         self._downloading = False  # ver download_from_link -- mismo caso, con la descarga por link
         self._generation_counter = 0  # sufijo unico para los temporales de _run_ffmpeg_job (ver ahi)
         self._download_counter = 0  # sufijo unico para el archivo bajado (ver _download_video)
-        self._rotating = False  # ver rotate_media -- mismo caso, con el giro de 90 grados
-        self._rotate_counter = 0  # sufijo unico para el temporal de _rotate_job (ver ahi)
-        self._last_rotated_path = None  # ultimo temporal que dejo _rotate_job, para borrarlo en el proximo giro (NUNCA el original: puede ser un archivo del usuario)
         self._last_progress_emit_ts = 0.0
         self._last_ffmpeg_error = None  # tail de stderr del ultimo fallo real (ver _run_ffmpeg)
 
@@ -239,6 +246,78 @@ class Api:
         descargas, generacion)."""
         self._emit("onStateChanged", self.get_state())
 
+    # --------------------------------------------------- giro / espejo
+    #
+    # Ver media_rotation en __init__: son propiedades del proyecto, no una
+    # copia girada del archivo.
+
+    @property
+    def media_size(self):
+        """Tamano EFECTIVO, con el giro ya aplicado -- lo que ve el usuario.
+
+        Es propiedad y no un atributo suelto a proposito: TODO el resto de
+        la app (el layout de composicion, el recuadro de "Ajustar imagen",
+        el texto del chip, la exportacion) razona sobre el medio como se
+        ve, y asi ninguno de esos lugares puede olvidarse de aplicar el
+        giro. Quien necesita el tamano crudo del archivo -- solo la copia
+        liviana del previsualizador, que se hace SOBRE el archivo sin girar
+        -- usa media_size_raw."""
+        if not self.media_size_raw:
+            return None
+        w, h = self.media_size_raw
+        if self.media_rotation % 180 == 90:
+            return (h, w)
+        return (w, h)
+
+    def _transform_filters(self):
+        """Prefijo de filtros ffmpeg para hornear el giro/espejo al exportar."""
+        return engine.build_transform_filters(
+            self.media_rotation, self.media_flip_h, self.media_flip_v)
+
+    def _reset_transform(self):
+        """Medio nuevo = giro/espejo de cero (los del anterior no aplican)."""
+        self.media_rotation = 0
+        self.media_flip_h = False
+        self.media_flip_v = False
+
+    def _refresh_after_transform(self):
+        """Lo que hay que rehacer despues de girar/espejar: el rotulo del
+        chip (dice el tamano, que con un giro se da vuelta), la miniatura
+        del canvas de "Ajustar imagen" (tiene que verse como el medio que
+        se esta encuadrando) y, si el giro cambio la proporcion, el
+        recuadro de recorte -- el de antes quedaria mal proporcionado,
+        igual que al cargar una foto nueva (ver _set_image)."""
+        self._refresh_media_kind_text()
+        if not self.media_is_video:
+            self._refresh_focus_preview()
+            self.crop_rect = self._centered_rect(self.crop_mode)
+        self._notify_state_changed()
+
+    def rotate_media(self):
+        """Gira 90 grados en sentido horario. Instantaneo: solo mueve el
+        angulo del proyecto -- el archivo no se toca."""
+        if not self.media_path:
+            return {"ok": False, "error": "No hay medio cargado"}
+        self.media_rotation = (self.media_rotation + 90) % 360
+        self._refresh_after_transform()
+        return {"ok": True, "state": self.get_state()}
+
+    def flip_media_horizontal(self):
+        """Espejo izquierda-derecha. Instantaneo, igual que rotate_media."""
+        if not self.media_path:
+            return {"ok": False, "error": "No hay medio cargado"}
+        self.media_flip_h = not self.media_flip_h
+        self._refresh_after_transform()
+        return {"ok": True, "state": self.get_state()}
+
+    def flip_media_vertical(self):
+        """Espejo arriba-abajo. Instantaneo, igual que rotate_media."""
+        if not self.media_path:
+            return {"ok": False, "error": "No hay medio cargado"}
+        self.media_flip_v = not self.media_flip_v
+        self._refresh_after_transform()
+        return {"ok": True, "state": self.get_state()}
+
     # ------------------------------------------------------ estado hacia JS
 
     def _content_box(self):
@@ -259,14 +338,19 @@ class Api:
             "media_filename": self.media_display_name or (
                 os.path.basename(self.media_path) if self.media_path else None),
             "media_is_video": self.media_is_video,
+            # Tamano EFECTIVO, con el giro aplicado (ver la propiedad).
             "media_size": self.media_size,
+            # Giro/espejo del proyecto -- el previsualizador los aplica al
+            # dibujar (ver dibujarMedio en live-preview.js). El archivo no
+            # se toca: se hornean recien al exportar.
+            "media_rotation": self.media_rotation,
+            "media_flip_h": self.media_flip_h,
+            "media_flip_v": self.media_flip_v,
             # Para que el previsualizador sepa si el codec de ESTE medio es
             # caro de decodificar (ver CHEAP_DECODE_CODECS en engine.py) --
             # el ambilight lo usa para saber si conviene pausarse mientras
             # no haya copia liviana lista, ver live-preview.js.
             "media_video_codec": self.media_video_codec,
-            # Tamano ORIGINAL (no el actual): ver rotate_media/renderChips.
-            "media_was_vertical": self.media_was_vertical,
             "media_duration": self.media_duration,
             "media_interlaced": self.media_interlaced,
             "media_thumb": self.media_thumb,
@@ -885,8 +969,8 @@ class Api:
         self.media_is_video = False
         self._cancel_preview_proxy_process()  # la del medio anterior ya no sirve para nada
         self.preview_proxy_path = None  # la del video anterior no sirve (ver _set_video)
-        self.media_size = (width, height)
-        self.media_was_vertical = False  # el boton de girar es solo para video
+        self.media_size_raw = (width, height)
+        self._reset_transform()  # foto nueva, sin el giro/espejo de la anterior
         self.media_duration = None
         self.media_interlaced = False
         self.media_thumb = _image_to_data_uri(thumb_src)
@@ -928,7 +1012,8 @@ class Api:
         self.media_is_video = True
         self._cancel_preview_proxy_process()  # la del clip anterior ya no sirve para nada
         self.preview_proxy_path = None  # la del clip anterior no sirve
-        self.media_size = None
+        self.media_size_raw = None
+        self._reset_transform()  # clip nuevo, sin el giro/espejo del anterior
         self.media_video_codec = None  # lo pone en firme _probe_video_job
         self.media_duration = None
         self.media_interlaced = False
@@ -936,24 +1021,22 @@ class Api:
         self.media_kind_text = "Video · analizando..."
         self.media_display_name = None
         self.cover_available = False
-        self.media_was_vertical = False  # lo pone en firme _probe_video_job cuando llegue el tamano real
         self._update_default_output()
         threading.Thread(target=self._probe_video_job, args=(path,), daemon=True).start()
 
     def _probe_video_job(self, path):
-        """Solo la llama _set_video, con un archivo recien cargado -- el
-        giro (_rotate_job) NO pasa por aca: transponer ya nos dice el nuevo
-        ancho/alto sin preguntarle a ffmpeg (es un intercambio exacto), y
-        si viene entrelazado/la duracion no cambian con un giro geometrico
-        puro, asi que reusarlos evita el paso mas caro de este metodo
-        (detect_interlaced decodifica hasta 200 fotogramas enteros) en
-        cada click de girar."""
+        """Solo la llama _set_video, con un archivo recien cargado. Girar o
+        espejar NO pasa por aca: no tocan el archivo (son propiedades del
+        proyecto, ver media_rotation en __init__), asi que no hay nada que
+        volver a sondear -- el ancho/alto girado sale de la propiedad
+        media_size y el paso mas caro de este metodo (detect_interlaced
+        decodifica hasta 200 fotogramas enteros) no se repite nunca."""
         info = engine.probe_media(self.ffmpeg_exe, path)
         thumb_img = engine.extract_video_thumb(self.ffmpeg_exe, path)
         interlaced = engine.detect_interlaced(self.ffmpeg_exe, path)
         if path != self.media_path or not self.media_is_video:
             return  # el usuario ya cambio de medio
-        self.media_size = info["video_size"]
+        self.media_size_raw = info["video_size"]
         self.media_video_codec = info["video_codec"]
         self.media_duration = info["duration"]
         self.media_interlaced = interlaced
@@ -961,131 +1044,64 @@ class Api:
         self.trim_end = max(0.5, float(info["duration"] or 1.0))
         if thumb_img is not None:
             self.media_thumb = _image_to_data_uri(thumb_img)
-        if info["video_size"]:
-            w, h = info["video_size"]
-            self.media_was_vertical = w < h
 
-        parts = ["Video"]
-        formatted = engine.format_duration(info["duration"])
-        if formatted:
-            parts.append(formatted)
-        if info["video_size"]:
-            parts.append(f"{info['video_size'][0]}x{info['video_size'][1]}")
-        if interlaced:
-            parts.append("entrelazado (se corregirá)")
-        self.media_kind_text = " · ".join(parts)
+        self._refresh_media_kind_text()
         self._notify_state_changed()
         self._maybe_start_preview_proxy(path)
 
-    def rotate_media(self):
-        """Gira el video actual 90 grados en sentido horario. Solo tiene
-        sentido con video que ORIGINALMENTE era vertical (la UI ya lo
-        esconde con uno que nunca lo fue, ver renderChips en app.js) --
-        pero se valida aca tambien por si acaso, no solo confiar en que el
-        boton este escondido. Se chequea media_was_vertical, NO el tamano
-        actual: un video que llega girado 180/270 (no solo 90) necesita
-        mas de un click, y en el medio del ciclo el archivo esta
-        horizontal un rato -- si se chequeara el tamano actual, el primer
-        click ya lo hubiera bloqueado."""
-        if not self.media_path or not self.media_is_video:
-            return {"ok": False, "error": "No hay video cargado"}
-        if self._rotating:
-            return {"ok": False, "error": "Ya se esta girando el video"}
-        if not self.media_was_vertical:
-            return {"ok": False, "error": "Solo se puede girar video vertical"}
-        self._rotating = True
-        self.media_kind_text = "Video · girando..."
-        self._notify_state_changed()
-        threading.Thread(target=self._rotate_job, args=(self.media_path,), daemon=True).start()
-        return {"ok": True, "state": self.get_state()}
-
-    def _rotate_job(self, src):
-        self._rotate_counter += 1
-        temp_path = os.path.join(tempfile.gettempdir(), f"genvideo_rotate_{self._rotate_counter}.mp4")
-        cmd = engine.build_rotate_command(self.ffmpeg_exe, src, temp_path)
-        try:
-            result = subprocess.run(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, creationflags=engine.CREATE_NO_WINDOW,
-            )
-        except Exception as exc:
-            result = None
-            error_text = str(exc)
-        else:
-            error_text = result.stdout if result.returncode != 0 else None
-
-        if src != self.media_path:
-            # El usuario cambio/quito el medio mientras giraba -- este
-            # resultado ya no sirve para nada, ni vale la pena avisar error.
-            self._rotating = False
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
+    def _refresh_media_kind_text(self):
+        """Rehace el rotulo del chip ("Video · 3:11 · 1920x1080" / "Imagen ·
+        800x500"). Se llama al girar: el tamano que muestra es el EFECTIVO
+        (media_size), asi que un giro lo da vuelta."""
+        if not self.media_path:
+            self.media_kind_text = None
             return
-
-        self._rotating = False
-        if error_text is not None:
-            self.media_kind_text = "Video · no se pudo girar"
-            self._notify_state_changed()
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
+        size = self.media_size
+        if not self.media_is_video:
+            if size:
+                self.media_kind_text = f"Imagen · {size[0]}x{size[1]}"
             return
-
-        # NUNCA se borra `src`: puede ser el archivo original del usuario
-        # (arrastrado desde su disco), no algo que la app haya creado. Lo
-        # unico que se limpia es el giro anterior, que si es siempre un
-        # temporal propio (ver _last_rotated_path arriba).
-        viejo = self._last_rotated_path
-        self._last_rotated_path = temp_path
-        self.media_path = temp_path
-
-        # Actualizacion LIVIANA en vez de _probe_video_job: transponer 90
-        # intercambia ancho/alto de forma exacta (no hace falta volver a
-        # preguntarle a ffmpeg algo que ya sabemos), y la duracion y si
-        # viene entrelazado tampoco cambian con un giro geometrico puro --
-        # se mantienen los que ya se habian medido. Sin esto cada click
-        # disparaba ffprobe + detect_interlaced (hasta 200 fotogramas
-        # decodificados) + la miniatura, tres pasadas de ffmpeg para un
-        # click que el usuario quiere ver al instante.
-        if self.media_size:
-            w, h = self.media_size
-            self.media_size = (h, w)
-        # build_rotate_command siempre saca h264 (VIDEO_QUALITY_ARGS), sea cual
-        # sea el codec de entrada -- si el original forzaba una copia liviana
-        # por codec caro (VP9/AV1), este resultado ya no la necesita por eso.
-        self.media_video_codec = "h264"
-        # La copia liviana del video ANTERIOR (si el codec de entrada la
-        # forzaba) apunta a un archivo que ya no corresponde a este media_path
-        # nuevo -- sin este reset, get_state() seguia devolviendo esa ruta
-        # vieja en preview_path (preview_proxy_path or media_path), y el
-        # previsualizador (que arranca por preview_path, ver applyState en
-        # live-preview.js) se quedaba mostrando el cuadro de antes de girar.
-        self._cancel_preview_proxy_process()  # la del original ya no corresponde a este giro
-        self.preview_proxy_path = None
-        thumb_img = engine.extract_video_thumb(self.ffmpeg_exe, temp_path)
-        if thumb_img is not None:
-            self.media_thumb = _image_to_data_uri(thumb_img)
-
         parts = ["Video"]
         formatted = engine.format_duration(self.media_duration)
         if formatted:
             parts.append(formatted)
-        if self.media_size:
-            parts.append(f"{self.media_size[0]}x{self.media_size[1]}")
+        if size:
+            parts.append(f"{size[0]}x{size[1]}")
         if self.media_interlaced:
             parts.append("entrelazado (se corregirá)")
         self.media_kind_text = " · ".join(parts)
-        self._notify_state_changed()
-        self._maybe_start_preview_proxy(temp_path)
 
-        if viejo:
-            try:
-                os.remove(viejo)
-            except OSError:
-                pass
+    def _refresh_focus_preview(self):
+        """Miniatura del canvas de "Ajustar imagen", CON el giro/espejo
+        puestos -- ahi se elige el encuadre, asi que tiene que mostrar la
+        foto como va a quedar. Solo aplica a fotos (con video no hay
+        "Ajustar imagen", ver show_focus en get_state)."""
+        if not self.media_path or self.media_is_video:
+            return
+        try:
+            with Image.open(self.media_path) as img:
+                vista = self._apply_transform_pil(img)
+            vista.thumbnail((FOCUS_PICKER_W, FOCUS_PICKER_H), Image.LANCZOS)
+            self.media_focus_preview = _image_to_data_uri(vista)
+        except Exception:
+            pass  # se queda con la miniatura anterior, no vale tirar el estado
+
+    def _apply_transform_pil(self, img):
+        """El mismo giro/espejo que build_transform_filters hace en ffmpeg y
+        dibujarMedio en el lienzo, pero con PIL -- para las miniaturas y
+        para la portada. MISMO orden: primero girar, despues espejar."""
+        out = img
+        if self.media_rotation == 90:
+            out = out.transpose(Image.Transpose.ROTATE_270)   # PIL rota antihorario
+        elif self.media_rotation == 180:
+            out = out.transpose(Image.Transpose.ROTATE_180)
+        elif self.media_rotation == 270:
+            out = out.transpose(Image.Transpose.ROTATE_90)
+        if self.media_flip_h:
+            out = out.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+        if self.media_flip_v:
+            out = out.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+        return out
 
     # ------------------------------------------ copia liviana para el preview
 
@@ -1099,7 +1115,9 @@ class Api:
         recomprimir)."""
         if not self.media_size:
             return
-        destino = engine.preview_proxy_size(self.media_size, self.media_video_codec)
+        # El tamano CRUDO: la copia se hace sobre el archivo tal cual esta en
+        # disco (sin girar), y el giro lo pone el lienzo al dibujarla.
+        destino = engine.preview_proxy_size(self.media_size_raw, self.media_video_codec)
         if not destino:
             return
         threading.Thread(target=self._preview_proxy_job, args=(path, destino),
@@ -1274,9 +1292,9 @@ class Api:
         self._invalidate_loop_preview()
         self.media_path = None
         self.media_is_video = False
-        self.media_size = None
+        self.media_size_raw = None
+        self._reset_transform()
         self.media_video_codec = None
-        self.media_was_vertical = False
         self.media_duration = None
         self.media_interlaced = False
         self.media_thumb = None
@@ -1292,7 +1310,7 @@ class Api:
 
     # -------------------------------------------------------- ajustar imagen
 
-    CROP_MODES = ("cuadrado", "vertical")
+    CROP_MODES = ("cuadrado", "vertical", "completa")
 
     def _centered_rect(self, mode):
         """El recuadro con que arranca cada corte, centrado en la foto.
@@ -1349,6 +1367,17 @@ class Api:
         if self.media_is_video or not self.media_path:
             return None
         return tuple(self.crop_rect)
+
+    def current_crop_fit(self):
+        """True = "contain" (build_filtergraph), la foto entra completa y el
+        sobrante se rellena de negro -- el modo "Completa" del recorte.
+        False = "cover" (de siempre), amplia hasta cubrir la caja y recorta
+        el sobrante -- "Cuadrado" y "Vertical" comparten esta, que es la
+        unica manera de tener un recuadro EXACTO (Cuadrado) o de que
+        "Vertical" no deje franjas vacias cuando la caja calza con la
+        proporcion de la foto (el caso de siempre, con Bordes en 100%).
+        Video no tiene "Ajustar imagen" -- nunca contrae."""
+        return not self.media_is_video and self.crop_mode == "completa"
 
     def current_crop_aspect(self):
         """Proporcion ancho/alto del recuadro EN PIXELES del original, que es
@@ -1687,7 +1716,8 @@ class Api:
             idx += 1
         fc = engine.build_filtergraph(
             layout, is_video=False, tpl_idx=tpl_idx, textures=tex_layers,
-            focus=self.current_crop(),
+            focus=self.current_crop(), transform=self._transform_filters(),
+            contain=self.current_crop_fit(),
         )
         self._preview_counter += 1
         png = os.path.join(tempfile.gettempdir(), f"genvideo_preview_{self._preview_counter}.png")
@@ -1888,7 +1918,8 @@ class Api:
             idx += 1
         fc = engine.build_filtergraph(
             layout, is_video=False, tpl_idx=tpl_idx, textures=tex_layers,
-            focus=focus,
+            focus=focus, transform=self._transform_filters(),
+            contain=self.current_crop_fit(),
         )
 
         outputs = []  # (etiqueta del filtro, ruta de salida)
@@ -1942,7 +1973,15 @@ class Api:
         inner = (sc(layout["inner"][0]), sc(layout["inner"][1]))
         canvas = (sc(layout["canvas"][0]), sc(layout["canvas"][1]))
         pos = (sc(layout["pos"][0]), sc(layout["pos"][1])) if layout["pos"] else None
-        return {"mode": layout["mode"], "inner": inner, "canvas": canvas, "pos": pos}
+        # "natural" tambien: es un tamano en pixeles del lienzo (ver
+        # build_layout), asi que a media resolucion tiene que encogerse
+        # igual que el resto o el modo "Completa" compondria con la foto a
+        # tamano completo dentro de una ventana a la mitad.
+        nat = layout.get("natural")
+        escalado = {"mode": layout["mode"], "inner": inner, "canvas": canvas, "pos": pos}
+        if nat:
+            escalado["natural"] = (sc(nat[0]), sc(nat[1]))
+        return escalado
 
     def request_loop_preview(self):
         """Compone SOLO la unidad del loop -- exactamente la FASE 1 de la
@@ -2003,6 +2042,7 @@ class Api:
             trim=self._effective_trim(), speed=speed, deinterlace=self.media_interlaced,
             template_path=self.template_path, textures=textures, fast=True,
             encoder="h264_nvenc" if use_nvenc else "libx264",
+            transform=self._transform_filters(),
         )
 
     def _loop_preview_job(self, token, layout, temp_path, content_width_frac, speed,
@@ -2164,6 +2204,7 @@ class Api:
                         self.ffmpeg_exe, self.media_path, temp_unit, layout,
                         trim=trim, speed=speed, deinterlace=self.media_interlaced,
                         template_path=template_path, textures=textures,
+                        transform=self._transform_filters(),
                     ),
                     unit_duration,
                 )
@@ -2193,23 +2234,74 @@ class Api:
                     if returncode == 0 or self.cancel_requested:
                         break
             elif any(t[3] is not None for t in textures):
-                # Imagen fija pero con una textura de VIDEO encima: el
-                # fotograma cambia todo el tiempo, asi que NO se puede repetir
-                # por copia -- se encodea de punta a punta, a 30 fps (ver
-                # build_command). Es el unico caso de imagen que sigue lento.
-                self._push_status(f"Generando video a {width}x{height}{tpl_note}...")
-                returncode = -1
-                for strategy in strategies:
-                    audio_args = engine.audio_strategy_args(strategy, info["sample_rate"], self.audio_peak_db)
-                    cmd = engine.build_command(
-                        self.ffmpeg_exe, self.media_path,
-                        self.audio_path, self.output_path, duration, audio_args,
-                        layout, template_path=template_path, textures=textures,
-                        focus=self.current_crop(),
+                # Imagen fija con una textura de VIDEO encima. El fotograma
+                # cambia (lo mueve la textura), pero se REPITE cada vuelta de
+                # la textura, porque la foto no cambia nunca -- asi que se
+                # puede componer UNA vuelta y repetirla por copia directa,
+                # igual que un clip de video, en vez de encodear el beat de
+                # punta a punta. Medido: 103s -> 5.8s en un beat de 3:00 a
+                # 2560x1440, mismo peso y PSNR 51 dB contra el resultado de
+                # una pasada (ver build_texture_unit_command).
+                #
+                # real_unit queda en None cuando esa vuelta no se puede usar
+                # (mas de una textura de video, o no se pudo leer el largo de
+                # la unidad) -- ahi se cae al camino de una pasada de siempre,
+                # que no necesita saber ningun largo.
+                real_unit = None
+                if engine.texture_unit_is_possible(textures):
+                    temp_unit = os.path.join(tempfile.gettempdir(), f"genvideo_tex_{gen_id}.mp4")
+                    # El largo de la unidad lo decide la textura (ver
+                    # build_texture_unit_command) -- se sondea solo para que la
+                    # barra se mueva en esta fase. Es una ESTIMACION nomas: el
+                    # largo que vale es el del archivo escrito, mas abajo.
+                    tex_video = next(t[0] for t in textures if t[3] is not None)
+                    unit_estimate = engine.probe_media(self.ffmpeg_exe, tex_video)["duration"]
+                    self._push_status(f"Componiendo la imagen a {width}x{height}{tpl_note}...")
+                    returncode = self._run_ffmpeg(
+                        engine.build_texture_unit_command(
+                            self.ffmpeg_exe, self.media_path, temp_unit, layout,
+                            template_path=template_path, textures=textures,
+                            focus=self.current_crop(), transform=self._transform_filters(),
+                            contain=self.current_crop_fit(),
+                        ),
+                        unit_estimate,
                     )
-                    returncode = self._run_ffmpeg(cmd, duration)
-                    if returncode == 0 or self.cancel_requested:
-                        break
+                    if self.cancel_requested or returncode != 0:
+                        self._on_job_done(returncode)
+                        return
+                    # El largo real sale del archivo ya escrito, igual que en
+                    # los otros dos caminos de fase 1.
+                    real_unit = engine.probe_media(self.ffmpeg_exe, temp_unit)["duration"]
+
+                returncode = -1
+                if real_unit:
+                    repeats = max(1, math.ceil(duration / real_unit) + 1) if duration else 1
+                    temp_list = os.path.join(tempfile.gettempdir(), f"genvideo_concat_{gen_id}.txt")
+                    engine.write_concat_list(temp_unit, repeats, temp_list)
+                    self._push_status("Generando video (imagen + beat)...")
+                    for strategy in strategies:
+                        audio_args = engine.audio_strategy_args(strategy, info["sample_rate"], self.audio_peak_db)
+                        cmd = engine.build_mux_command(
+                            self.ffmpeg_exe, temp_list, self.audio_path,
+                            self.output_path, duration, audio_args,
+                        )
+                        returncode = self._run_ffmpeg(cmd, duration)
+                        if returncode == 0 or self.cancel_requested:
+                            break
+                else:
+                    self._push_status(f"Generando video a {width}x{height}{tpl_note}...")
+                    for strategy in strategies:
+                        audio_args = engine.audio_strategy_args(strategy, info["sample_rate"], self.audio_peak_db)
+                        cmd = engine.build_command(
+                            self.ffmpeg_exe, self.media_path,
+                            self.audio_path, self.output_path, duration, audio_args,
+                            layout, template_path=template_path, textures=textures,
+                            focus=self.current_crop(), transform=self._transform_filters(),
+                            contain=self.current_crop_fit(),
+                        )
+                        returncode = self._run_ffmpeg(cmd, duration)
+                        if returncode == 0 or self.cancel_requested:
+                            break
             else:
                 # Imagen quieta: mismo truco que un clip de video -- se compone
                 # UNA unidad corta y la fase 2 la repite por copia directa.
@@ -2223,7 +2315,8 @@ class Api:
                     engine.build_still_unit_command(
                         self.ffmpeg_exe, self.media_path, temp_unit, layout, unit_seconds,
                         template_path=template_path, textures=textures,
-                        focus=self.current_crop(),
+                        focus=self.current_crop(), transform=self._transform_filters(),
+                        contain=self.current_crop_fit(),
                     ),
                     unit_seconds,
                 )

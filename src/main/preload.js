@@ -35,6 +35,9 @@ contextBridge.exposeInMainWorld("api", {
   onPreviewResizeSettled: (callback) => {
     ipcRenderer.on("preview-resize-settled", () => callback());
   },
+  // Cualquier archivo de audio en renderer/sfx/, el mas nuevo por fecha de
+  // modificacion -- ver sfx-export-done-candidate en main.js.
+  getSfxExportDoneCandidate: () => ipcRenderer.invoke("sfx-export-done-candidate"),
   showPreviewWindow: (dataUri) => ipcRenderer.invoke("preview-show", dataUri),
   showPreviewVideo: (src) => ipcRenderer.invoke("preview-show-video", src),
   hidePreviewWindow: () => ipcRenderer.invoke("preview-hide"),

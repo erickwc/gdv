@@ -526,6 +526,41 @@ function registerIpcHandlers() {
   ipcMain.handle("preview-hide", () => {
     previewWindow.hidePreview(previewWin);
   });
+
+  // Sonido de "exportacion lista" (ver playExportDoneSound en app.js):
+  // cualquier archivo de audio que haya en renderer/sfx/, SIN pedirle un
+  // nombre exacto -- pedido explicito, para poder ir probando sonidos
+  // nuevos con solo arrastrarlos a la carpeta, sin renombrar nada. La
+  // primera version pedia un nombre fijo ("export-done.<extension>") y el
+  // usuario probo con un archivo con otro nombre (faaah.mp3): no sonaba
+  // nada, sin avisar por que.
+  //
+  // El renderer no puede leer el directorio por su cuenta: fetch/XHR sobre
+  // file:// no lista carpetas de forma confiable en Chromium, asi que el
+  // listado lo hace el proceso principal, que si tiene fs entero.
+  //
+  // El MAS NUEVO por fecha de modificacion, no el primero alfabetico: asi
+  // el usuario puede dejar variantes viejas en la carpeta sin borrarlas y
+  // el ultimo archivo que solto es siempre el que se prueba.
+  const SFX_DIR = path.join(__dirname, "..", "renderer", "sfx");
+  const SFX_EXTS = new Set([".wav", ".mp3", ".ogg", ".m4a", ".flac", ".aac", ".opus"]);
+  ipcMain.handle("sfx-export-done-candidate", () => {
+    let nombres;
+    try {
+      nombres = fs.readdirSync(SFX_DIR);
+    } catch (e) {
+      return { ok: false };
+    }
+    const candidatos = nombres
+      .filter((n) => SFX_EXTS.has(path.extname(n).toLowerCase()))
+      .map((n) => {
+        let mtime = 0;
+        try { mtime = fs.statSync(path.join(SFX_DIR, n)).mtimeMs; } catch (e) { /* se descarta abajo si no hay stat */ }
+        return { nombre: n, mtime };
+      })
+      .sort((a, b) => b.mtime - a.mtime);
+    return candidatos.length ? { ok: true, filename: candidatos[0].nombre } : { ok: false };
+  });
 }
 
 app.whenReady().then(async () => {

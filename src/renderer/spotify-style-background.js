@@ -117,19 +117,63 @@ function extractPalette(source, count) {
   const util = orden.filter((i) => binWeight[i] > 0);
   if (!util.length) return null; // imagen sin color util (todo negro/blanco, por ejemplo)
 
-  const colores = [];
-  for (let i = 0; i < count; i++) {
-    // Menos casilleros con color que manchones que pintar (foto casi
-    // monocroma): se reusan los mejores en vez de dejar manchones grises,
-    // el fondo se ve mas vivo con la misma paleta repetida que apagandose.
-    const bin = util[i % util.length];
-    const w = binWeight[bin];
-    colores.push([
-      Math.round(binR[bin] / w),
-      Math.round(binG[bin] / w),
-      Math.round(binB[bin] / w),
-    ]);
+  // Cuanto peso tiene que juntar un matiz para MERECER un manchon propio.
+  // Antes bastaba con aparecer (binWeight > 0) y los manchones se repartian
+  // uno por matiz con "util[i % util.length]" -- o sea que el 1er, 2do, 3er y
+  // 4to matiz se llevaban un manchon cada uno, sin importar si el 2do era la
+  // mitad de la portada o cuatro pixeles perdidos.
+  //
+  // Medido con una portada 97.6% roja que tenia un detalle verde chico
+  // (150x150 sobre 1000x1000): el rojo se llevaba UN manchon y el verde --1.9%
+  // del peso-- se llevaba OTRO, o sea el 25% del fondo, empatado con el
+  // dominante. Encima el saturate(2.2) de .spotify-bg-layer lo dejaba
+  // fluorescente: es el "verde muy intenso que no existe en la portada" que se
+  // reporto. Con este umbral ese verde (y el lima del 0.3%, y el naranja del
+  // 0.1%) quedan afuera y los 4 manchones se los queda el rojo.
+  const MIN_SHARE = 0.06;
+  const pesoTotal = util.reduce((suma, i) => suma + binWeight[i], 0);
+  const dominantes = util.filter((i) => binWeight[i] >= pesoTotal * MIN_SHARE);
+  // util[0] es el mas pesado de todos, asi que siempre pasa el umbral -- pero
+  // por si el redondeo deja la lista vacia, se garantiza el dominante.
+  if (!dominantes.length) dominantes.push(util[0]);
+
+  // Cuantos manchones le toca a cada matiz, PROPORCIONAL a su peso (metodo del
+  // resto mayor). Asi una portada con un rojo dominante y un azul secundario
+  // sale mayormente roja con un acento azul, como en Spotify, en vez de mitad
+  // y mitad. Con un solo matiz dominante se lleva los 4, que es justo lo que
+  // hace que el fondo se lea como "el color de la portada".
+  const pesoDom = dominantes.map((i) => binWeight[i]);
+  const sumaDom = pesoDom.reduce((a, b) => a + b, 0);
+  const exacto = pesoDom.map((w) => (count * w) / sumaDom);
+  const cupos = exacto.map(Math.floor);
+  let sobran = count - cupos.reduce((a, b) => a + b, 0);
+  // Los que quedaron con la fraccion mas alta se llevan los manchones que
+  // sobran del redondeo hacia abajo.
+  const porResto = exacto
+    .map((e, k) => [k, e - Math.floor(e)])
+    .sort((a, b) => b[1] - a[1]);
+  for (let p = 0; sobran > 0; p = (p + 1) % porResto.length, sobran--) {
+    cupos[porResto[p][0]]++;
   }
+
+  // Profundidad: el mismo matiz repetido en 4 manchones identicos se ve como
+  // un lavado plano de un solo color de borde a borde (lo que se reporto como
+  // "parece una imagen de colores desenfocada"). Bajandole la intensidad a
+  // unos y no a otros, los manchones se leen como MASAS distintas -- que es lo
+  // que hace el fondo de Spotify incluso con una portada de un solo color.
+  // Solo hacia abajo (nunca >1): con mix-blend-mode:screen subir el brillo
+  // empuja la suma hacia el blanco y se lava.
+  const PROFUNDIDAD = [1, 0.85, 0.7, 0.55];
+
+  const colores = [];
+  dominantes.forEach((bin, k) => {
+    const w = binWeight[bin];
+    const base = [binR[bin] / w, binG[bin] / w, binB[bin] / w];
+    for (let n = 0; n < cupos[k]; n++) {
+      const f = PROFUNDIDAD[colores.length % PROFUNDIDAD.length];
+      colores.push(base.map((v) => Math.round(v * f)));
+    }
+  });
   return colores;
 }
 
@@ -160,6 +204,15 @@ function crearManchones(container) {
     capa.appendChild(el);
     blobs.push(el);
   }
+  // Velo oscuro ENCIMA de los manchones (ultimo hijo = mas arriba, y sin
+  // mix-blend-mode para que oscurezca de verdad en vez de sumarse como hacen
+  // los manchones). Sin esto el color llegaba con la misma intensidad a los
+  // cuatro bordes y el fondo se leia como una foto desenfocada y plana; el
+  // gradiente le da el arriba-claro/abajo-oscuro que hace que se sienta
+  // profundo, y de paso levanta el contraste del texto del panel.
+  const velo = document.createElement("div");
+  velo.className = "spotify-bg-overlay";
+  capa.appendChild(velo);
   container.appendChild(capa);
   return { blobs, piso };
 }
@@ -225,6 +278,15 @@ function iniciarAnimacionPosicion(blobs) {
 // mas dominante, el 2do el que sigue, etc.), asi que no hace falta el camino
 // corto del circulo de matices -- ir derecho de un RGB a otro alcanza.
 const LERP_FACTOR = 0.08;
+// Para VIDEO (ver window.setSpotifyBackgroundImage, mas abajo): mismo pedido
+// que AMBILIGHT_FACTOR_VIDEO en live-preview.js -- un corte de escena se
+// sentia como un salto de color en vez de una transicion. Esto corre por su
+// propio requestAnimationFrame (60/s) y no por el muestreo del ambilight
+// (8/s), asi que con LERP_FACTOR normal convergia en menos de medio segundo;
+// un factor mas chico hace que tarde varios segundos. Una foto es un cuadro
+// fijo (sin cortes que suavizar), asi que sigue con LERP_FACTOR de siempre.
+const LERP_FACTOR_VIDEO = 0.02;
+let lerpFactorActual = LERP_FACTOR;
 // Ver NEUTRAL_ASSIGNMENT mas arriba (el oscuro mas abundante que el azul).
 let colorActual = Array.from({ length: BLOB_COUNT }, (_, i) => hexToRgb(NEUTRAL_PALETTE[NEUTRAL_ASSIGNMENT[i]]));
 let colorObjetivo = colorActual.map((c) => c.slice());
@@ -244,7 +306,7 @@ function iniciarAnimacionColor(blobs, piso) {
     const rgbs = [];
     for (let i = 0; i < blobs.length; i++) {
       const actual = colorActual[i], obj = colorObjetivo[i];
-      for (let k = 0; k < 3; k++) actual[k] += (obj[k] - actual[k]) * LERP_FACTOR;
+      for (let k = 0; k < 3; k++) actual[k] += (obj[k] - actual[k]) * lerpFactorActual;
       // 0-38% solido y no 0%: un radial-gradient que empieza a apagarse
       // desde el mismo centro se ve como un punto tenue una vez desenfocado
       // (18vmin de blur, ver .spotify-bg-blob en styles.css) -- sosteniendo
@@ -289,12 +351,14 @@ if (document.readyState === "loading") {
 }
 
 // source: <img>/<video>/<canvas> ya cargado, o null (sin medio -- vuelve a
-// la paleta de reposo). Llamado desde app.js (fotograma estatico, y al
-// quitar el medio) y live-preview.js (arrancarAmbilight, mientras el video
-// esta reproduciendo) -- los mismos 3 lugares que ya alimentan a
-// background-tint.js y halftone-background.js.
-window.setSpotifyBackgroundImage = function (source) {
+// la paleta de reposo). esVideo: ver LERP_FACTOR_VIDEO arriba -- solo lo
+// manda live-preview.js (arrancarAmbilight, el unico llamador que sabe si la
+// fuente es un video reproduciendose); los otros dos llamadores (app.js,
+// fotograma estatico y "sin medio") ni lo pasan, asi que siguen con el
+// LERP_FACTOR de siempre.
+window.setSpotifyBackgroundImage = function (source, esVideo) {
   if (!blobs) return; // el DOM todavia no cargo (llamado muy temprano)
+  lerpFactorActual = esVideo ? LERP_FACTOR_VIDEO : LERP_FACTOR;
   const paleta = source && extractPalette(source, BLOB_COUNT);
   // Ver NEUTRAL_ASSIGNMENT mas arriba (el oscuro mas abundante que el azul,
   // SOLO en reposo -- con medio cargado va por extractPalette, arriba).

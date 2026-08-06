@@ -220,21 +220,37 @@ def build_preview_proxy_command(ffmpeg_exe, media_path, temp_path, size):
     ]
 
 
-def build_rotate_command(ffmpeg_exe, media_path, temp_path):
-    """Gira el video 90 grados en sentido horario (transpose=1) -- corrige
-    clips que llegan de costado (celular horizontal grabando un video
-    pensado en vertical, tipico en descargas de Pinterest). Solo el video
-    se recodifica con la misma calidad que la exportacion final
-    (VIDEO_QUALITY_ARGS); el audio se copia tal cual porque transpose no lo
-    toca."""
-    return [
-        ffmpeg_exe, "-y", "-i", media_path,
-        "-vf", "transpose=1",
-        "-c:v", "libx264", *VIDEO_QUALITY_ARGS,
-        "-pix_fmt", "yuv420p",
-        "-c:a", "copy",
-        temp_path,
-    ]
+def build_transform_filters(rotation=0, flip_h=False, flip_v=False):
+    """Giro/espejo del medio, como PREFIJO de la cadena de filtros (termina
+    en coma, o es "" si no hay nada que hacer).
+
+    NO existe un "girar el archivo": girar y espejar son propiedades del
+    proyecto (media_rotation/media_flip_h/media_flip_v en api.py), igual
+    que en Photoshop o Canva. El previsualizador las aplica al dibujar
+    (dibujarMedio en live-preview.js) y aca se hornean en la exportacion,
+    que ya recodifica de todas formas -- asi el click es instantaneo en vez
+    de esperar una pasada entera de ffmpeg sobre el clip.
+
+    Va PRIMERO en la cadena a proposito: todo lo que sigue (el recorte de
+    "Ajustar imagen", la escala, el pad) queda expresado sobre el fotograma
+    YA girado, que es exactamente el que ve el usuario. Por eso crop_rect se
+    guarda en coordenadas del fotograma girado y no hay que convertir nada.
+
+    El orden es girar y DESPUES espejar -- el mismo que replica el lienzo
+    del previsualizador (ver dibujarMedio), asi los dos coinciden."""
+    partes = []
+    rotation = int(rotation) % 360
+    if rotation == 90:
+        partes.append("transpose=1")   # 90 en sentido horario
+    elif rotation == 180:
+        partes.append("transpose=1,transpose=1")
+    elif rotation == 270:
+        partes.append("transpose=2")   # 90 en sentido antihorario
+    if flip_h:
+        partes.append("hflip")
+    if flip_v:
+        partes.append("vflip")
+    return ",".join(partes) + "," if partes else ""
 
 
 # ---------------------------------------------------- copia liviana del beat
@@ -533,8 +549,18 @@ def build_layout(media_size, is_video, scale_pct, template_box, crop_aspect=1.0)
         natural_w = MAX_HEIGHT * max(0.01, crop_aspect)
         scale_factor = max(0.01, scale_pct / 100)
         inner_w = max(2, min(MAX_WIDTH, int(natural_w * scale_factor)) // 2 * 2)
+        # "natural": el medio lo mas grande que entra ENTERO en el lienzo,
+        # sin que el control de bordes lo toque. Solo lo usa el modo
+        # "Completa" (contain=True en build_filtergraph): ahi el medio se
+        # dibuja SIEMPRE de este tamano y el control de bordes solo abre o
+        # cierra la ventana que lo deja ver -- el borde se pone ENCIMA en vez
+        # de achicar la foto. En los otros dos cortes no se usa: ahi el medio
+        # se estira para cubrir la ventana, que es lo de siempre.
+        cabe = min(MAX_WIDTH / natural_w, 1.0)
+        nat = (max(2, int(natural_w * cabe) // 2 * 2),
+               max(2, int(natural_h * cabe) // 2 * 2))
         layout = {"mode": "bordered", "inner": (inner_w, natural_h),
-                  "canvas": (MAX_WIDTH, MAX_HEIGHT), "pos": None}
+                  "canvas": (MAX_WIDTH, MAX_HEIGHT), "pos": None, "natural": nat}
     return layout, layout["canvas"][0], layout["canvas"][1]
 
 
@@ -588,7 +614,8 @@ def content_box(layout):
 
 
 def build_filtergraph(layout, is_video=False, speed=1.0, deinterlace=False,
-                      tpl_idx=None, textures=None, focus=None):
+                      tpl_idx=None, textures=None, focus=None, transform="",
+                      contain=False):
     """Arma el filter_complex completo: medio (des-entrelazado + velocidad +
     ajuste manual de encuadre + escala/recorte/bordes) -> texturas mezcladas
     encima (una sobre otra, en el orden de la lista) -> plantilla encima.
@@ -612,13 +639,51 @@ def build_filtergraph(layout, is_video=False, speed=1.0, deinterlace=False,
             chain += f"setpts=(PTS-STARTPTS)/{speed:g},"
         else:
             chain += "setpts=PTS-STARTPTS,"
+    # Giro/espejo ANTES que nada de geometria (ver build_transform_filters):
+    # el recorte y la escala de mas abajo hablan del fotograma ya girado.
+    # Despues del yadif, eso si: el entrelazado es una propiedad del barrido
+    # ORIGINAL, y des-entrelazar un fotograma ya rotado no tendria sentido.
+    chain += transform or ""
     if focus is not None:
         chain += build_focus_crop(focus)
-    # Escala/recorta al tamano REAL de la foto (inner_w x inner_h) sin
-    # rellenar todavia -- el pad (bordes negros) se agrega DESPUES de
-    # mezclar la textura, para que la textura solo caiga sobre la foto y
-    # nunca sobre el borde negro.
-    chain += f"scale={inner_w}:{inner_h}:force_original_aspect_ratio=increase:force_divisible_by=2,crop={inner_w}:{inner_h}"
+    # Escala al tamano REAL de la foto (inner_w x inner_h) sin rellenar
+    # todavia contra el LIENZO -- el pad de mas abajo (bordes negros) se
+    # agrega DESPUES de mezclar la textura, para que la textura solo caiga
+    # sobre la foto y nunca sobre el borde negro.
+    #
+    # "cover" (de siempre): amplia hasta CUBRIR inner_w x inner_h y recorta
+    # el sobrante -- ninguna franja vacia, pero si la caja no calza con la
+    # proporcion de la foto (el control de Bordes la angosta o la ensancha)
+    # se empieza a perder un poco de los costados o de arriba/abajo.
+    #
+    # "contain" (modo "Completa" del recorte, ver current_crop_fit en
+    # api.py): el medio NUNCA se estira para llenar la ventana.
+    #
+    # Con bordes (layout["natural"], el caso normal) se dibuja siempre del
+    # mismo tamano -- el mas grande que entra entero en el LIENZO -- y el
+    # control de bordes solo abre o cierra la ventana que lo deja ver: el
+    # borde tapa la foto por encima en vez de achicarla. Pedido explicito:
+    # antes el control la encogia (entraba entera igual, pero quedaba chica
+    # y con margen disparejo) y se leia como un error.
+    #
+    # Con plantilla no hay control de bordes (show_scale es false, ver
+    # get_state), asi que la ventana ES el hueco de la plantilla y lo que
+    # corresponde es que el medio entre entero ahi adentro.
+    if contain and layout.get("natural"):
+        nat_w, nat_h = layout["natural"]
+        chain += f"scale={nat_w}:{nat_h}"
+        # Recorta lo que la ventana deje afuera (borde por debajo del 100%)...
+        vis_w, vis_h = min(inner_w, nat_w), min(inner_h, nat_h)
+        if vis_w < nat_w or vis_h < nat_h:
+            chain += f",crop={vis_w}:{vis_h}:{(nat_w - vis_w) // 2}:{(nat_h - vis_h) // 2}"
+        # ...y rellena de negro si la ventana es mas grande que el medio.
+        if vis_w < inner_w or vis_h < inner_h:
+            chain += f",pad={inner_w}:{inner_h}:(ow-iw)/2:(oh-ih)/2:color=black"
+    elif contain:
+        chain += (f"scale={inner_w}:{inner_h}:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+                  f"pad={inner_w}:{inner_h}:(ow-iw)/2:(oh-ih)/2:color=black")
+    else:
+        chain += f"scale={inner_w}:{inner_h}:force_original_aspect_ratio=increase:force_divisible_by=2,crop={inner_w}:{inner_h}"
     if layout["mode"] == "bordered":
         # inner_h es siempre el alto natural de la foto (nunca cambia), asi
         # que "cubrir" inner_w x inner_h solo recorta ANCHO cuando el control
@@ -719,7 +784,8 @@ def build_filtergraph(layout, is_video=False, speed=1.0, deinterlace=False,
 
 
 def build_command(ffmpeg_exe, media_path, audio_path, output_path, duration, audio_args,
-                  layout, template_path=None, textures=None, focus=None):
+                  layout, template_path=None, textures=None, focus=None, transform="",
+                  contain=False):
     """Pasada unica para imagenes fijas (el video es barato a 10 fps)."""
     # Con una textura de VIDEO encima, la imagen deja de ser un fotograma
     # quieto: el conjunto tiene que correr a 30 fps o la textura avanzaria un
@@ -748,6 +814,7 @@ def build_command(ffmpeg_exe, media_path, audio_path, output_path, duration, aud
         idx += 1
     fc = build_filtergraph(
         layout, is_video=False, tpl_idx=tpl_idx, textures=tex_layers, focus=focus,
+        transform=transform, contain=contain,
     )
     cmd += [
         "-filter_complex", fc, "-map", "[vout]", "-map", "1:a:0",
@@ -799,7 +866,8 @@ STILL_FPS = 10
 
 
 def build_still_unit_command(ffmpeg_exe, media_path, temp_path, layout, seconds,
-                             template_path=None, textures=None, focus=None):
+                             template_path=None, textures=None, focus=None, transform="",
+                             contain=False):
     """FASE 1 para imagenes fijas: compone una unidad corta
     (STILL_UNIT_SECONDS) en un mp4 sin audio, con GOP cerrado y un solo
     fotograma-clave, lista para que la fase 2 la repita por copia directa
@@ -818,6 +886,7 @@ def build_still_unit_command(ffmpeg_exe, media_path, temp_path, layout, seconds,
         idx += 1
     fc = build_filtergraph(
         layout, is_video=False, tpl_idx=tpl_idx, textures=tex_layers, focus=focus,
+        transform=transform, contain=contain,
     )
     # Un unico fotograma-clave por unidad: el GOP acompana a la unidad, asi
     # que el video final termina con uno cada STILL_UNIT_SECONDS.
@@ -838,9 +907,102 @@ def build_still_unit_command(ffmpeg_exe, media_path, temp_path, layout, seconds,
     return cmd
 
 
+# Fotogramas por segundo de la unidad de imagen + textura de VIDEO (ver
+# build_texture_unit_command). 30 y no STILL_FPS (10): aca el fotograma SI
+# cambia -- lo mueve la textura -- y a 10 fps el grano se veria a tirones.
+TEXTURE_UNIT_FPS = 30
+
+
+def texture_unit_is_possible(textures):
+    """True si una imagen fija con estas texturas encima se puede exportar
+    por unidad + copia directa (build_texture_unit_command) en vez de
+    encodear el beat entero de punta a punta.
+
+    Pide EXACTAMENTE UNA textura de video. El motivo es el "shortest=1" del
+    blend (ver build_filtergraph): la cadena termina cuando se acaba el
+    stream mas corto, asi que con dos texturas de video de largos distintos
+    la mas larga quedaria cortada a mitad de su vuelta y el empalme de la
+    fase 2 pegaria un salto visible. Las texturas de IMAGEN no cuentan: son
+    un fotograma quieto que el blend repite (repeatlast), no tienen vuelta
+    que respetar."""
+    videos = [t for t in (textures or []) if t[3] is not None]
+    return len(videos) == 1
+
+
+def build_texture_unit_command(ffmpeg_exe, media_path, temp_path, layout,
+                               template_path=None, textures=None, focus=None, transform="",
+                               contain=False):
+    """FASE 1 para una imagen fija con una textura de VIDEO encima: compone
+    UNA vuelta de la textura, lista para que la fase 2 la repita por copia
+    directa hasta cubrir el beat.
+
+    Que esto sea EXACTO (no una aproximacion) sale de que el contenido es
+    periodico: la foto no cambia nunca y la textura vuelve a empezar cada
+    vuelta, asi que el fotograma k y el k+N son el mismo. Es la misma idea
+    que build_still_unit_command, nomas que ahi la unidad puede ser de
+    cualquier largo (nada se mueve) y aca tiene que ser justo una vuelta de
+    la textura.
+
+    Antes este caso era el unico de imagen que se encodeaba de punta a punta
+    -- 5400 fotogramas a 2560x1440 para un beat de 3:00, pasando el
+    filtergraph (escala + blend + plantilla) por cada uno para obtener algo
+    que se repite cada 292. Medido con la textura de grano real (640x360,
+    9.73s) sobre un beat de 3:00 a 2560x1440, mismo veryfast crf 22 y mismo
+    keyframe cada 2s en los dos casos:
+        una pasada (lo de antes): 113.8 s | 13.2 MB
+        unidad + copia:            15.1 s | 13.0 MB   (PSNR 52.7 dB contra
+                                                       el de arriba)
+    o sea 7.5x mas rapido, mismo peso y visualmente idéntico (el minimo por
+    fotograma fue 50.9 dB, medido sobre 40 s que cruzan 4 empalmes: si el
+    empalme pegara un salto, ese minimo se caeria).
+
+    A la textura NO se le pone -stream_loop (a diferencia de build_command):
+    justamente se la deja terminar, y el "shortest=1" del blend corta ahi la
+    cadena. Por eso la unidad sale con exactamente una vuelta sin tener que
+    contar fotogramas ni saber a que fps viene la textura -- el largo real se
+    lee despues del archivo ya escrito, como en el resto de la fase 1."""
+    cmd = [ffmpeg_exe, "-y",
+           "-loop", "1", "-framerate", str(TEXTURE_UNIT_FPS), "-i", media_path]
+    idx = 1
+    tpl_idx = None
+    if template_path:
+        cmd += ["-i", template_path]
+        tpl_idx = idx
+        idx += 1
+    tex_layers = []
+    for path, mode, opacity, video_scale in (textures or []):
+        cmd += ["-i", path]
+        tex_layers.append((idx, mode, opacity, video_scale))
+        idx += 1
+    fc = build_filtergraph(
+        layout, is_video=False, tpl_idx=tpl_idx, textures=tex_layers, focus=focus,
+        transform=transform, contain=contain,
+    )
+    cmd += [
+        "-filter_complex", fc, "-map", "[vout]", "-an",
+        "-r", str(TEXTURE_UNIT_FPS),
+        "-c:v", "libx264", *VIDEO_QUALITY_ARGS,
+        # Keyframe cada 2s, el MISMO que ya usaba este caso por una pasada
+        # (gop="60" if has_video_texture en build_command) -- el grano se
+        # mueve, asi que no aplica el GOP largo de la imagen quieta. Para
+        # que el concat por copia empalme sin saltos basta con que el
+        # fotograma 0 sea clave y el GOP sea cerrado (+cgop), no hace falta
+        # uno solo por unidad.
+        "-g", "60", "-keyint_min", "60",
+        "-pix_fmt", "yuv420p",
+        # Sin "-tune stillimage" (si lo lleva build_still_unit_command):
+        # esta unidad tiene movimiento de verdad. Medido, no cambia el peso.
+        "-flags", "+cgop",
+        "-video_track_timescale", "15360",
+        "-progress", "pipe:1", "-nostats",
+        temp_path,
+    ]
+    return cmd
+
+
 def build_compose_command(ffmpeg_exe, media_path, temp_path, layout, trim=None, speed=1.0,
                           deinterlace=False, template_path=None, textures=None, fast=False,
-                          encoder="libx264"):
+                          encoder="libx264", transform=""):
     """FASE 1 (solo clips de video): compone UNA sola vuelta del loop —
     recorte + velocidad + texturas + escala/bordes o plantilla — en un mp4
     corto sin audio, a 30 fps constantes y con GOP cerrado para que la
@@ -873,7 +1035,7 @@ def build_compose_command(ffmpeg_exe, media_path, temp_path, layout, trim=None, 
         idx += 1
     fc = build_filtergraph(
         layout, is_video=True, speed=speed, deinterlace=deinterlace,
-        tpl_idx=tpl_idx, textures=tex_layers,
+        tpl_idx=tpl_idx, textures=tex_layers, transform=transform,
     )
     if fast:
         quality_args = PREVIEW_QUALITY_ARGS_NVENC if encoder == "h264_nvenc" else PREVIEW_QUALITY_ARGS

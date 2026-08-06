@@ -81,12 +81,16 @@ window.LivePreview = (() => {
   // logica = el medio de verdad (media_path). ruta = de donde se sacan los
   // fotogramas, que puede ser la copia liviana que arma Python cuando el clip es
   // grande (ver preview_path en get_state y _preview_proxy_job en api.py).
+  //
+  // Girar/espejar no pasa por aca: no cambian de archivo (son propiedades
+  // del proyecto, se aplican al dibujar -- ver dibujarMedio), asi que el
+  // video ni se entera y sigue corriendo.
   function cargarFuente(ruta, mediaEsVideo, logica) {
     if (ruta === rutaFuente) return;
     // Mismo medio pero otro archivo: termino de armarse la copia liviana. Se
-    // conserva el momento y si venia andando, asi el cambio no se nota -- de
-    // otro modo el video saltaba al principio solo, a media reproduccion.
-    const mismoMedio = !!logica && logica === rutaLogica && mediaEsVideo && esVideo;
+    // conserva el momento para que el cambio no se note -- de otro modo el
+    // video saltaba al principio solo, a media reproduccion.
+    const mismoMedio = mediaEsVideo && esVideo && !!logica && logica === rutaLogica;
     const tiempoPrevio = mismoMedio && fuente ? fuente.currentTime : 0;
     // Si se estaba reproduciendo, el medio NUEVO tambien arranca solo --
     // antes esto miraba mismoMedio (arriba), asi que cargar un archivo
@@ -151,12 +155,19 @@ window.LivePreview = (() => {
     fuente.setAttribute("aria-hidden", "true");
     document.body.appendChild(fuente);
     fuente.addEventListener(esVideo ? "loadeddata" : "load", () => pedirDibujo(), { once: true });
-    if (veniaAndando) {
+    // Restaurar tiempoPrevio NO puede depender de veniaAndando: antes solo
+    // pasaba adentro del "arranca solo", asi que reemplazar la fuente con el
+    // video en PAUSA (la copia liviana termina de armarse, o un giro, mientras
+    // el usuario tenia el previsualizador detenido) perdia el lugar en
+    // silencio -- el elemento nuevo arranca en el segundo 0 y ahi se quedaba
+    // hasta que el usuario le daba play, momento en el que arrancaba desde el
+    // principio en vez de seguir donde lo habia dejado.
+    if (mismoMedio || veniaAndando) {
       const el = fuente;
       el.addEventListener("loadeddata", () => {
         if (el !== fuente) return;
         if (mismoMedio) el.currentTime = tiempoPrevio;
-        play();
+        if (veniaAndando) play();
       }, { once: true });
     }
     fuente.src = urlDeArchivo(ruta);
@@ -263,18 +274,130 @@ window.LivePreview = (() => {
     return { sx: (origenW - w) / 2, sy: (origenH - h) / 2, sw: w, sh: h };
   }
 
+  // Modo "Completa" del recorte: en vez de recortar el origen para cubrir la
+  // caja (arriba), lo encoge para que ENTRE completo -- el equivalente
+  // exacto de scale=...:force_original_aspect_ratio=decrease seguido de
+  // pad=... en el filtergraph. Devuelve el rectangulo DESTINO (dentro de la
+  // caja) donde cae el origen entero, sin recortar nada -- el sobrante
+  // (letterbox) lo pinta dibujarMedio.
+  function rectanguloQueContiene(origenW, origenH, cajaW, cajaH) {
+    const escala = Math.min(cajaW / origenW, cajaH / origenH);
+    const w = origenW * escala;
+    const h = origenH * escala;
+    return { dx: (cajaW - w) / 2, dy: (cajaH - h) / 2, dw: w, dh: h };
+  }
+
+  // Giro/espejo del proyecto (ver media_rotation en api.py). Se aplican ACA,
+  // al dibujar, y no rehaciendo el archivo: por eso el boton es instantaneo
+  // hasta con un clip largo. La exportacion los hornea con los mismos filtros
+  // y en el mismo orden -- girar y DESPUES espejar (ver
+  // build_transform_filters en engine.py).
+  function giro() {
+    const g = (estado && estado.media_rotation) || 0;
+    return ((g % 360) + 360) % 360;
+  }
+
+  // Rectangulo del fotograma YA GIRADO -> el mismo pedazo en coordenadas del
+  // archivo, que es lo que sabe muestrear drawImage (el <video>/<img> decodifica
+  // sin girar). crop_rect se guarda en coordenadas del fotograma girado -- el que
+  // ve el usuario en "Ajustar imagen" -- igual que en ffmpeg, donde el transpose
+  // va antes del crop.
+  //
+  // Se deshacen en el orden inverso al que se aplican: primero los espejos
+  // (que van ultimos), despues el giro.
+  function aCoordenadasDelArchivo(x, y, w, h, efW, efH) {
+    if (estado && estado.media_flip_h) x = efW - x - w;
+    if (estado && estado.media_flip_v) y = efH - y - h;
+    switch (giro()) {
+      case 90:  return { x: y, y: efW - x - w, w: h, h: w };
+      case 180: return { x: efW - x - w, y: efH - y - h, w, h };
+      case 270: return { x: efH - y - h, y: x, w: h, h: w };
+      default:  return { x, y, w, h };
+    }
+  }
+
   function dibujarMedio(cd, medio, caja) {
     const med = medidasDe(medio);
     if (!med) return false;
-    // Recorte de "Ajustar imagen", en pixeles del original (crop_rect viene en
-    // fracciones 0..1, igual que en build_focus_crop).
+    const g = giro();
+    const deCostado = g === 90 || g === 270;
+    // Tamano del fotograma tal como se VE (con el giro puesto) -- el mismo
+    // que Python reporta en media_size y con el que calculo esta caja.
+    const efW = deCostado ? med.h : med.w;
+    const efH = deCostado ? med.w : med.h;
+    // Recorte de "Ajustar imagen", en pixeles del fotograma girado (crop_rect
+    // viene en fracciones 0..1, igual que en build_focus_crop).
     const r = (estado && estado.crop_rect) || [0, 0, 1, 1];
-    const cx = r[0] * med.w;
-    const cy = r[1] * med.h;
-    const cw = Math.max(1, r[2] * med.w);
-    const chh = Math.max(1, r[3] * med.h);
-    const c = recorteQueCubre(cw, chh, caja.w, caja.h);
-    cd.drawImage(medio, cx + c.sx, cy + c.sy, c.sw, c.sh, caja.x, caja.y, caja.w, caja.h);
+    const cx = r[0] * efW;
+    const cy = r[1] * efH;
+    const cw = Math.max(1, r[2] * efW);
+    const chh = Math.max(1, r[3] * efH);
+
+    // "Completa" (nunca estira el medio para llenar la ventana) vs
+    // Cuadrado/Vertical (cubre, de siempre) -- mismo criterio, y misma
+    // cuenta, que contain= en build_filtergraph. hw/hh es la huella visual
+    // DENTRO de caja (todavia sin girar) y scx/scy/scw/sch el pedazo del
+    // recorte que se llega a ver.
+    const contiene = !!(estado && estado.crop_mode === "completa");
+    let scx, scy, scw, sch, hw, hh;
+    if (contiene && !(estado && estado.template_path)) {
+      // El medio va SIEMPRE del mismo tamano -- el mas grande que entra
+      // entero en el LIENZO -- y la caja (que el control de bordes abre y
+      // cierra) solo hace de ventana: recorta lo que deja afuera en vez de
+      // achicar la foto. Ver layout["natural"] en build_layout.
+      const [lienzoW, lienzoH] = (estado && estado.canvas_size) || [2560, 1440];
+      const escalaNat = Math.min(lienzoW / cw, lienzoH / chh);
+      const natW = cw * escalaNat, natH = chh * escalaNat;
+      hw = Math.min(caja.w, natW);
+      hh = Math.min(caja.h, natH);
+      // El pedazo visible del recorte, centrado (lo que la ventana deja ver).
+      scw = cw * (hw / natW);
+      sch = chh * (hh / natH);
+      scx = cx + (cw - scw) / 2;
+      scy = cy + (chh - sch) / 2;
+    } else if (contiene) {
+      // Con plantilla no hay control de bordes: la ventana ES el hueco y lo
+      // que corresponde es que el medio entre entero ahi adentro.
+      scx = cx; scy = cy; scw = cw; sch = chh;
+      const d = rectanguloQueContiene(cw, chh, caja.w, caja.h);
+      hw = d.dw; hh = d.dh;
+    } else {
+      const c = recorteQueCubre(cw, chh, caja.w, caja.h);
+      scx = cx + c.sx; scy = cy + c.sy; scw = c.sw; sch = c.sh;
+      hw = caja.w; hh = caja.h;
+    }
+    const src = aCoordenadasDelArchivo(scx, scy, scw, sch, efW, efH);
+
+    // Letterbox de "Completa": el sobrante DENTRO de caja (fuera de la
+    // huella hw x hh) queda negro, igual que el pad interno del filtergraph
+    // -- se pinta antes de dibujar encima, sea cual sea el resto del camino.
+    if (contiene && (hw < caja.w - 0.5 || hh < caja.h - 0.5)) {
+      cd.fillStyle = "#000000";
+      cd.fillRect(caja.x, caja.y, caja.w, caja.h);
+    }
+    if (!g && !(estado && (estado.media_flip_h || estado.media_flip_v))) {
+      cd.drawImage(medio, src.x, src.y, src.w, src.h,
+        caja.x + (caja.w - hw) / 2, caja.y + (caja.h - hh) / 2, hw, hh);
+      return true;
+    }
+    cd.save();
+    // Girar/espejar alrededor del CENTRO de la caja: la huella (hw x hh) ya
+    // sale centrada en caja (huella completa en Cuadrado/Vertical, o
+    // centrada por rectanguloQueContiene en Completa), asi que gira sobre
+    // el mismo punto sin desplazarse. El lienzo aplica las transformaciones
+    // de la ultima a la primera, asi que este orden (escala despues de
+    // rotar en el codigo) dibuja: girar -> espejar.
+    cd.translate(caja.x + caja.w / 2, caja.y + caja.h / 2);
+    if (estado.media_flip_h || estado.media_flip_v) {
+      cd.scale(estado.media_flip_h ? -1 : 1, estado.media_flip_v ? -1 : 1);
+    }
+    if (g) cd.rotate((g * Math.PI) / 180);
+    // Estando de costado, la huella se dibuja con el ancho y el alto
+    // cambiados: al girarla 90 grados termina midiendo hw x hh de verdad.
+    const dw = deCostado ? hh : hw;
+    const dh = deCostado ? hw : hh;
+    cd.drawImage(medio, src.x, src.y, src.w, src.h, -dw / 2, -dh / 2, dw, dh);
+    cd.restore();
     return true;
   }
 
@@ -711,6 +834,17 @@ window.LivePreview = (() => {
   // no lo mueven) y leerlo es el camino barato de siempre.
   const AMBILIGHT_MS = 120;
 
+  // Factor de mezcla para VIDEO (ver acercarMatiz/ambilightFromSource en
+  // background-tint.js, que por defecto usa 0.12 -- lo que sigue usando una
+  // FOTO, sin tocar). Pedido explicito: un corte de escena (verde a morado,
+  // por ejemplo) se sentia como un salto brusco de color en vez de una
+  // transicion. Con este factor, bastante mas chico, cada muestreo se acerca
+  // mucho menos al matiz nuevo, asi que la mezcla tarda varios segundos en
+  // llegar en vez de sentirse instantanea -- una foto no tiene cortes de
+  // escena (es un solo cuadro fijo), asi que ahi no hay nada que suavizar de
+  // mas.
+  const AMBILIGHT_FACTOR_VIDEO = 0.035;
+
   // Mismos codecs que CHEAP_DECODE_CODECS en engine.py. El comentario de
   // arriba ("leerlo es el camino barato de siempre") vale para el TAMANO del
   // sample, pero no cubre esto: el drawImage(video,...) previo al
@@ -751,8 +885,14 @@ window.LivePreview = (() => {
     const demora = ambilightAlRitmoNormal() ? AMBILIGHT_MS : AMBILIGHT_MS_CODEC_CARO;
     ambilightTimer = setTimeout(() => {
       if (canvas && !canvas.hidden && medidasFuente()) {
-        if (window.ambilightFromSource) window.ambilightFromSource(fuente);
-        if (window.setSpotifyBackgroundImage) window.setSpotifyBackgroundImage(fuente);
+        if (window.ambilightFromSource) {
+          window.ambilightFromSource(fuente, esVideo ? AMBILIGHT_FACTOR_VIDEO : undefined);
+        }
+        if (window.setSpotifyBackgroundImage) window.setSpotifyBackgroundImage(fuente, esVideo);
+        // kawarp se auto-limita por dentro (ver MIN_MS_ENTRE_CUADROS): recibe
+        // este mismo muestreo de 8 por segundo pero solo sube un cuadro nuevo
+        // a la GPU cada ~900ms.
+        if (window.setKawarpBackgroundImage) window.setKawarpBackgroundImage(fuente);
       }
       programarAmbilight();
     }, demora);

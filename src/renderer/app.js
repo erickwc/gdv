@@ -57,9 +57,6 @@ const ICONS = {
     + '<path d="M4 15l4 -4c.928 -.893 2.072 -.893 3 0l3 3" />'
     + '<path d="M14 14l1 -1c.31 -.298 .644 -.497 .987 -.596" />'
     + '<path d="M18.42 15.61a2.1 2.1 0 0 1 2.97 2.97l-3.39 3.42h-3v-3l3.42 -3.39" />',
-  // Icono de "Guardar preset" (antes SAVE_ICON_SVG, un disquete propio en
-  // 16x16) -- se pidio cambiar por un bookmark, del mismo set que el resto.
-  bookmark: '<path d="M9 4h6a2 2 0 0 1 2 2v14l-5 -3l-5 3v-14a2 2 0 0 1 2 -2" />',
   // Los dos del boton de agrandar, tal como los mando el usuario (sin el
   // <path> del recuadro transparente que traen al principio, que no dibuja
   // nada -- ninguno de los de aca lo lleva): arrows-maximize para el estado
@@ -96,12 +93,12 @@ const ICONS = {
   // lo mas denso de la franja y se leia como pegoteado. Sin chevron el estado
   // lo dan el title y la propia ventana moviendose.
   //
-  // Va a 20px con trazo 1.2, no al 16/1 del resto (ver las llamadas a
-  // iconSvg): a 16px un trazo de 1 sobre viewBox de 24 mide 0.67 px reales,
-  // nunca cae sobre un pixel y sale una mancha gris. Medido rasterizando las
-  // dos: a 20/1.2 los lados y la divisoria salen como lineas limpias. No
-  // rompe la consistencia con los demas iconos porque este es el unico que
-  // vive en la franja de arriba, sin ninguno al lado con que compararlo.
+  // Va a 20px (el resto es 16, ver las llamadas a iconSvg) -- es el unico
+  // que vive en la franja de arriba, sin ninguno al lado con que
+  // compararlo. El trazo SI es el mismo 1.5 que todos los demas (pedido
+  // explicito de uniformidad); antes iba en 1.2 para que las lineas
+  // cayeran mas limpias a este tamano, pero ahora se prioriza que se vea
+  // igual de grueso que el resto.
   sidebarToggle: '<path d="M4 6a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2l0 -12" />'
     + '<path d="M9 4l0 16" />',
   plus: '<path d="M12 5l0 14" /><path d="M5 12l14 0" />',
@@ -112,8 +109,11 @@ const ICONS = {
     + '<path d="M3 7v-2a2 2 0 0 1 2 -2h2" /><path d="M3 17v2a2 2 0 0 0 2 2h2" />'
     + '<path d="M17 3h2a2 2 0 0 1 2 2v2" /><path d="M17 21h2a2 2 0 0 0 2 -2v-2" />',
   folderOpen: '<path d="M5 19l2.757 -7.351a1 1 0 0 1 .936 -.649h12.307a1 1 0 0 1 .986 1.164l-.996 5.211a2 2 0 0 1 -1.964 1.625h-14.026a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v2" />',
+  // Icono de "Guardar preset" (antes bookmark -- se pidio volver al
+  // disquete, con este trazo puntual de Tabler que mando el usuario, no el
+  // que ya estaba en esta clave).
   deviceFloppy: '<path d="M6 4h10l4 4v10a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2" />'
-    + '<path d="M12 4l0 4l6 0l0 -4" /><path d="M9 17a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />',
+    + '<path d="M10 14a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" /><path d="M14 4l0 4l-6 0l0 -4" />',
   cloudDownload: '<path d="M19 18a3.5 3.5 0 0 0 0 -7h-1a5 4.5 0 0 0 -11 -2a4.6 4.4 0 0 0 -2.1 8.4" />'
     + '<path d="M12 13l0 9" /><path d="M9 19l3 3l3 -3" />',
   // Los tres estados del volumen del beat en el previsualizador (volume,
@@ -127,12 +127,23 @@ const ICONS = {
     + '<path d="M6 15h-2a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1h2l3.5 -4.5a.8 .8 0 0 1 1.5 .5v14a.8 .8 0 0 1 -1.5 .5l-3.5 -4.5" />',
   volumeOff: '<path d="M6 15h-2a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1h2l3.5 -4.5a.8 .8 0 0 1 1.5 .5v14a.8 .8 0 0 1 -1.5 .5l-3.5 -4.5" />'
     + '<path d="M16 10l4 4m0 -4l-4 4" />',
-  // rotate-clockwise de Tabler, tal cual (verificado contra el original, no
-  // inventado a mano -- ver rotate-media-btn en index.html).
-  rotate: '<path d="M4.05 11a8 8 0 1 1 .5 4m-.5 5v-5h5" />',
+  // reload de Tabler, tal cual (lo mando el usuario, sin el <path> del
+  // recuadro transparente que trae al principio -- ver rotate-media-btn en
+  // index.html).
+  rotate: '<path d="M19.933 13.041a8 8 0 1 1 -9.925 -8.788c3.899 -1 7.935 1.007 9.425 4.747" />'
+    + '<path d="M20 4v5h-5" />',
+  // flip-horizontal/flip-vertical de Tabler, tal cual (lo mando el usuario)
+  // -- ver flip-h-media-btn/flip-v-media-btn en index.html.
+  flipHorizontal: '<path d="M12 3l0 18" /><path d="M16 7l0 10l5 0l-5 -10" />'
+    + '<path d="M8 7l0 10l-5 0l5 -10" />',
+  flipVertical: '<path d="M3 12l18 0" /><path d="M7 16l10 0l-10 5l0 -5" />'
+    + '<path d="M7 8l10 0l-10 -5l0 5" />',
 };
 
-function iconSvg(name, size = 16, strokeWidth = 1) {
+// 1.5 default -- pedido explicito: TODOS los iconos con el mismo grosor de
+// trazo, sin excepciones por tamano (ver el comentario de sidebarToggle en
+// ICONS, que antes tenia su propio 1.2).
+function iconSvg(name, size = 16, strokeWidth = 1.5) {
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" `
     + `stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ""}</svg>`;
 }
@@ -168,18 +179,22 @@ const ADD_ICON_SVG = '<svg width="23" height="23" viewBox="0 0 23 23" fill="none
 function fillStaticIcons() {
   $("#remove-media-btn").innerHTML = iconSvg("trash");
   $("#rotate-media-btn").innerHTML = iconSvg("rotate");
+  $("#flip-h-media-btn").innerHTML = iconSvg("flipHorizontal");
+  $("#flip-v-media-btn").innerHTML = iconSvg("flipVertical");
   $("#audio-chip").querySelector(".btn-icon").innerHTML = iconSvg("trash");
   $("#preview-expand").innerHTML = iconSvg("expand");
   $("#crop-mode-trigger").innerHTML = iconSvg("resize");
   $("#loop-preview-play").innerHTML = iconSvgFilled("playerPlay");
   $("#loop-preview-toggle").innerHTML = iconSvgFilled("playerPause");
   $$(".preset-dropdown-chevron").forEach((el) => (el.innerHTML = iconSvg("chevronDown")));
-  // Bookmark (antes un disquete propio, SAVE_ICON_SVG -- ver conversacion).
-  $("#preset-save").innerHTML = iconSvg("bookmark");
+  // Disquete (antes bookmark, y antes de eso un disquete propio,
+  // SAVE_ICON_SVG -- se volvio al disquete, ahora con el trazo de Tabler
+  // que se pidio).
+  $("#preset-save").innerHTML = iconSvg("deviceFloppy");
   $("#preset-save-confirm").innerHTML = iconSvgFilled("check");
   $("#preset-save-cancel").innerHTML = iconSvgFilled("close");
   $("#preset-save-choice-cancel").innerHTML = iconSvgFilled("close");
-  $("#preview-toggle-btn").innerHTML = iconSvg("sidebarToggle", 20, 1.2);
+  $("#preview-toggle-btn").innerHTML = iconSvg("sidebarToggle", 20);
   $("#template-add-btn").innerHTML = ADD_ICON_SVG;
   $("#texture-add-btn").innerHTML = ADD_ICON_SVG;
   // Tarjeta de resultado: check a la izquierda y las 3 acciones a la derecha.
@@ -325,13 +340,6 @@ function renderChips(state) {
     mediaChip.hidden = false;
     mediaChip.querySelector(".chip-name").textContent = titleCase(state.media_filename);
     mediaChip.querySelector(".chip-kind").textContent = state.media_kind_text || "";
-    // media_was_vertical (tamano ORIGINAL), no media_size (el actual):
-    // un video que llega girado 180/270 -- no solo 90 -- necesita mas de
-    // un click para quedar derecho, y a mitad de camino el archivo esta
-    // horizontal un rato. Si se chequeara el tamano actual el boton se
-    // escondia despues del primer click y no habia forma de seguir
-    // girando hasta la orientacion correcta.
-    $("#rotate-media-btn").hidden = !(state.media_is_video && state.media_was_vertical);
   } else {
     mediaChip.hidden = true;
   }
@@ -396,14 +404,34 @@ function paintSliderFill(slider) {
 
 // -------------------------------------------------- tarjeta de galeria
 
+// El path que manda Python (t.path/tex.path) siempre tiene extension; el
+// name (splitext, ver list_templates/list_available_textures en api.py) no
+// -- esto reconstruye el nombre CON extension para el tooltip, sin ida y
+// vuelta al backend.
+function nombreConExtension(path) {
+  return String(path).split(/[\\/]/).pop();
+}
+
 // Rediseno: marco (borde propio) con la miniatura mas chica adentro
 // (inset, con aire alrededor) y el nombre como texto plano DEBAJO del
 // marco -- reemplaza el diseno anterior (miniatura a pantalla completa +
 // nombre superpuesto con degradado de sombra encima).
-function buildGalleryCard({ thumb, name, active, onClick, onDelete }) {
+//
+// tooltip (nombre CON extension) va como data-tooltip y no como title=:
+// mismo motivo que el resto de la app, el tooltip nativo no se llega a
+// mostrar en esta ventana (ver el comentario grande de [data-tooltip] en
+// styles.css). Antes esto era card.title = name (sin extension, y sin
+// mostrarse nunca).
+function buildGalleryCard({ thumb, name, tooltip, active, onClick, onDelete }) {
   const card = document.createElement("div");
-  card.className = "gallery-card" + (active ? " active" : "");
-  card.title = name;
+  // tooltip-below (ver la regla en styles.css): la primera fila de la
+  // galeria vive pegada al titulo de la seccion (.section reparte con
+  // gap:12px, no hay lugar para el tooltip de siempre para arriba, que
+  // tapaba el "Plantillas"/"Texturas" -- probado, se veia encima del
+  // texto). Abajo hay mas aire (el padding de la seccion, o los controles
+  // de la textura elegida).
+  card.className = "gallery-card tooltip-below" + (active ? " active" : "");
+  card.dataset.tooltip = tooltip;
 
   const frame = document.createElement("div");
   frame.className = "gallery-card-frame";
@@ -416,7 +444,7 @@ function buildGalleryCard({ thumb, name, active, onClick, onDelete }) {
   const del = document.createElement("button");
   del.className = "gallery-card-delete";
   del.type = "button";
-  del.innerHTML = iconSvg("trash", 16, 2);
+  del.innerHTML = iconSvg("trash", 16);
   del.title = "Eliminar archivo";
   del.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -449,30 +477,12 @@ function renderTemplateGallery(state) {
     gallery.appendChild(buildGalleryCard({
       thumb: t.thumb,
       name: t.name,
+      tooltip: nombreConExtension(t.path),
       active,
       onClick: () => toggleTemplate(t.path, active),
       onDelete: () => deleteTemplateFile(t.path, t.name),
     }));
   });
-  renderTemplateInfo(state);
-}
-
-function renderTemplateInfo(state) {
-  const el = $("#template-info");
-  const hay = !!(state.template_path && state.template_box);
-  if (hay) {
-    // El nombre del archivo CON extension: el `name` que manda list_templates
-    // viene sin ella (splitext, ver api.py), asi que se saca del path.
-    const archivo = String(state.template_path).split(/[\\/]/).pop();
-    el.textContent = `Ventana detectada: ${archivo}`;
-  }
-  // Aparece y desaparece con el mismo despliegue que el panel de texturas
-  // (.layer-controls): la clase .is-collapsed en vez del atributo [hidden],
-  // porque el [hidden] global es display:none y eso corta cualquier
-  // transicion. El texto NO se borra al cerrar -- si se vaciara, el alto
-  // llegaria a 0 de golpe y no habria nada que animar.
-  el.hidden = false;
-  el.classList.toggle("is-collapsed", !hay);
 }
 
 function browseTemplate() {
@@ -521,6 +531,7 @@ function renderTextureGallery(state) {
     gallery.appendChild(buildGalleryCard({
       thumb: tex.thumb,
       name: tex.name,
+      tooltip: nombreConExtension(tex.path),
       active: layerIndex !== -1,
       onClick: () => toggleTextureLayer(tex.path, layerIndex),
       onDelete: () => deleteTextureFile(tex.path),
@@ -1167,16 +1178,31 @@ window.onDownloadStatus = (payload) => {
   $("#download-status").style.color = payload.color || "";
 };
 
-// Campanita al terminar de exportar bien -- Audio nuevo en cada llamado (no
-// un elemento fijo reusado): con dos exportaciones seguidas la anterior
-// podria no haber terminado de sonar todavia, y reusar el mismo elemento la
-// cortaria de golpe para arrancar la nueva desde 0.
+// Campanita al terminar de exportar bien: CUALQUIER archivo de audio que
+// haya en renderer/sfx/ (el mas nuevo, si hay mas de uno) -- pedido
+// explicito, para poder ir probando sonidos con solo arrastrar el archivo a
+// esa carpeta, sin renombrarlo ni tocar codigo. La PRIMERA version pedia un
+// nombre fijo ("export-done.<extension>") y no sonaba nada con un archivo
+// que se llamara distinto (probado: "faaah.mp3"), sin avisar por que.
+//
+// El listado de la carpeta lo hace el proceso principal (ver
+// sfx-export-done-candidate en main.js): el renderer no puede leer un
+// directorio de forma confiable sobre file://.
+//
+// Audio nuevo en cada llamado (no un elemento fijo reusado): con dos
+// exportaciones seguidas la anterior podria no haber terminado de sonar
+// todavia, y reusar el mismo elemento la cortaria de golpe para arrancar la
+// nueva desde 0.
 function playExportDoneSound() {
-  try {
-    const audio = new Audio("sfx/export-done.wav");
-    audio.volume = 0.55;
-    audio.play().catch(() => {}); // autoplay bloqueado, sin audio de salida, etc. -- no es critico
-  } catch (e) {}
+  if (!window.api || !window.api.getSfxExportDoneCandidate) return;
+  window.api.getSfxExportDoneCandidate().then((r) => {
+    if (!r || !r.ok) return; // carpeta vacia -- sin sonido, no es critico
+    try {
+      const audio = new Audio(`sfx/${encodeURIComponent(r.filename)}`);
+      audio.volume = 0.55;
+      audio.play().catch(() => {}); // autoplay bloqueado, sin audio de salida, etc. -- no es critico
+    } catch (e) {}
+  }).catch(() => {});
 }
 
 window.onJobDone = (payload) => {
@@ -1467,22 +1493,23 @@ window.addEventListener("pywebviewready", () => {
   $("#remove-media-btn").addEventListener("click", () => {
     pywebview.api.remove_media().then((r) => render(r.state));
   });
-  $("#rotate-media-btn").addEventListener("click", (e) => {
-    // Deshabilitado durante el giro (no solo el guard de Python): sin esto,
-    // clickear varias veces rapido mientras el primer giro todavia corre
-    // mandaba pedidos que Python rechazaba con {ok:false} y SIN "state" --
-    // render(undefined) explotaba.
-    const btn = e.currentTarget;
-    btn.disabled = true;
-    pywebview.api.rotate_media().then((r) => {
-      if (r.ok) {
-        render(r.state);
-      } else {
-        showTimedError($("#status-text"), r.error || "No se pudo girar el video.");
-      }
-      btn.disabled = false;
+  // Girar/espejar. No hace falta deshabilitar nada mientras trabaja: no hay
+  // "mientras" -- Python solo mueve el angulo del proyecto y contesta (el
+  // archivo se gira recien al exportar, ver media_rotation en api.py).
+  function bindTransformButton(selector, apiMethod, errorFallback) {
+    $(selector).addEventListener("click", () => {
+      pywebview.api[apiMethod]().then((r) => {
+        if (r.ok) {
+          render(r.state);
+        } else {
+          showTimedError($("#status-text"), r.error || errorFallback);
+        }
+      });
     });
-  });
+  }
+  bindTransformButton("#rotate-media-btn", "rotate_media", "No se pudo girar.");
+  bindTransformButton("#flip-h-media-btn", "flip_media_horizontal", "No se pudo voltear.");
+  bindTransformButton("#flip-v-media-btn", "flip_media_vertical", "No se pudo voltear.");
   $("#audio-chip").querySelector(".btn-icon").addEventListener("click", () => {
     pywebview.api.remove_audio().then((r) => render(r.state));
   });
@@ -1943,8 +1970,10 @@ function togglePreviewPanel() {
   // se veia apretado en un panel tan angosto, asi que se descarto. Colapsado:
   // una flecha doble APARTE (no metida en el icono del panel) apuntando a
   // donde reaparece el previsualizador si se vuelve a tocar.
-  btn.innerHTML = iconSvg(previewCollapsed ? "chevronsRight" : "sidebarToggle", 20, 1.2);
-  btn.title = previewCollapsed ? "Mostrar el previsualizador" : "Ocultar el previsualizador";
+  btn.innerHTML = iconSvg(previewCollapsed ? "chevronsRight" : "sidebarToggle", 20);
+  // data-tooltip, no title -- ver el comentario de #preview-toggle-btn en
+  // index.html.
+  btn.dataset.tooltip = previewCollapsed ? "Mostrar el previsualizador" : "Ocultar el previsualizador";
   // El ancho del panel sale del CSS (--panel-width), asi que la medida vive
   // en un solo lugar.
   const panelWidth = parseInt(
@@ -2064,6 +2093,9 @@ function scheduleMirror(delay = 450) {
     if (window.setSpotifyBackgroundImage) {
       img.decode().then(() => window.setSpotifyBackgroundImage(img)).catch(() => {});
     }
+    if (window.setKawarpBackgroundImage) {
+      img.decode().then(() => window.setKawarpBackgroundImage(img)).catch(() => {});
+    }
   }, delay);
 }
 
@@ -2072,6 +2104,12 @@ const Preview = (() => {
   // Salida de seguridad para el ocultamiento durante el resize de salir de
   // pantalla completa -- ver el fullscreenchange de mas abajo.
   let previewSettlingTimeout = null;
+  // En Windows no hay animacion nativa al salir de pantalla completa (a
+  // diferencia de macOS), asi que "preview-resize-settled" puede llegar
+  // ANTES de que este mismo fullscreenchange termine de dispararse -- sin
+  // esta bandera esa llegada temprana se pierde (todavia no hay nada que
+  // ocultar) y el previsualizador queda tapado hasta el timer de seguridad.
+  let previewResizeAlreadySettled = false;
 
   // Ya no le pide un fotograma a ffmpeg: el previsualizador se compone en vivo
   // en el canvas (ver live-preview.js), asi que un cambio se ve en el cuadro
@@ -2127,6 +2165,7 @@ const Preview = (() => {
       if (window.ambilightFromSource) window.ambilightFromSource(null);
       if (window.setHalftoneBackgroundImage) window.setHalftoneBackgroundImage(null);
       if (window.setSpotifyBackgroundImage) window.setSpotifyBackgroundImage(null);
+      if (window.setKawarpBackgroundImage) window.setKawarpBackgroundImage(null);
     }
   }
 
@@ -2239,6 +2278,11 @@ const Preview = (() => {
       const surface = $("#preview-surface");
       clearTimeout(previewSettlingTimeout);
       if (isFull) {
+        previewResizeAlreadySettled = false;
+        surface.classList.remove("preview-settling");
+      } else if (previewResizeAlreadySettled) {
+        // El aviso ya habia llegado antes de que este evento terminara de
+        // dispararse (comun en Windows) -- no hay nada que ocultar.
         surface.classList.remove("preview-settling");
       } else {
         surface.classList.add("preview-settling");
@@ -2281,6 +2325,7 @@ const Preview = (() => {
     // vez que la ventana YA tiene su tamano final -- no antes.
     if (window.api && window.api.onPreviewResizeSettled) {
       window.api.onPreviewResizeSettled(() => {
+        previewResizeAlreadySettled = true;
         clearTimeout(previewSettlingTimeout);
         $("#preview-surface").classList.remove("preview-settling");
       });
@@ -2496,10 +2541,16 @@ function stateHasRealTrim(state) {
 
 function syncLoopTrimDefined(state) {
   if (state.media_path !== lastLoopMediaPath) {
+    lastLoopMediaPath = state.media_path;
     // Medio nuevo: vuelve a esperar el recorte. Y el fragmento del anterior
     // ya no aplica -- su boton de play seguia ahi y reproducia el loop del
     // video viejo.
-    lastLoopMediaPath = state.media_path;
+    //
+    // Girar/espejar NO cae aca, y es a proposito: no cambian media_path (el
+    // archivo no se toca, son propiedades del proyecto -- ver media_rotation
+    // en api.py), asi que el beat no se corta ni el recorte se reinicia. Con
+    // la version vieja, que si rehacia el archivo, cada giro se trataba como
+    // un medio distinto y habia que blindarlo con una bandera aparte.
     loopTrimDefined = false;
     hideLoopPreview();
   }
@@ -3249,11 +3300,18 @@ window.onPreviewReady = Preview.onReady;
 //
 // El recorte se guarda como RECTANGULO en fracciones 0..1 de la foto
 // original (rx, ry, rw, rh). Antes era zoom + punto de foco, que solo sabia
-// describir cuadrados; el corte Vertical toma la proporcion de la foto, que
-// puede ser cualquiera. Los dos cortes son el MISMO rectangulo con distintas
+// describir cuadrados; Vertical/Completa toman la proporcion de la foto, que
+// puede ser cualquiera. Los tres cortes son el MISMO rectangulo con distintas
 // reglas de arrastre:
 //   cuadrado -- se mueve y se agranda, pero se mantiene cuadrado
-//   vertical -- la foto entera; no hay nada que arrastrar
+//   vertical -- la foto entera; no hay nada que arrastrar. Si "Bordes" deja
+//               la caja con otra proporcion, se recorta un poco de los
+//               costados o de arriba/abajo para llenarla (ver "cover" en
+//               build_filtergraph, engine.py) -- nunca deja franjas vacias.
+//   completa -- la foto entera, igual que Vertical, pero sin recortar NUNCA:
+//               si "Bordes" deja la caja con otra proporcion, se agregan
+//               franjas negras en vez de perder parte de la foto (ver
+//               "contain" en build_filtergraph).
 //
 // Ojo con una trampa de las fracciones: 0.5 x 0.5 NO es un cuadrado salvo
 // que la foto lo sea. Por eso todo el arrastre se hace en PIXELES DEL CANVAS
@@ -3355,10 +3413,11 @@ const FocusPicker = (() => {
     ctx.strokeStyle = "#ffffff";
     ctx.lineWidth = 2;
     ctx.strokeRect(cx0, cy0, cx1 - cx0, cy1 - cy0);
-    // Tiradores de esquina (cuadraditos) para redimensionar -- en Vertical
-    // no van: el recuadro ES la foto entera y no hay nada que ajustar, asi
-    // que dibujarlos invitaria a arrastrar algo que no se mueve.
-    if (mode === "vertical") return;
+    // Tiradores de esquina (cuadraditos) para redimensionar -- en
+    // Vertical/Completa no van: el recuadro ES la foto entera y no hay nada
+    // que ajustar, asi que dibujarlos invitaria a arrastrar algo que no se
+    // mueve.
+    if (mode !== "cuadrado") return;
     for (const c of corners()) {
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(c.x - HANDLE, c.y - HANDLE, HANDLE * 2, HANDLE * 2);
@@ -3380,8 +3439,8 @@ const FocusPicker = (() => {
   }
 
   function hitTest(px, py) {
-    // En Vertical no se agarra nada: el recorte es la foto completa.
-    if (mode === "vertical") return null;
+    // En Vertical/Completa no se agarra nada: el recorte es la foto completa.
+    if (mode !== "cuadrado") return null;
     for (const c of corners()) {
       if (Math.abs(px - c.x) <= HIT && Math.abs(py - c.y) <= HIT) {
         return { mode: "resize", ...c };
@@ -3434,12 +3493,13 @@ const FocusPicker = (() => {
 
   // El boton es solo un icono, asi que el corte puesto se lee en dos lados:
   // el tooltip del boton y la ayuda de abajo (que ademas cambia porque en
-  // Vertical no hay nada que arrastrar y decir "arrastra para ajustar" seria
-  // mentir).
-  const NOMBRES = { cuadrado: "Cuadrado", vertical: "Vertical" };
+  // Vertical/Completa no hay nada que arrastrar y decir "arrastra para
+  // ajustar" seria mentir).
+  const NOMBRES = { cuadrado: "Cuadrado", vertical: "Vertical", completa: "Completa" };
   const AYUDAS = {
     cuadrado: "Arrastra para mover · las esquinas para acercar",
     vertical: "Se usa la foto completa, a todo su alto",
+    completa: "Se usa la foto completa, sin recortar los costados",
   };
 
   function renderMode() {
@@ -3449,7 +3509,7 @@ const FocusPicker = (() => {
     $$("#crop-mode-list .preset-dropdown-item").forEach((item) => {
       item.classList.toggle("active", item.dataset.value === mode);
     });
-    if (canvas) canvas.style.cursor = mode === "vertical" ? "default" : "grab";
+    if (canvas) canvas.style.cursor = mode === "cuadrado" ? "grab" : "default";
   }
 
   function applyState(state) {

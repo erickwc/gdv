@@ -66,12 +66,18 @@
        background-tint.js. -->
   <script src="background-tint.js"></script>
 
-  <!-- Fondo animado "estilo Spotify" (manchones grandes y desenfocados con
-       varios colores REALES de la portada, no un solo matiz rotado como el
-       SVG de arriba -- ver spotify-style-background.js). Standalone, igual
-       que halftone-background.js: expone setSpotifyBackgroundImage y lo
-       llaman los mismos 3 lugares de siempre (app.js x2, live-preview.js). -->
-  <script src="spotify-style-background.js"></script>
+  <!-- Fondo animado ACTIVO: la portada misma deformada y difuminada con
+       kawarp (WebGL, MIT -- ver kawarp-background.js y vendor/kawarp.js).
+       type=module porque el motor es ESM. Si falla WebGL, el propio modulo
+       saca su capa y queda a la vista el SVG de arriba. -->
+  <script type="module" src="kawarp-background.js"></script>
+
+  <!-- Fondo de MANCHONES, el anterior (4 circulos grandes con los colores
+       dominantes de la portada -- ver spotify-style-background.js). Queda de
+       respaldo: para volver a el, comentar el <script> de kawarp de arriba y
+       descomentar este. Los dos exponen su propia funcion y los llamadores
+       llaman a las dos con guarda, asi que no hace falta tocar nada mas. -->
+  <!-- <script src="spotify-style-background.js"></script> -->
 
   <!-- Otros fondos ANIMADOS, desactivados a proposito. Se dejan enteros y
        funcionando por si se quieren volver, no hay nada mas que hacer que
@@ -96,8 +102,16 @@
       <!-- Cierra/abre el previsualizador: deja la ventana con solo el panel
            de controles (y le pide a Electron que la angoste, ver
            togglePreviewPanel en app.js). Vive en la franja de arrastre, asi
-           que necesita app-region:no-drag para poder clickearse. -->
-      <button class="titlebar-btn" id="preview-toggle-btn" title="Ocultar el previsualizador"></button>
+           que necesita app-region:no-drag para poder clickearse.
+
+           data-tooltip (no title=): mismo motivo que rotate-media-btn mas
+           abajo, el tooltip nativo no se ve en esta ventana. tooltip-below
+           porque este boton vive pegado al borde de arriba -- el tooltip
+           generico aparece POR ARRIBA del boton (ver [data-tooltip]::after
+           en styles.css) y ahi se saldria de la ventana. togglePreviewPanel
+           (app.js) actualiza data-tooltip, no title, cuando cambia de
+           estado. -->
+      <button class="titlebar-btn tooltip-below" id="preview-toggle-btn" data-tooltip="Ocultar el previsualizador"></button>
     </div>
 
     <div class="app-shell">
@@ -185,12 +199,15 @@
                 <span class="chip-name">nombre_del_archivo.mp4</span>
                 <span class="chip-kind">Video · 1920x1080</span>
               </div>
-              <!-- Solo tiene sentido con video vertical de costado -- con
-                   horizontal queda escondido (ver renderChips en app.js).
+              <!-- Girar y espejar: sirven con foto y con video, siempre
+                   visibles mientras haya algo cargado (ver rotate_media/
+                   flip_media_horizontal/flip_media_vertical en api.py).
                    data-tooltip (no title=): en esta ventana el tooltip
                    nativo no se llega a mostrar, ver el comentario de
                    [data-tooltip] en styles.css. -->
-              <button class="btn btn-icon" id="rotate-media-btn" data-tooltip="Girar 90°" hidden></button>
+              <button class="btn btn-icon" id="rotate-media-btn" data-tooltip="Girar 90°"></button>
+              <button class="btn btn-icon" id="flip-h-media-btn" data-tooltip="Espejo horizontal"></button>
+              <button class="btn btn-icon" id="flip-v-media-btn" data-tooltip="Espejo vertical"></button>
               <button class="btn btn-icon" id="remove-media-btn" title="Quitar"></button>
             </div>
             <div class="chip" id="audio-chip" hidden>
@@ -224,9 +241,20 @@
         <section class="section" id="trim-section" hidden>
           <div class="section-title-row">
             <h2>Recorte del loop</h2>
-            <input type="text" class="num-entry num-entry-time-sm" id="trim-start-entry" title="Minuto de inicio (m:ss)">
-            <span class="unit">–</span>
-            <input type="text" class="num-entry num-entry-time-sm" id="trim-end-entry" title="Minuto de fin (m:ss)">
+            <!-- Los 3 (inicio, guion, fin) en su propio grupo: con los 4
+                 hijos sueltos directo en .section-title-row (justify-
+                 content:space-between), el espacio libre se repartia por
+                 IGUAL entre los 3 huecos -- titulo->inicio, inicio->guion,
+                 guion->fin -- y los dos numeros del recorte quedaban tan
+                 separados entre si como del titulo. Agrupados, ese
+                 space-between ya solo tiene 2 hijos (h2 y este div) y el
+                 gap chico de aca adentro es el unico que los separa a
+                 ELLOS. -->
+            <div class="trim-range-inputs">
+              <input type="text" class="num-entry num-entry-time-sm" id="trim-start-entry" title="Minuto de inicio (m:ss)">
+              <span class="unit">–</span>
+              <input type="text" class="num-entry num-entry-time-sm" id="trim-end-entry" title="Minuto de fin (m:ss)">
+            </div>
           </div>
           <div class="range-slider" id="loop-slider">
             <div class="range-track"></div>
@@ -270,6 +298,7 @@
               <div class="preset-dropdown-list" id="crop-mode-list" hidden>
                 <div class="preset-dropdown-item" data-value="cuadrado"><span class="preset-dropdown-item-name">Cuadrado</span></div>
                 <div class="preset-dropdown-item" data-value="vertical"><span class="preset-dropdown-item-name">Vertical</span></div>
+                <div class="preset-dropdown-item" data-value="completa"><span class="preset-dropdown-item-name">Completa</span></div>
               </div>
             </div>
           </div>
@@ -282,8 +311,12 @@
             <h2>Plantillas</h2>
             <button class="btn btn-add" id="template-add-btn" title="Añadir plantilla" aria-label="Añadir plantilla"></button>
           </div>
+          <!-- Ya no lleva el "Ventana detectada: <archivo>" debajo de la
+               galeria (#template-info, ver historial de git) -- se pidio
+               reemplazarlo por el tooltip que ya sale al pasar el cursor
+               por la tarjeta (ver data-tooltip en buildGalleryCard,
+               app.js), que ademas cubre las texturas con el mismo cambio. -->
           <div class="gallery" id="template-gallery"></div>
-          <p class="hint" id="template-info" hidden></p>
         </section>
 
         <!-- Texturas -->
@@ -477,8 +510,12 @@
              impredecible) -- ver .preview-watermark-logo en styles.css para
              como se mantiene visible sin importar que hay debajo. Ya NO
              lleva el texto "powered by..." al lado (ver conversacion) --
-             ahora el logo ES el boton que abre #credits-modal. -->
-        <button class="preview-watermark-logo" id="credits-trigger" title="Créditos">
+             ahora el logo ES el boton que abre #credits-modal.
+
+             data-tooltip (no title=): mismo motivo que rotate-media-btn mas
+             abajo, esta ventana no muestra el tooltip nativo por mas rato
+             que se dejara el cursor quieto (probado). -->
+        <button class="preview-watermark-logo" id="credits-trigger" data-tooltip="Créditos">
           <img src="img/app-logo-h.png" alt="" />
         </button>
       </div>
