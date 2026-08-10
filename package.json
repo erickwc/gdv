@@ -1,7 +1,7 @@
 {
   "name": "generador-de-video-electron",
   "productName": "Hyro Studio",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Generador de Video (Electron, fondo Mica/Acrylic nativo de Windows 11)",
   "private": true,
   "main": "src/main/main.js",
@@ -32,16 +32,29 @@
       "package.json"
     ],
     "extraResources": [
-      { "from": "python/dist/sidecar", "to": "python-dist/sidecar" }
+      {
+        "from": "python/dist/sidecar",
+        "to": "python-dist/sidecar"
+      }
     ],
     "mac": {
       "icon": "build/icons/icon.icns",
-      "target": ["dmg", "zip"],
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "category": "public.app-category.video"
     },
     "win": {
       "icon": "build/icon.ico",
-      "target": [{ "target": "nsis", "arch": ["x64"] }]
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,
@@ -61,10 +74,22 @@
       "icon": "build/icons/icon.icns",
       "iconSize": 100,
       "background": "build/dmg-background.png",
-      "window": { "width": 540, "height": 380 },
+      "window": {
+        "width": 540,
+        "height": 380
+      },
       "contents": [
-        { "x": 140, "y": 150, "type": "file" },
-        { "x": 400, "y": 150, "type": "link", "path": "/Applications" }
+        {
+          "x": 140,
+          "y": 150,
+          "type": "file"
+        },
+        {
+          "x": 400,
+          "y": 150,
+          "type": "link",
+          "path": "/Applications"
+        }
       ]
     },
     "publish": {
