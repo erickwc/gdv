@@ -1,7 +1,7 @@
 {
   "name": "generador-de-video-electron",
   "productName": "Hyro Studio",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Generador de Video (Electron, fondo Mica/Acrylic nativo de Windows 11)",
   "private": true,
   "main": "src/main/main.js",
