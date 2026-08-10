@@ -2088,8 +2088,23 @@ input[type="text"].preset-inline-input {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  /* .credits-modal tiene align-items:flex-start, asi que sin ancho
+     explicito esto se achica al contenido y el space-between de
+     .credits-entry no tiene donde empujar los iconos -- quedaban
+     pegados al nombre en vez de ir al borde derecho del modal. */
+  width: 100%;
 }
+/* Fila nombre+arroba (columna, a la izquierda) contra los 3 iconos de
+   redes (Youtube - Instagram - Beatstars, pedido explicito en ese orden,
+   a la derecha) -- align-items:center centra los iconos contra las DOS
+   lineas de texto (nombre + @handle), no solo contra el nombre. */
 .credits-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.credits-name-col {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -2101,27 +2116,17 @@ input[type="text"].preset-inline-input {
   color: #ffffff;
   text-align: left;
 }
-/* Fila del nombre + los 3 iconos de redes (Youtube - Instagram - Beatstars,
-   pedido explicito en ese orden) -- el nombre queda pegado a la izquierda y
-   los iconos a la derecha, ver .credits-entry (column) que envuelve esto y
-   a .credits-handle debajo. */
-.credits-name-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-}
 .credits-socials {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 .credits-social-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
   padding: 0;
   border: none;
   background: transparent;
@@ -2130,12 +2135,6 @@ input[type="text"].preset-inline-input {
   color: var(--muted);
   cursor: pointer;
   transition: color 0.15s ease;
-}
-/* El logo real de Youtube es un rectangulo apaisado (no un cuadrado como
-   Instagram/Beatstars) -- mismo alto que los otros dos (14px), pero mas
-   ancho para no deformar sus proporciones reales. */
-.credits-social-btn--wide {
-  width: 19px;
 }
 .credits-social-btn:hover {
   color: #ffffff;
