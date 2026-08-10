@@ -1459,9 +1459,8 @@ function setupDragHighlight(selector) {
 window.addEventListener("pywebviewready", () => {
   fillStaticIcons();
   // Gris neutro desde el primer pintado -- sin esto --accent se quedaba en
-  // el morado fijo de :root (styles.css) hasta el primer refresh() con
-  // hasMedia=false, que tarda lo que tarden refreshTemplates()/
-  // refreshAvailableTextures() en resolver.
+  // el morado fijo de :root (styles.css) hasta que refresh() (mas abajo)
+  // resuelve, aunque ahora sea casi instantaneo.
   if (window.setAdaptiveAccent) window.setAdaptiveAccent(null);
   FocusPicker.init();
   LoopSlider.init();
@@ -1482,7 +1481,20 @@ window.addEventListener("pywebviewready", () => {
   ["body", "#preview-dropzone", "#template-section", "#texture-section", "#cover-preview"]
     .forEach(setupDragHighlight);
 
-  Promise.all([refreshTemplates(), refreshAvailableTextures()]).then(refresh);
+  // Las 3 en paralelo y SIN esperarse entre si -- antes refresh() (que deja
+  // usable el resto de la app: boton Generar, ruta de salida, todo lo que
+  // arma render()) quedaba atado a que ADEMAS terminaran refreshTemplates()/
+  // refreshAvailableTextures(), que leen del disco una miniatura por cada
+  // plantilla/textura guardada (ver _thumb_for en api.py) -- si esos
+  // archivos viven en un disco externo lento para responder (pedido
+  // explicito soportar esto, ver _restore_template_from_config), la app
+  // entera se sentia trabada esos primeros segundos aunque no tuviera nada
+  // que ver con el medio/audio recien cargados. Ahora la galeria de
+  // plantillas/texturas puede tardar un toque mas en aparecer, pero el
+  // resto de la app arranca usable al instante.
+  refresh();
+  refreshTemplates();
+  refreshAvailableTextures();
 
   // ------------------------------------------ plantilla / texturas: "+ Añadir"
   $("#template-add-btn").addEventListener("click", browseTemplate);
