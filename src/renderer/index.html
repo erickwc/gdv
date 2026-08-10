@@ -607,13 +607,15 @@
       </div>
     </div>
 
-    <!-- Aviso de "hay una actualizacion lista" (ver autoUpdate.js/onUpdateStatus
-         en app.js) -- solo aparece cuando autoUpdater ya termino de bajarla
-         sola en segundo plano. Nunca se reinicia solo: el usuario elige
-         cuando, para no cortar una exportacion a medias. -->
+    <!-- Aviso de "hay una version nueva" (ver autoUpdate.js/onUpdateStatus
+         en app.js) -- aparece apenas detecta un Release mas nuevo en
+         GitHub. El boton NO instala solo (sin certificado de Apple pago,
+         Gatekeeper rechaza el instalador automatico -- probado): abre la
+         pagina de Releases para bajar el .dmg e instalarlo a mano, igual
+         que la primera vez. -->
     <div class="update-toast" id="update-toast" hidden>
-      <span id="update-toast-text">Hay una actualización lista</span>
-      <button id="update-toast-btn">Reiniciar y actualizar</button>
+      <span id="update-toast-text">Hay una actualización disponible</span>
+      <button id="update-toast-btn">Descargar actualización</button>
     </div>
 
     </div>

@@ -2365,21 +2365,28 @@ const Preview = (() => {
         $("#preview-surface").classList.remove("preview-settling");
       });
     }
-    // Aviso de actualizacion (ver autoUpdate.js) -- solo "ready" hace algo:
-    // "downloading"/"none"/"error" son silenciosos a proposito, el usuario no
-    // tiene nada que decidir todavia en esos casos.
+    // Aviso de actualizacion (ver autoUpdate.js) -- solo "available" hace
+    // algo: "none"/"error" son silenciosos a proposito, el usuario no tiene
+    // nada que decidir todavia en esos casos. El boton NO instala nada (sin
+    // certificado de Apple pago, Gatekeeper rechaza el instalador
+    // automatico -- ver el comentario grande en autoUpdate.js): abre la
+    // pagina de Releases para bajar el .dmg a mano, igual que la primera
+    // instalacion.
     if (window.api && window.api.onUpdateStatus) {
       window.api.onUpdateStatus((data) => {
-        if (data.state !== "ready") return;
+        if (data.state !== "available") return;
+        $("#update-toast-text").textContent = `Hay una actualización disponible (v${data.version})`;
         const toast = $("#update-toast");
         toast.hidden = false;
         void toast.offsetWidth; // forceReflow, mismo patron que openCreditsModal
         toast.classList.add("open");
       });
     }
-    if (window.api && window.api.installUpdateNow) {
-      $("#update-toast-btn").addEventListener("click", () => window.api.installUpdateNow());
-    }
+    $("#update-toast-btn").addEventListener("click", () => {
+      if (window.api && window.api.openExternal) {
+        window.api.openExternal("https://github.com/erickwc/gdv/releases/latest");
+      }
+    });
   }
 
   return { init, applyState, onReady, schedulePreview };

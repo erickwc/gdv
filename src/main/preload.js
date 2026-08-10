@@ -49,10 +49,12 @@ contextBridge.exposeInMainWorld("api", {
   // titleBarOverlay; macOS: izquierda, los 3 semaforos via
   // trafficLightPosition) y dejarles el hueco correcto en .app-titlebar.
   platform: process.platform,
-  // Aviso de actualizacion (ver autoUpdate.js): "downloading"/"ready"/
-  // "error"/"none" -- la banderita de app.js solo actua con "ready".
+  // Aviso de actualizacion (ver autoUpdate.js): "available"/"error"/"none"
+  // -- la banderita de app.js solo actua con "available". El boton no
+  // instala nada (sin certificado de Apple, Gatekeeper lo rechaza -- ver
+  // el comentario grande en autoUpdate.js): abre la pagina de Releases con
+  // openExternal, de ahi arriba.
   onUpdateStatus: (callback) => {
     ipcRenderer.on("update-status", (_event, data) => callback(data));
   },
-  installUpdateNow: () => ipcRenderer.invoke("update-install-now"),
 });
