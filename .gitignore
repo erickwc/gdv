@@ -4,3 +4,14 @@ python/__pycache__/
 python/config.json
 .DS_Store
 *.app/
+
+# Artefactos de compilar el instalador (ver package.json "build:mac" y
+# pythonBridge.js) -- se generan de nuevo en cada build, no hace falta
+# versionarlos. El .icns final SI se versiona (build/icons/icon.icns),
+# solo el iconset intermedio y el PNG fuente no.
+python/dist/
+python/build_pyinstaller/
+python/sidecar.spec
+release/
+build/icons/icon.iconset/
+build/icons/source_256.png

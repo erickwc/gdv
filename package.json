@@ -1,17 +1,57 @@
 {
   "name": "generador-de-video-electron",
-  "version": "0.1.0",
+  "productName": "Hyro Studio",
+  "version": "1.0.0",
   "description": "Generador de Video (Electron, fondo Mica/Acrylic nativo de Windows 11)",
   "private": true,
   "main": "src/main/main.js",
   "scripts": {
-    "dev": "electron ."
+    "dev": "electron .",
+    "build:python": "cd python && venv/bin/pyinstaller --noconfirm --name sidecar --distpath dist --workpath build_pyinstaller --specpath . sidecar.py",
+    "build:mac": "npm run build:python && electron-builder --mac"
   },
   "devDependencies": {
-    "electron": "^43.1.0"
+    "electron": "^43.1.0",
+    "electron-builder": "^26.15.3"
   },
   "dependencies": {
     "@kawarp/core": "^1.2.0",
-    "@paper-design/shaders": "^0.0.77"
+    "@paper-design/shaders": "^0.0.77",
+    "electron-updater": "^6.8.9"
+  },
+  "build": {
+    "appId": "com.hyrostudio.app",
+    "productName": "Hyro Studio",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      { "from": "python/dist/sidecar", "to": "python-dist/sidecar" }
+    ],
+    "mac": {
+      "icon": "build/icons/icon.icns",
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.video"
+    },
+    "dmg": {
+      "title": "Hyro Studio 1.0",
+      "icon": "build/icons/icon.icns",
+      "iconSize": 100,
+      "background": "build/dmg-background.png",
+      "window": { "width": 540, "height": 380 },
+      "contents": [
+        { "x": 140, "y": 150, "type": "file" },
+        { "x": 400, "y": 150, "type": "link", "path": "/Applications" }
+      ]
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "erickwc",
+      "repo": "gdv"
+    }
   }
 }

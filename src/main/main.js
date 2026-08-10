@@ -8,6 +8,7 @@ const { app, BrowserWindow, ipcMain, screen, session, shell } = require("electro
 const { PythonBridge } = require("./pythonBridge");
 const dialogs = require("./dialogs");
 const previewWindow = require("./previewWindow");
+const { setupAutoUpdate } = require("./autoUpdate");
 
 let mainWindow = null;
 let previewWin = null;
@@ -42,6 +43,12 @@ app.commandLine.appendSwitch("disable-lcd-text");
 // la app abierta de fondo. Tiene que ir antes de whenReady(), como el
 // switch de arriba.
 app.commandLine.appendSwitch("disable-features", "HardwareMediaKeyHandling,MediaSessionService");
+
+// Nombre que ve el usuario -- menu de arriba en Mac, Alt+Tab/barra de tareas
+// en Windows. Empaquetado, electron-builder ya lo pone solo (productName del
+// package.json termina en el Info.plist/exe), pero en "npm run dev" seguia
+// diciendo "Electron" sin esto.
+app.setName("Hyro Studio");
 
 // Se probo el fondo Mica/Acrylic nativo de Windows 11 (backgroundMaterial +
 // transparent:true) largo y tendido -- funcionaba, pero:
@@ -594,6 +601,7 @@ app.whenReady().then(async () => {
 
   mainWindow = createMainWindow();
   previewWin = previewWindow.createPreviewWindow();
+  setupAutoUpdate(() => mainWindow);
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) mainWindow = createMainWindow();

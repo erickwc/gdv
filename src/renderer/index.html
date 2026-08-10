@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
   <meta charset="utf-8">
-  <title>Generador de Video</title>
+  <title>Hyro Studio</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -597,6 +597,15 @@
         <h3 class="glass-window-title">Elegí una foto</h3>
         <div class="ig-picker-grid" id="ig-picker-grid"></div>
       </div>
+    </div>
+
+    <!-- Aviso de "hay una actualizacion lista" (ver autoUpdate.js/onUpdateStatus
+         en app.js) -- solo aparece cuando autoUpdater ya termino de bajarla
+         sola en segundo plano. Nunca se reinicia solo: el usuario elige
+         cuando, para no cortar una exportacion a medias. -->
+    <div class="update-toast" id="update-toast" hidden>
+      <span id="update-toast-text">Hay una actualización lista</span>
+      <button id="update-toast-btn">Reiniciar y actualizar</button>
     </div>
 
     </div>

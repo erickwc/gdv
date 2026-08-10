@@ -2343,6 +2343,21 @@ const Preview = (() => {
         $("#preview-surface").classList.remove("preview-settling");
       });
     }
+    // Aviso de actualizacion (ver autoUpdate.js) -- solo "ready" hace algo:
+    // "downloading"/"none"/"error" son silenciosos a proposito, el usuario no
+    // tiene nada que decidir todavia en esos casos.
+    if (window.api && window.api.onUpdateStatus) {
+      window.api.onUpdateStatus((data) => {
+        if (data.state !== "ready") return;
+        const toast = $("#update-toast");
+        toast.hidden = false;
+        void toast.offsetWidth; // forceReflow, mismo patron que openCreditsModal
+        toast.classList.add("open");
+      });
+    }
+    if (window.api && window.api.installUpdateNow) {
+      $("#update-toast-btn").addEventListener("click", () => window.api.installUpdateNow());
+    }
   }
 
   return { init, applyState, onReady, schedulePreview };

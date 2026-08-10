@@ -49,4 +49,10 @@ contextBridge.exposeInMainWorld("api", {
   // titleBarOverlay; macOS: izquierda, los 3 semaforos via
   // trafficLightPosition) y dejarles el hueco correcto en .app-titlebar.
   platform: process.platform,
+  // Aviso de actualizacion (ver autoUpdate.js): "downloading"/"ready"/
+  // "error"/"none" -- la banderita de app.js solo actua con "ready".
+  onUpdateStatus: (callback) => {
+    ipcRenderer.on("update-status", (_event, data) => callback(data));
+  },
+  installUpdateNow: () => ipcRenderer.invoke("update-install-now"),
 });

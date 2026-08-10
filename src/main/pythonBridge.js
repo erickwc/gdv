@@ -3,6 +3,7 @@
 const { spawn, spawnSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
+const { app } = require("electron");
 
 // Sidecar de Python: protocolo JSON por linea sobre stdio (ver
 // python/sidecar.py). Cada llamada manda {id, method, params} y espera
@@ -18,14 +19,38 @@ class PythonBridge {
   }
 
   start() {
-    const pythonDir = path.join(__dirname, "..", "..", "python");
-    const venvPython = process.platform === "win32"
-      ? path.join(pythonDir, "venv", "Scripts", "python.exe")
-      : path.join(pythonDir, "venv", "bin", "python");
-    const pythonExe = fs.existsSync(venvPython) ? venvPython : (process.platform === "win32" ? "python" : "python3");
+    let command;
+    let args;
+    let cwd;
 
-    this.proc = spawn(pythonExe, ["-u", "sidecar.py"], {
-      cwd: pythonDir,
+    if (app.isPackaged) {
+      // Empaquetado: nada de venv/interprete de sistema (el usuario no
+      // tiene por que tener Python instalado) -- se usa el binario que
+      // arma PyInstaller a partir de sidecar.py, copiado a
+      // Contents/Resources/python-dist por electron-builder (ver
+      // "extraResources" en package.json y "build:python" en package.json).
+      // Ese binario YA ES el ejecutable final: se corre directo, sin
+      // interprete ni argumentos.
+      const sidecarDir = path.join(process.resourcesPath, "python-dist", "sidecar");
+      const sidecarExe = process.platform === "win32"
+        ? path.join(sidecarDir, "sidecar.exe")
+        : path.join(sidecarDir, "sidecar");
+      command = sidecarExe;
+      args = [];
+      cwd = sidecarDir;
+    } else {
+      const pythonDir = path.join(__dirname, "..", "..", "python");
+      const venvPython = process.platform === "win32"
+        ? path.join(pythonDir, "venv", "Scripts", "python.exe")
+        : path.join(pythonDir, "venv", "bin", "python");
+      const pythonExe = fs.existsSync(venvPython) ? venvPython : (process.platform === "win32" ? "python" : "python3");
+      command = pythonExe;
+      args = ["-u", "sidecar.py"];
+      cwd = pythonDir;
+    }
+
+    this.proc = spawn(command, args, {
+      cwd,
       stdio: ["pipe", "pipe", "pipe"],
     });
 
