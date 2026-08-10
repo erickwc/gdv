@@ -202,6 +202,7 @@ function fillStaticIcons() {
   $("#open-folder-btn").innerHTML = iconSvg("folderOpen");
   $("#open-video-btn").innerHTML = iconSvg("video");
   $("#save-cover-btn").innerHTML = iconSvg("photoEdit");
+  $("#save-cover-standalone-btn").innerHTML = iconSvg("photoEdit");
   $("#cover-modal-close").innerHTML = iconSvgFilled("close");
   $$(".unit-percent").forEach((el) => (el.innerHTML = iconSvg("percentage", 12)));
   // El atajo de pegar YA funciona con Cmd+V en Mac (es el evento nativo
@@ -372,6 +373,10 @@ function renderChips(state) {
   $("#scale-section").hidden = !state.show_scale;
 
   $("#generate-btn").disabled = !state.ready;
+  // A diferencia de "Generar video", una portada es una imagen sola -- no
+  // hace falta audio para armarla, asi que alcanza con que haya un medio
+  // cargado (state.ready pide medio Y audio, ver "ready" en api.py).
+  $("#save-cover-standalone-btn").disabled = !state.media_path;
 }
 
 function handleResult(result) {
@@ -1738,11 +1743,28 @@ window.addEventListener("pywebviewready", () => {
   // Cancelar, con Escape o clickeando afuera, que es lo que corresponde a un
   // panel con controles adentro. El click en el boton sigue siendo el atajo
   // instantaneo, sin esperar el retraso del hover.
-  $("#save-cover-btn").addEventListener("mouseenter", scheduleCoverModalOpen);
+  $("#save-cover-btn").addEventListener("mouseenter", () => scheduleCoverModalOpen($("#save-cover-btn")));
   $("#save-cover-btn").addEventListener("mouseleave", cancelCoverModalTimers);
   $("#save-cover-btn").addEventListener("click", () => {
     cancelCoverModalTimers();
-    openCoverModal();
+    openCoverModal($("#save-cover-btn"));
+  });
+  // Mismo panel, pero disponible ANTES de exportar (sin pasar por el video) --
+  // pedido explicito: poder guardar la portada sola. Mismo #cover-modal, el
+  // mismo flujo entero -- la unica diferencia real es DONDE vive el boton
+  // (al lado de "Generar video", ver .generate-row en index.html) y que
+  // save_cover ya no exige un export previo (ver api.py). disabled nativo
+  // ya evita el click, pero mouseenter SI llega a un boton disabled en
+  // Chromium, asi que ese si necesita el guard a mano.
+  const standaloneCoverBtn = $("#save-cover-standalone-btn");
+  standaloneCoverBtn.addEventListener("mouseenter", () => {
+    if (!standaloneCoverBtn.disabled) scheduleCoverModalOpen(standaloneCoverBtn);
+  });
+  standaloneCoverBtn.addEventListener("mouseleave", cancelCoverModalTimers);
+  standaloneCoverBtn.addEventListener("click", () => {
+    if (standaloneCoverBtn.disabled) return;
+    cancelCoverModalTimers();
+    openCoverModal(standaloneCoverBtn);
   });
 
   // ------------------------------------------------- modal "Guardar portada"
@@ -1860,7 +1882,7 @@ window.addEventListener("pywebviewready", () => {
   $("#cover-modal-close").addEventListener("click", closeCoverModal);
   document.addEventListener("click", (e) => {
     if ($("#cover-modal").hidden) return;
-    if (e.target.closest("#cover-modal") || e.target.closest("#save-cover-btn")) return;
+    if (e.target.closest("#cover-modal") || e.target.closest("#save-cover-btn") || e.target.closest("#save-cover-standalone-btn")) return;
     closeCoverModal();
   });
   document.addEventListener("keydown", (e) => {
@@ -3282,7 +3304,8 @@ function setupCoverFramePicker() {
   renderCoverModal();
 }
 
-function openCoverModal() {
+function openCoverModal(trigger) {
+  trigger = trigger || $("#save-cover-btn");
   const modal = $("#cover-modal");
   if (!modal.hidden) return; // ya esta abierto (el mouse volvio a entrar)
   const isVideo = !!(lastState && lastState.media_is_video);
@@ -3312,7 +3335,7 @@ function openCoverModal() {
   // coverVideoEl), asi que buscar un momento aca no mueve ni pausa el
   // previsualizador grande.
   modal.hidden = false;
-  positionNearTrigger($("#save-cover-btn"), modal);
+  positionNearTrigger(trigger, modal);
   animateDropdown(modal, true, true); // entra subiendo, desde el boton
   if (isVideo) setupCoverFramePicker();
 }
@@ -3339,7 +3362,7 @@ function cancelCoverModalTimers() {
   }
 }
 
-function scheduleCoverModalOpen() {
+function scheduleCoverModalOpen(trigger) {
   if (coverModalCloseTimer) {
     clearTimeout(coverModalCloseTimer);
     coverModalCloseTimer = null;
@@ -3347,7 +3370,7 @@ function scheduleCoverModalOpen() {
   if (!$("#cover-modal").hidden || coverModalHoverTimer) return;
   coverModalHoverTimer = setTimeout(() => {
     coverModalHoverTimer = null;
-    openCoverModal();
+    openCoverModal(trigger);
   }, 150);
 }
 

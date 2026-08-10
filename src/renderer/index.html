@@ -111,7 +111,7 @@
            en styles.css) y ahi se saldria de la ventana. togglePreviewPanel
            (app.js) actualiza data-tooltip, no title, cuando cambia de
            estado. -->
-      <button class="titlebar-btn tooltip-below" id="preview-toggle-btn" data-tooltip="Ocultar el previsualizador"></button>
+      <button class="titlebar-btn tooltip-below tooltip-align-right" id="preview-toggle-btn" data-tooltip="Ocultar el previsualizador"></button>
     </div>
 
     <div class="app-shell">
@@ -407,6 +407,14 @@
 
           <div class="generate-row">
             <button class="btn btn-primary btn-generate" id="generate-btn" disabled>Generar video</button>
+            <!-- Guardar SOLO la portada, sin exportar el video -- pedido
+                 explicito. Mismo boton/icono/panel que #save-cover-btn de
+                 arriba (que recien aparece DESPUES de exportar, dentro de
+                 #result-card): este vive siempre aca al lado de "Generar
+                 video" y abre el mismo #cover-modal (ver openCoverModal en
+                 app.js, que ahora recibe CUAL de los dos botones lo abrio
+                 para ubicarse pegado a ese). -->
+            <button class="btn btn-icon tooltip-align-right" id="save-cover-standalone-btn" data-tooltip="Guardar portada" disabled></button>
           </div>
 
         </div>

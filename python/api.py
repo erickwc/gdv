@@ -1825,8 +1825,20 @@ class Api:
         image_focus: (zoom, x, y) del encuadre que el usuario eligio a mano
         arrastrando la imagen en el modal (ver build_focus_crop en engine.py y
         layoutCoverComposePreview en app.js, que dibuja exactamente el mismo
-        recorte)."""
-        if not self.cover_available or not self.output_path:
+        recorte).
+
+        Ya NO exige cover_available (que solo se prende recien despues de
+        exportar el video, ver _on_job_done): se pidio poder guardar la
+        portada SIN exportar el video primero, con un boton aparte al lado
+        de "Generar video" (ver #save-cover-standalone-btn en app.js). La
+        composicion de aca abajo nunca dependio del video ya exportado --
+        arma su propio comando de ffmpeg desde media_path/template_path
+        igual que el previsualizador -- asi que lo unico que hacia falta
+        soltar era este chequeo. output_path SI sigue haciendo falta:
+        de ahi sale la carpeta y el nombre base del PNG, pero ya se calcula
+        solo apenas hay medio o audio cargado (ver _update_default_output),
+        mucho antes de exportar nada."""
+        if not self.output_path:
             return {"ok": False, "error": "No hay portada disponible."}
         if source_image:
             try:

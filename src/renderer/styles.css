@@ -1268,6 +1268,32 @@ input[type="text"].preset-inline-input {
   top: calc(100% + 2px);
 }
 
+/* Variante para un boton pegado al borde DERECHO del panel
+   (#preview-toggle-btn, #save-cover-standalone-btn): centrado (left:50% +
+   translateX(-50%) de la regla base) hace que la mitad derecha del globo se
+   salga del panel/ventana y quede cortada por el overflow:hidden de
+   alrededor. Ancla el borde DERECHO del globo al borde derecho del boton en
+   vez de centrarlo, asi crece hacia la izquierda y siempre queda entero. */
+.tooltip-align-right[data-tooltip]::after {
+  left: auto;
+  right: 0;
+  transform: translateY(4px);
+}
+.tooltip-align-right[data-tooltip]:hover::after,
+.tooltip-align-right[data-tooltip]:focus-visible::after {
+  transform: translateY(0);
+}
+/* Combinado con .tooltip-below (arriba): mismo ancle a la derecha, pero
+   respeta el translateY negativo de esa variante (el globo entra desde
+   arriba, no desde abajo). */
+.tooltip-below.tooltip-align-right[data-tooltip]::after {
+  transform: translateY(-4px);
+}
+.tooltip-below.tooltip-align-right[data-tooltip]:hover::after,
+.tooltip-below.tooltip-align-right[data-tooltip]:focus-visible::after {
+  transform: translateY(0);
+}
+
 .chip-info {
   display: flex;
   flex-direction: column;
@@ -1427,7 +1453,17 @@ input[type="text"].preset-inline-input {
 
 .generate-row {
   display: flex;
+  align-items: center;
   gap: 12px;
+}
+/* #save-cover-standalone-btn: el .btn-icon de siempre (24x24) se ve chico
+   al lado de .btn-generate, que es bastante mas alto por su padding --
+   aca (a diferencia de dentro de un .chip, ver mas abajo) no hay ninguna
+   caja compartida que lo achique, asi que agranda a la par. border/fondo/
+   radio ya le vienen bien de .btn -- no hace falta repetirlos. */
+.generate-row .btn-icon {
+  width: 34px;
+  height: 34px;
 }
 
 /* "Generar video" es la accion principal, asi que es el unico texto del
