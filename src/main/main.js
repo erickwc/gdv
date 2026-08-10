@@ -3,7 +3,7 @@
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
-const { app, BrowserWindow, ipcMain, screen, session } = require("electron");
+const { app, BrowserWindow, ipcMain, screen, session, shell } = require("electron");
 
 const { PythonBridge } = require("./pythonBridge");
 const dialogs = require("./dialogs");
@@ -33,6 +33,15 @@ const MIN_HEIGHT = 760;
 // pero esa propiedad SOLO existe en macOS -- en Windows no hace nada, y este
 // switch es la unica forma de conseguirlo. Tiene que ir antes de whenReady().
 app.commandLine.appendSwitch("disable-lcd-text");
+
+// Apenas hay un <video>/<audio> en la pagina (el previsualizador del loop,
+// el beat), Chromium se registra ante el sistema como reproductor de medios
+// -- en Mac eso le hace agarrar los botones de pausa/retroceder/adelantar
+// del teclado (y el widget "Reproduciendo ahora"), aunque esos botones no
+// hagan nada aca: pedido explicito, molestaba para controlar Spotify con
+// la app abierta de fondo. Tiene que ir antes de whenReady(), como el
+// switch de arriba.
+app.commandLine.appendSwitch("disable-features", "HardwareMediaKeyHandling,MediaSessionService");
 
 // Se probo el fondo Mica/Acrylic nativo de Windows 11 (backgroundMaterial +
 // transparent:true) largo y tendido -- funcionaba, pero:
@@ -514,6 +523,17 @@ function registerIpcHandlers() {
     // "leave-html-full-screen" pueda devolverlo tal cual al salir.
     if (resizable) boundsBeforeFullscreen.set(win, win.getBounds());
     win.setResizable(!!resizable);
+    return true;
+  });
+
+  // Redes sociales en el modal de creditos (ver .credits-social-btn en
+  // index.html/app.js): solo http/https, para no dejar que un dato raro
+  // termine abriendo un esquema tipo file:// o algo ejecutable.
+  ipcMain.handle("open-external", (_event, url) => {
+    let parsed;
+    try { parsed = new URL(url); } catch (e) { return false; }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    shell.openExternal(url);
     return true;
   });
 

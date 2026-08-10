@@ -1706,6 +1706,14 @@ window.addEventListener("pywebviewready", () => {
     // el guard/_generating en start_generation, api.py).
     if (btn.disabled) return;
     btn.disabled = true;
+    // Pausa el previsualizador ANTES de arrancar: con un video cargado, dejarlo
+    // reproduciendo durante la exportacion le sigue compitiendo CPU real al
+    // ffmpeg de la exportacion (decodificar+componer el canvas cuadro a cuadro,
+    // mas el muestreo del ambilight) -- medido, exportar con la previsualizacion
+    // sonando tardaba 1.58x mas que con ella en pausa. Mismo espiritu que
+    // _cancel_preview_proxy_process en el lado de Python (api.py), pero para la
+    // reproduccion del propio usuario en vez de la copia liviana de fondo.
+    pauseLoopPreview();
     pywebview.api.output_would_overwrite().then((wouldOverwrite) => {
       if (wouldOverwrite) {
         const name = $("#output-label").textContent;
@@ -1864,6 +1872,11 @@ window.addEventListener("pywebviewready", () => {
   // ver openCreditsModal/closeCreditsModal mas abajo.
   $("#credits-trigger").addEventListener("click", openCreditsModal);
   $("#credits-modal-backdrop").addEventListener("click", (e) => {
+    // Los iconos de redes van primero: closest() los agarra aunque el click
+    // caiga en el trazo del SVG y no en el boton en si, y con return no cae
+    // al chequeo de "cerrar por click en el fondo" de abajo.
+    const social = e.target.closest(".credits-social-btn");
+    if (social) { window.api.openExternal(social.dataset.url); return; }
     if (e.target === e.currentTarget) closeCreditsModal(); // solo el fondo, no la tarjeta
   });
   document.addEventListener("keydown", (e) => {
@@ -2346,9 +2359,22 @@ const Preview = (() => {
 // el beat quedaba mudo en el previsualizador sin ningun error, aunque
 // exportara bien (Python usa la ruta cruda, sin este problema). Mismo
 // arreglo que urlDeArchivo en live-preview.js -- ver el comentario ahi.
+//
+// El "/" antes de armar la URL SOLO se agrega si la ruta no lo trae ya: en
+// Mac/Linux una ruta absoluta ya empieza con "/" ("/Users/..."), asi que
+// "file:///" + esa ruta quedaba con CUATRO barras ("file:////Users/...")
+// en vez de tres. El archivo igual cargaba -- el navegador tolera la barra
+// de mas ahi -- pero ese string ya no es el mismo que el propio navegador
+// devuelve al leer despues beat.src (que SI normaliza a tres barras). Eso
+// rompia la comparacion "es el mismo archivo de antes?" en startBeat: daba
+// que no, SIEMPRE, y el beat se reiniciaba a 0 en cada pausa/reanudar, no
+// solo cuando el archivo cambiaba de verdad. En Windows la ruta no trae "/"
+// adelante ("C:/Users/...", ya con \ cambiadas arriba), asi que ahi si hace
+// falta agregarlo.
 function buildFileUrl(path) {
-  const limpia = path.replace(/\\/g, "/");
-  return `file:///${encodeURI(limpia).replace(/#/g, "%23").replace(/\?/g, "%3F")}`;
+  let limpia = path.replace(/\\/g, "/");
+  if (!limpia.startsWith("/")) limpia = `/${limpia}`;
+  return `file://${encodeURI(limpia).replace(/#/g, "%23").replace(/\?/g, "%3F")}`;
 }
 
 // Ruta del ultimo fragmento que compuso ffmpeg. Ya no se usa para ver el loop
@@ -2736,6 +2762,29 @@ function initLoopPreviewControls() {
     else playLoopPreview();
   };
   toggle.addEventListener("click", alternar);
+
+  // Barra espaciadora = play/pausa, como en cualquier reproductor. No habia
+  // NINGUN manejador propio para esto -- lo que pasaba con la barra
+  // espaciadora dependia pura y exclusivamente de que boton hubiera quedado
+  // enfocado por casualidad (el comportamiento nativo del navegador es
+  // "la barra espaciadora clickea el elemento con foco"): si era el de
+  // pantalla completa, la cerraba de golpe a mitad de la reproduccion; si no
+  // habia nada enfocado, no pasaba nada. preventDefault() corta esa
+  // activacion nativa antes de que dispare cualquier otra cosa.
+  document.addEventListener("keydown", (e) => {
+    if (e.code !== "Space" && e.key !== " ") return;
+    const activo = document.activeElement;
+    const tag = activo && activo.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || (activo && activo.isContentEditable)) return;
+    // Ningun modal abierto se lleva la espaciadora -- si el usuario esta
+    // eligiendo una foto de Instagram o ajustando la portada, no tiene
+    // sentido que le pause el loop de atras.
+    const modalAbierto = ["cover-modal", "ig-picker-backdrop", "credits-modal-backdrop"]
+      .some((id) => { const el = document.getElementById(id); return el && !el.hidden; });
+    if (modalAbierto) return;
+    e.preventDefault();
+    alternar();
+  });
   // Click en el cuadro = play/pausa, como en cualquier reproductor. La barra
   // esta ENCIMA (hermana, no hija), asi que tocar el boton o arrastrar la
   // barrita no llega hasta aca.

@@ -13,6 +13,9 @@ contextBridge.exposeInMainWorld("api", {
   // Ruta real de un archivo soltado (drag&drop) -- reemplaza el
   // pywebviewFullPath que pywebview inyectaba en cada File.
   getPathForFile: (file) => webUtils.getPathForFile(file),
+  // Redes sociales del modal de creditos -- se abren con el navegador de
+  // afuera, no adentro de la app (ver open-external en main.js).
+  openExternal: (url) => ipcRenderer.invoke("open-external", url),
   // Angosta la ventana al ancho del panel (o la devuelve a su ancho de
   // antes con null) cuando se cierra/abre el previsualizador -- el renderer
   // no puede cambiar el tamano de su propia ventana.

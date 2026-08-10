@@ -72,8 +72,9 @@ window.LivePreview = (() => {
   // Se escapan los dos a mano, DESPUES de encodeURI() (no antes: haria
   // doble-escape del "%" que agrega).
   function urlDeArchivo(ruta) {
-    const limpia = ruta.replace(/\\/g, "/");
-    return `file:///${encodeURI(limpia).replace(/#/g, "%23").replace(/\?/g, "%3F")}`;
+    let limpia = ruta.replace(/\\/g, "/");
+    if (!limpia.startsWith("/")) limpia = `/${limpia}`;
+    return `file://${encodeURI(limpia).replace(/#/g, "%23").replace(/\?/g, "%3F")}`;
   }
 
   // ------------------------------------------------------------ el medio
