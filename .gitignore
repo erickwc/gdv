@@ -15,3 +15,15 @@ python/sidecar.spec
 release/
 build/icons/icon.iconset/
 build/icons/source_256.png
+
+# Windows: el .ico final SI se versiona (build/icon.ico, igual que el .icns
+# de Mac) junto con su fuente y el script que lo arma -- sin la fuente en el
+# repo el icono no se puede regenerar desde una copia limpia. El PNG de 512
+# es un subproducto de make-icon.py que no usa nadie.
+build/icon.png
+
+# Sobras de un empaquetado anterior (Python embebido + electron-builder.yml),
+# reemplazado por el PyInstaller de "build:python:win". Se pueden borrar.
+build/python-dist/
+build/.cache/
+dist/

@@ -49,8 +49,18 @@ class PythonBridge {
       cwd = pythonDir;
     }
 
+    // Empaquetada, la app puede quedar en una carpeta de solo lectura
+    // (Program Files en Windows), asi que el sidecar NO puede guardar
+    // config.json/plantillas/texturas junto a su ejecutable -- se le pasa la
+    // carpeta de datos del usuario y engine.py la respeta (ver GDV_DATA_DIR
+    // ahi). En desarrollo no se manda nada y todo queda junto al codigo.
+    const env = app.isPackaged
+      ? { ...process.env, GDV_DATA_DIR: app.getPath("userData") }
+      : process.env;
+
     this.proc = spawn(command, args, {
       cwd,
+      env,
       stdio: ["pipe", "pipe", "pipe"],
     });
 

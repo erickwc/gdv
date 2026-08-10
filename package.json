@@ -8,7 +8,9 @@
   "scripts": {
     "dev": "electron .",
     "build:python": "cd python && venv/bin/pyinstaller --noconfirm --name sidecar --distpath dist --workpath build_pyinstaller --specpath . sidecar.py",
-    "build:mac": "npm run build:python && electron-builder --mac"
+    "build:python:win": "cd python && venv\\Scripts\\pyinstaller.exe --noconfirm --name sidecar --distpath dist --workpath build_pyinstaller --specpath . sidecar.py",
+    "build:mac": "npm run build:python && electron-builder --mac",
+    "build:win": "npm run build:python:win && electron-builder --win"
   },
   "devDependencies": {
     "electron": "^43.1.0",
@@ -36,6 +38,23 @@
       "icon": "build/icons/icon.icns",
       "target": ["dmg", "zip"],
       "category": "public.app-category.video"
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [{ "target": "nsis", "arch": ["x64"] }]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Hyro Studio",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "artifactName": "Hyro Studio Setup ${version}.${ext}",
+      "deleteAppDataOnUninstall": false
     },
     "dmg": {
       "title": "Hyro Studio 1.0",

@@ -71,7 +71,18 @@ if IS_MAC:
 
 # Empaquetada (PyInstaller): las carpetas del usuario (plantillas, texturas,
 # config) van junto al ejecutable para que sean faciles de encontrar y editar.
-if getattr(sys, "frozen", False):
+#
+# En Windows eso no alcanza: el instalador deja la app en Program Files, que es
+# de SOLO LECTURA para un usuario sin privilegios. Ahi save_config() fallaba y
+# se comia el OSError (ver mas abajo), asi que los presets se perdian sin que
+# la app dijera nada. Electron pasa GDV_DATA_DIR con su carpeta de datos del
+# usuario (app.getPath("userData"), ver pythonBridge.js) y si esta la usamos.
+# Sin la variable -- en desarrollo -- todo queda junto al codigo como siempre.
+_DATA_DIR = os.environ.get("GDV_DATA_DIR")
+if _DATA_DIR:
+    APP_DIR = _DATA_DIR
+    os.makedirs(APP_DIR, exist_ok=True)
+elif getattr(sys, "frozen", False):
     APP_DIR = os.path.dirname(sys.executable)
 else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
